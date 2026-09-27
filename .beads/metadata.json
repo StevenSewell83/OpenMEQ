@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "OpenMEQ",
+  "project_id": "8f4f6040-5f94-4fcf-bf3a-b1bc86cfa20d"
+}
