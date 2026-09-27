@@ -4,3 +4,6 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# full hypoDD bundle (site runs/models, not for publishing)
+HYPODD_full.zip
