@@ -147,6 +147,11 @@ class RunPaths:
     def data_list_csv(self) -> Path:
         return self.root / "chunks_pn" / "data_list.csv"
 
+    @property
+    def prep_report_csv(self) -> Path:
+        """PhaseNet chunk-prep zero-fill report (M4.2 / OpenMEQ-1m7.2, ARCHITECTURE.md §3)."""
+        return self.root / "chunks_pn" / "prep_report.csv"
+
     # -- pick (Step 4 / M4) --------------------------------------------------------
 
     @property

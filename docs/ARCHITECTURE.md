@@ -54,6 +54,7 @@ chunks/<event_id>/<event_id>.mseed      # raw chunk, all channels, original samp
 chunks/completeness.csv         # event_id,seed_id,fraction_present
 chunks_pn/<event_id>/<event_id>.mseed   # PhaseNet-ready: 100 Hz, 3-comp per station
 chunks_pn/data_list.csv         # PhaseNet input list
+chunks_pn/prep_report.csv       # event_id,seed_id_base,n_components_found,zero_filled_components (M4.2)
 pick/phasenet_raw/              # PhaseNet native output
 pick/catalog_picks.xml          # events with automatic picks, no origins
 nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.mod.{hdr,buf}        # Vel2Grid 1D velocity grid (M5.2)

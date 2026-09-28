@@ -119,6 +119,8 @@ phasenet:
   min_p_prob: 0.3
   min_s_prob: 0.3
   batch_size: 20
+  max_gap_fill_s: 2.0                   # M4.2 / OpenMEQ-1m7.2: gaps longer than this are zero-filled
+                                         # rather than interpolated during chunk preprocessing
 
 nlloc:
   velocity_model:
