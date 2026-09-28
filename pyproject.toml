@@ -47,7 +47,16 @@ include = ["openmeq*"]
 # and bugbear's common-mistake checks without being overly strict.
 [tool.ruff]
 line-length = 100
-extend-exclude = [".claude", "external", "runs"]
+# Ruff also (as of the ruff version resolved by this project's unpinned
+# `dev` extra, M0.9 / OpenMEQ-qlg.9) formats/lints fenced ```python blocks
+# inside Markdown by default. Excluded repo-wide: docs/hypoddpy_audit.md
+# (M9.1) deliberately quotes the *original*, unrewritten hypoddpy template
+# source verbatim (including its Python-2-only syntax) for audit purposes,
+# so ruff reformatting -- or flagging -- those quotes would be wrong, not
+# helpful; ARCHITECTURE.md §1's ruff code-style rule was always meant to
+# cover this project's own Python source, not quoted/example snippets in
+# prose docs.
+extend-exclude = [".claude", "external", "runs", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

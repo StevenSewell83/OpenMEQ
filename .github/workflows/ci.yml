@@ -1,0 +1,127 @@
+# OpenMEQ CI (M0.9, docs/ARCHITECTURE.md §1 / docs/PLAN.md §4).
+#
+# `lint-and-test` is the fast, required, every-push/PR job: it must stay
+# reliable and quick, so it never builds the compiled external tools
+# (NonLinLoc/hypoDD) or clones PhaseNet -- it installs OpenMEQ with
+# `./install.sh --skip-external --dev` (the same script and flag a
+# developer uses for offline/CI-style setup, per that flag's own
+# docstring), so there is exactly one documented "how do I get a dev
+# environment" path rather than a second, hand-rolled one that could drift.
+# `pytest`'s `-m` marker expression below must stay in sync with the five
+# markers registered in pyproject.toml's `[tool.pytest.ini_options]`
+# (ARCHITECTURE.md §1) -- it excludes exactly the tests that need a piece
+# `--skip-external` didn't build/fetch (NLLoc/hypoDD binaries, the PhaseNet
+# clone) or a display (ObsPyck review), plus anything explicitly marked
+# `slow`. Those excluded tests self-skip anyway when the tool they need is
+# absent (see e.g. tests/test_external.py), so this `-m` filter is purely a
+# speed optimisation, not a correctness requirement.
+#
+# `full-install` is the optional, deliberately *not* required counterpart:
+# it runs the real `./install.sh` (no --skip-external) -- cloning PhaseNet,
+# compiling NonLinLoc and hypoDD, downloading TensorFlow -- and then the
+# `requires_*` tests that only make sense with those binaries present. This
+# is too slow/network-heavy for every push (PLAN.md M0.9's explicit "out of
+# scope": "running the heavy install.sh external-tool build in CI on every
+# PR"), so it only runs on a weekly schedule or when triggered by hand.
+#
+# Python 3.10 setup: this project is pinned to 3.10 (PhaseNet's
+# tensorflow==2.11.0 pin, ARCHITECTURE.md §1). Both jobs use
+# actions/setup-python to provision a system Python 3.10, then hand off to
+# `uv`/install.sh for the actual venv -- `uv` itself would also happily
+# install its own 3.10 interpreter (install.sh's `install_venv` step calls
+# `uv python install 3.10` if one isn't already visible to it), but
+# actions/setup-python is kept anyway since it's the lowest-friction way to
+# guarantee a 3.10 is available on the runner before `uv` ever runs, and
+# it's what this task's own working notes call out by name.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, for the optional full-install job only (see `if:` below).
+    - cron: "0 6 * * 1"
+
+# A newer push on the same branch/PR cancels an in-flight run of this
+# workflow for it, so pushing twice in quick succession doesn't waste
+# runner time on a run that's already obsolete.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint + fast tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install OpenMEQ (install.sh --skip-external --dev)
+        run: ./install.sh --skip-external --dev
+
+      - name: ruff check
+        run: .venv/bin/python -m ruff check .
+
+      - name: ruff format --check
+        run: .venv/bin/python -m ruff format --check .
+
+      - name: pytest (fast subset -- no external tools/display/slow tests)
+        env:
+          # Batch/Agg-only plotting (per this project's own worker rules);
+          # no display exists on this runner.
+          QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
+        run: >
+          .venv/bin/python -m pytest -v
+          -m "not slow and not requires_nlloc and not requires_hypodd and not requires_phasenet and not requires_gui"
+
+  full-install:
+    name: Full install + external-tool tests (weekly/manual)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Never runs on a normal push/PR -- see the module-level comment above.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install system prerequisites for the external-tool builds
+        # Only needed here: NonLinLoc (cmake+gcc) and hypoDD/ph2dt
+        # (gfortran+make), per install.sh's own header comment. git/unzip
+        # are already present on GitHub-hosted ubuntu-latest runners.
+        run: sudo apt-get update && sudo apt-get install -y cmake gfortran
+
+      - name: Install OpenMEQ (full install.sh --dev)
+        run: ./install.sh --dev
+
+      - name: pytest (external-tool-dependent tests only)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
+        run: >
+          .venv/bin/python -m pytest -v
+          -m "requires_nlloc or requires_hypodd or requires_phasenet"

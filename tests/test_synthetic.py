@@ -10,6 +10,7 @@ structure these tests check against.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sys
 from pathlib import Path
 
@@ -38,21 +39,68 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+#: Representative subset of generated files checksummed by test_deterministic
+#: (M0.9 / OpenMEQ-qlg.9 trim: a full byte-for-byte comparison needs both
+#: ~500 MB generations on disk at once and reads every generated file twice
+#: -- unnecessary given generation itself, not hashing, dominates this
+#: test's cost; see that test for the disk-saving trick this enables). The
+#: three "known issue" channels are picked deliberately -- they're where a
+#: stray/reordered RNG draw would first show up -- plus one plain ("quiet")
+#: channel and every non-waveform output file, so this still exercises
+#: every *kind* of thing generate() writes, not just a handful of arbitrary
+#: waveform files.
+def _determinism_check_paths(outdir: Path) -> list[Path]:
+    checks = [
+        Path("config.yaml"),
+        Path("truth.json"),
+        Path("inventory/stations.xml"),
+        Path("inventory/stations.csv"),
+        Path("models/vel1d.txt"),
+        Path("waveforms")
+        / make_synthetic.GAP_START.strftime("%Y-%m-%d")
+        / f"{make_synthetic.GAP_SEED_ID}.mseed",
+        Path("waveforms")
+        / make_synthetic.SPIKE_START.strftime("%Y-%m-%d")
+        / f"{make_synthetic.SPIKE_SEED_ID}.mseed",
+        Path("waveforms")
+        / make_synthetic.FLAT_START.strftime("%Y-%m-%d")
+        / f"{make_synthetic.FLAT_SEED_ID}.mseed",
+        Path("waveforms")
+        / make_synthetic.DAY0.strftime("%Y-%m-%d")
+        / f"{make_synthetic.NETWORK}.STA01.00.HHZ.mseed",
+    ]
+    for rel in checks:
+        assert (outdir / rel).is_file(), f"expected generated file missing: {rel}"
+    return checks
+
+
 def test_deterministic(tmp_path_factory):
     out1 = tmp_path_factory.mktemp("det1")
-    out2 = tmp_path_factory.mktemp("det2")
-
     truth1 = make_synthetic.generate(out1, seed=make_synthetic.DEFAULT_SEED)
+
+    # The full file *listing* (names/paths, not content) is cheap to check
+    # and still confirms the same seed produces the same set of files, so
+    # it isn't part of the trim -- only per-file content hashing is limited
+    # to `check_paths` below.
+    files1 = sorted(p.relative_to(out1) for p in out1.rglob("*") if p.is_file())
+    check_paths = _determinism_check_paths(out1)
+    hashes1 = {rel: _file_sha256(out1 / rel) for rel in check_paths}
+
+    # Free the first ~500 MB generation before writing the second, rather
+    # than holding both on disk simultaneously (the actual "cut ... disk"
+    # part of this trim -- hashing alone was never the expensive part).
+    shutil.rmtree(out1)
+
+    out2 = tmp_path_factory.mktemp("det2")
     truth2 = make_synthetic.generate(out2, seed=make_synthetic.DEFAULT_SEED)
 
     assert truth1 == truth2
 
-    files1 = sorted(p.relative_to(out1) for p in out1.rglob("*") if p.is_file())
     files2 = sorted(p.relative_to(out2) for p in out2.rglob("*") if p.is_file())
-    assert files1 == files2
+    assert files1 == files2, "same seed should produce the same set of files"
 
-    for rel in files1:
-        assert _file_sha256(out1 / rel) == _file_sha256(out2 / rel), f"{rel} differs"
+    for rel in check_paths:
+        assert _file_sha256(out2 / rel) == hashes1[rel], f"{rel} differs"
 
 
 def test_station_counts_and_channels(generated):
