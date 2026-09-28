@@ -138,15 +138,22 @@ def reject_pick(pick, arrival, reason: str, step: str) -> None:
     ----------
     pick : obspy.core.event.Pick
         The pick to reject.
-    arrival : obspy.core.event.Arrival
-        The arrival, on the current origin, referring to this pick.
+    arrival : obspy.core.event.Arrival or None
+        The arrival, on the current origin, referring to this pick. ``None``
+        for a rejection that happens *before* any relocation has produced an
+        arrival for this pick yet (M6.3 / OpenMEQ-xdf.3's pass-B S-prediction
+        screening: a pick can be screened out ahead of ever being handed to
+        NLLoc, so there is no ``Origin``/``Arrival`` for it to carry a
+        ``time_weight`` on) -- in that case only ``pick.evaluation_status``
+        and the ``Comment`` are set.
     reason : str
         Short machine-parseable reason (no colons), e.g. ``"residual>3sigma"``.
     step : str
         The pipeline step doing the rejecting, e.g. ``"locate_passA"``.
     """
     pick.evaluation_status = "rejected"
-    arrival.time_weight = 0
+    if arrival is not None:
+        arrival.time_weight = 0
     pick.comments.append(Comment(text=f"rejected:{step}:{reason}"))
 
 
