@@ -23,22 +23,34 @@ further, for ``tests/locate/test_locate_recovery.py``: a session-scoped project
 with real ``openmeq detect``/``openmeq chunk`` outputs already on disk, so
 that test only needs to run the (phasenet-dependent) ``pick``/``locate``
 steps itself, inside its own skip-guarded test body.
+
+OpenMEQ-m1f.6: ``chunked_project`` used to run the real ``openmeq detect``
+then ``openmeq chunk`` CLI commands itself (~35s). It now instead copies
+those same real outputs out of the shared, session-scoped
+``full_pipeline_run`` fixture (``tests/conftest.py``) -- mirrors
+``tests/pick/conftest.py``'s ``pick_ready_project``, duplicated (not
+imported) since pytest fixtures aren't visible across sibling test
+directories; see that module's own docstring for the full rationale.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 import yaml
-from click.testing import CliRunner
 
-from openmeq.cli import main
 from openmeq.config import Config, load_config
 from openmeq.nlloc_setup import setup_nlloc
 from openmeq.paths import RunPaths
-from openmeq.qc.flags import compute_channel_flags, write_channel_flags
 from openmeq.stations import station_table as load_station_table
+
+#: The per-step output folders (ARCHITECTURE.md §3) that make up a
+#: "detect+chunk done" project -- copied verbatim from the shared
+#: ``full_pipeline_run`` fixture rather than recomputed (mirrors
+#: ``tests/pick/conftest.py``'s identical constant).
+_PRE_PICK_FOLDERS = ("inventory", "qc", "detections", "chunks", "chunks_pn")
 
 
 def _dump_config_copy(cfg: Config, path: Path) -> None:
@@ -53,23 +65,17 @@ def _dump_config_copy(cfg: Config, path: Path) -> None:
 
 
 @pytest.fixture(scope="session")
-def chunked_project(synthetic_project, synthetic_qc_tables, tmp_path_factory):
+def chunked_project(synthetic_project, full_pipeline_run, tmp_path_factory):
     """``(cfg, paths, config_path, truth)``, with real ``detect``/``chunk``
     outputs already on disk (nothing ``pick``/``locate``-related yet).
 
-    Session-scoped, phasenet-independent (mirrors ``tests/pick/conftest.py``
-    ``pick_ready_project``'s own identical fixture and rationale, duplicated
-    -- not imported -- since pytest fixtures are not visible across sibling
-    test directories): ``openmeq detect``/``openmeq chunk`` together cost
-    ~35s against the full synthetic dataset, and
-    ``tests/locate/test_locate_recovery.py`` is the only consumer here, but this
-    still avoids re-running them if a second locate-recovery-style test is
-    added later. ``openmeq qc`` itself is *not* re-run for real (~40s): its
-    outputs are built directly from the already-computed, session-scoped
-    ``synthetic_qc_tables`` fixture.
+    Session-scoped: ``tests/locate/test_locate_recovery.py`` is the only
+    consumer here, but this still avoids re-running detect+chunk if a
+    second locate-recovery-style test is added later. See module docstring
+    for why this copies rather than re-runs detect+chunk.
     """
     config_path, truth = synthetic_project
-    _qc_cfg, idx, availability_df, daily_stats_df, monthly_df, _truth2 = synthetic_qc_tables
+    _src_cfg, source_paths, _src_truth, _result = full_pipeline_run
 
     cfg = load_config(config_path)
     outdir = tmp_path_factory.mktemp("chunked_project")
@@ -77,19 +83,13 @@ def chunked_project(synthetic_project, synthetic_qc_tables, tmp_path_factory):
     paths = RunPaths(cfg)
     paths.ensure()
 
-    idx.write(paths.index_json)
-    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
-    write_channel_flags(flags, paths.channel_flags_json)
+    for folder in _PRE_PICK_FOLDERS:
+        dest = paths.root / folder
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(source_paths.root / folder, dest)
 
     new_config_path = outdir / "config.yaml"
     _dump_config_copy(cfg, new_config_path)
-
-    runner = CliRunner()
-    detect_result = runner.invoke(main, ["detect", "-c", str(new_config_path)])
-    assert detect_result.exit_code == 0, detect_result.output
-
-    chunk_result = runner.invoke(main, ["chunk", "-c", str(new_config_path)])
-    assert chunk_result.exit_code == 0, chunk_result.output
 
     return cfg, paths, new_config_path, truth
 

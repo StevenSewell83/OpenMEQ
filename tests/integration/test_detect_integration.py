@@ -22,6 +22,15 @@ pass again -- that test is only exercising ``StepManifest``'s skip/force
 decision (already isolated from both qc's and detect's own correctness),
 so a real qc run buys it nothing.
 
+OpenMEQ-m1f.6: ``_detect_result``'s real ``openmeq qc`` + ``openmeq detect``
+pair (the latter with ``n_workers=2``, deliberately, to exercise real
+``ProcessPoolExecutor`` dispatch across the 2 day-windows) is its own
+isolated run, not migrated onto ``tests/conftest.py``'s shared
+``full_pipeline_run`` fixture -- it is testing detection itself (including
+real parallel dispatch), not reading an already-computed upstream result.
+Its two consumers below are marked ``slow`` (~50s on this machine) so they
+don't count against the ``-m "not slow"`` budget.
+
 Disk-space note (worker instructions "Disk space" section): no test here
 ``shutil.copytree``\\ s the ~500 MB synthetic waveform data. Each test points
 a fresh ``Config`` (loaded from the shared, session-scoped
@@ -227,6 +236,7 @@ def _detect_result(synthetic_project, tmp_path_factory):
     return paths, truth
 
 
+@pytest.mark.slow
 def test_detect_end_to_end_recovery(_detect_result):
     paths, truth = _detect_result
 
@@ -252,6 +262,7 @@ def test_detect_end_to_end_recovery(_detect_result):
     )
 
 
+@pytest.mark.slow
 def test_diagnostics_files_exist(_detect_result):
     paths, _truth = _detect_result
     diag_dir = paths.detect_diagnostics_dir

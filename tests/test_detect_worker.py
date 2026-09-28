@@ -13,6 +13,14 @@ produces output) works from a **function-scoped** copy of the shared,
 session-scoped ``synthetic_project`` fixture's directory (see
 ``tests/conftest.py``'s usage-pattern docstring) -- never the shared
 directory itself.
+
+OpenMEQ-m1f.6: the four tests below that run a real STA/LTA
+``detect_window`` pass over the whole synthetic archive (16-32s each on
+this machine -- the per-test ``shutil.copytree`` this module's own
+``_setup_project`` helper does is not the expensive part, confirmed
+directly: ``test_build_windows_spans_config_range`` uses the same helper
+and runs in well under a second) are marked ``slow`` so they don't count
+against the ``-m "not slow"`` budget.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from obspy import UTCDateTime
 from obspy.signal import trigger as obspy_trigger_module
 
@@ -73,6 +82,7 @@ def _write_flags(paths: RunPaths, flags_dict: dict) -> Path:
     return paths.channel_flags_json
 
 
+@pytest.mark.slow
 def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)
@@ -110,6 +120,7 @@ def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_flagged_channel_excluded(synthetic_project, tmp_path, monkeypatch):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)
@@ -148,6 +159,7 @@ def test_flagged_channel_excluded(synthetic_project, tmp_path, monkeypatch):
         assert excluded_station not in stations_present
 
 
+@pytest.mark.slow
 def test_gap_day_does_not_crash(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)
@@ -173,6 +185,7 @@ def test_gap_day_does_not_crash(synthetic_project, tmp_path):
     assert len(triggers) > 0
 
 
+@pytest.mark.slow
 def test_day_boundary_event_appears_in_both_adjacent_windows(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)

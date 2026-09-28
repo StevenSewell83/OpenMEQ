@@ -348,6 +348,7 @@ def _all_ok_flags(index: DataIndex, dates: list[str]) -> dict:
     return {"version": 1, "flags": flags}
 
 
+@pytest.mark.slow  # OpenMEQ-m1f.6: real STA/LTA over the full synthetic archive, ~34s
 def test_full_pipeline_no_duplicate_event_ids(synthetic_project, tmp_path):
     config_path, truth = synthetic_project
     project_copy = tmp_path / "project"

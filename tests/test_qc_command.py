@@ -15,6 +15,15 @@ copies the whole synthetic project into its own **module**-scoped
 worker instructions' "Disk space" note) rather than once per test
 function, and every test in this module shares that one copy/run through
 the ``qc_first_run`` fixture below.
+
+OpenMEQ-m1f.6: this module drives its own real ``openmeq qc`` invocation(s)
+rather than reading ``tests/conftest.py``'s shared ``full_pipeline_run``
+fixture -- its own tests exercise ``StepManifest``'s skip-unchanged/
+``--force`` behaviour (real, repeated CLI invocations that mutate the same
+output directory), which that issue's own rule keeps as an isolated run
+rather than migrating. The whole module is marked ``slow`` (~70s on this
+machine, two real ``openmeq qc`` passes) so it doesn't count against the
+``-m "not slow"`` budget.
 """
 
 from __future__ import annotations
@@ -29,6 +38,8 @@ from click.testing import CliRunner
 
 from openmeq.cli import main
 from openmeq.config import load_config
+
+pytestmark = pytest.mark.slow
 
 
 @pytest.fixture(scope="module")

@@ -12,10 +12,25 @@ and two modules (``tests/test_qc_stats.py``, ``tests/test_qc_monthly_flags.py``)
 each had their own module-scoped fixture recomputing it independently --
 see docs/performance.md for the measured before/after suite runtime this
 sharing gets.
+
+``full_pipeline_run`` (M11.6, ``OpenMEQ-m1f.6``) goes one step further: one
+real ``openmeq.cli.run_all`` chain (qc -> detect -> chunk -> pick -> locate
+-> magnitude -> relocate, review disabled) against a private copy of
+``synthetic_project``, computed once per session and shared by every test
+that only needs to *read* its output. Before this fixture, several test
+modules each independently drove their own real qc/detect/chunk/pick/
+locate/.../relocate chain via ``CliRunner`` against their own private copy
+of ``synthetic_project`` -- ``tests/pick/conftest.py``'s
+``pick_ready_project``, ``tests/locate/conftest.py``'s ``chunked_project``,
+and ``tests/integration/test_end_to_end.py``'s ``e2e_result`` -- re-running
+the same expensive real steps over and over. See docs/performance.md for
+the measured before/after.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -117,6 +132,93 @@ def synthetic_qc_tables(synthetic_project):
     monthly_df = compute_monthly_stats(daily_stats_df, cfg)
 
     return cfg, idx, availability_df, daily_stats_df, monthly_df, truth
+
+
+@pytest.fixture(scope="session")
+def full_pipeline_run(synthetic_project, tmp_path_factory):
+    """``(cfg, paths, truth, result)`` for one real ``openmeq run``
+    (:func:`openmeq.cli.run_all`) chain, computed **once per test session**
+    against a private copy of the shared ``synthetic_project`` fixture
+    (OpenMEQ-m1f.6 -- see this module's own docstring for the fixtures this
+    replaced/now builds on).
+
+    **Usage pattern**: a test that only *reads* this run's output (parses a
+    catalogue, a CSV, checks a diagnostics file exists) can depend on this
+    fixture directly. A test that needs a private, further-mutable copy of
+    a specific *stage's* outputs (e.g. "detect+chunk already done, nothing
+    pick-related yet") should ``shutil.copytree`` just the relevant
+    per-step output folder(s) out of ``paths.root`` into its own private
+    directory, rather than re-running those steps for real a second time --
+    every step's output lives entirely under its own top-level folder
+    (``docs/ARCHITECTURE.md`` §3), so this is always safe. See
+    ``tests/pick/conftest.py``'s ``pick_ready_project`` /
+    ``tests/locate/conftest.py``'s ``chunked_project`` for the pattern. A
+    test that needs to *mutate* the shared run's own inputs (e.g. inject a
+    perturbed catalogue) still needs its own independent fixture, same as
+    before -- this fixture is only for reading or branching off a genuine
+    real chain's output.
+
+    Requires a real NonLinLoc/hypoDD/PhaseNet install
+    (``OPENMEQ_EXTERNAL_DIR``, falling back to ``<repo root>/external``, per
+    ``openmeq.external``'s own resolution order): every test that depends
+    on this fixture, directly or transitively, is skipped (not errored) if
+    any of them is missing -- mirroring the ``_skip_no_external`` guard
+    every one of the fixtures/modules above used to carry individually.
+    Because this is now a *shared* fixture, that also means a test whose
+    own real work needs only one or two of the three tools (e.g.
+    ``tests/pick/``'s own tests, which need PhaseNet but not NLLoc/hypoDD)
+    is skipped if any of the three is missing, not just the one it
+    personally depends on -- a deliberate, documented trade-off for one
+    shared full chain; every consumer here already also carries its own
+    ``requires_*`` marks for the tools *it* needs, so this only widens the
+    skip condition, it never narrows required coverage silently.
+    """
+    from openmeq.cli import run_all
+    from openmeq.config import load_config
+    from openmeq.paths import RunPaths
+
+    repo_root = Path(__file__).resolve().parent.parent
+    external_dir = Path(os.environ.get("OPENMEQ_EXTERNAL_DIR", str(repo_root / "external")))
+    external_missing = not (
+        (external_dir / "bin" / "NLLoc").exists()
+        and (external_dir / "bin" / "hypoDD").exists()
+        and (external_dir / "bin" / "ph2dt").exists()
+        and (external_dir / "PhaseNet").is_dir()
+    )
+    if external_missing:
+        pytest.skip(
+            "external/{bin/NLLoc,bin/hypoDD,bin/ph2dt,PhaseNet} not available under "
+            f"{external_dir} (set OPENMEQ_EXTERNAL_DIR, or run install.sh)"
+        )
+
+    # Module-scoped-fixture equivalent of `monkeypatch.setenv` (`monkeypatch`
+    # itself is function-scoped only) -- mirrors every real-binary test
+    # module's own identical `_set_external_dir` fixture.
+    old_external_env = os.environ.get("OPENMEQ_EXTERNAL_DIR")
+    os.environ["OPENMEQ_EXTERNAL_DIR"] = str(external_dir)
+
+    config_path, truth = synthetic_project
+    project_dir = tmp_path_factory.mktemp("full_pipeline_run") / "project"
+    shutil.copytree(config_path.parent, project_dir)
+    project_config_path = project_dir / "config.yaml"
+
+    cfg = load_config(project_config_path)
+    paths = RunPaths(cfg)
+    paths.ensure()
+
+    try:
+        result = run_all(cfg, paths, config_path=str(project_config_path))
+    finally:
+        if old_external_env is None:
+            os.environ.pop("OPENMEQ_EXTERNAL_DIR", None)
+        else:
+            os.environ["OPENMEQ_EXTERNAL_DIR"] = old_external_env
+
+    assert result.ok, (
+        f"openmeq run failed at step {result.failed_step!r}: "
+        f"{[(o.step, o.status, o.detail) for o in result.outcomes]}"
+    )
+    return cfg, paths, truth, result
 
 
 def pytest_sessionfinish(session, exitstatus):
