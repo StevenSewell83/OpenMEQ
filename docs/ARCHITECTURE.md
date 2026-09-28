@@ -45,7 +45,7 @@ inventory/stations.xml          # merged StationXML
 inventory/stations.csv          # station table (§2 station_table columns)
 inventory/metadata_report.json  # {"data_without_metadata": [seed_id], "metadata_without_data": [seed_id]}
 qc/availability.csv             # seed_id,date,coverage_pct,n_gaps,n_overlaps,gap_s
-qc/daily_stats.csv              # seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,clip_count,npts
+qc/daily_stats.csv              # seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,longest_flat_run_s,clip_count,npts
 qc/monthly_stats.csv            # seed_id,month,stat,value,network_median,ratio,rank
 qc/channel_flags.json           # (§4.2)
 qc/diagnostics/
@@ -84,6 +84,32 @@ relocate/catalog_dd.xml
 logs/<step>.log
 ```
 
+**`qc/daily_stats.csv` column semantics (M1.9, `OpenMEQ-5nl.9`):**
+
+- **`spike_count`** counts *isolated impulses*, not merely large samples:
+  `r = x - running_median(x, k)` (`k = cfg.qc.spike_median_window`, default
+  7 samples, odd), and a sample counts if `|r| > cfg.qc.spike_threshold_mad
+  * MAD(r)` (`MAD(r) = median(|r|)`, not re-centered -- see
+  `openmeq/qc/stats.py`'s module docstring for why). A real seismic event is
+  smooth over several consecutive samples and leaves little residual
+  against a short running median; an electronic glitch/spike differs
+  sharply from its immediate neighbours and does not. This replaces the
+  original M1.4 definition (`|x - median(x)| > threshold * MAD(x)` on the
+  raw samples), which could not distinguish a glitch from a real event on
+  this project's own synthetic fixture (`docs/performance.md` has the
+  measured before/after numbers). Computed with
+  `scipy.ndimage.median_filter`, per segment (never across a real time
+  gap), then pooled for a single threshold/count over the whole day.
+- **`longest_flat_run_s`** is the single longest run of an identical
+  consecutive raw sample value on that channel/day (the same equality-based
+  run definition `flat_count` uses, but the *maximum* run length rather
+  than the total count across every run clearing
+  `cfg.qc.flat_run_min_samples`), in seconds. Backs `channel_flags.json`'s
+  `"flat"` reason's duration criterion (`cfg.qc.max_flat_run_s`, §4.2)
+  alongside the existing `max_flat_fraction` criterion: a real fault (e.g.
+  a dead sensor for an hour) should flag on its own duration even when that
+  hour is a small fraction of a long day.
+
 ## 4. File formats
 
 ### 4.1 `inventory/index.json`
@@ -103,6 +129,20 @@ Segments are sorted by start time. A file holding several channels appears under
 ```
 
 A channel/day with no entry counts as `ok: false` (no data).
+
+`"reasons"` values (`openmeq.qc.flags.compute_channel_flags`): `"availability<{min_availability_pct}"`,
+`"spikes"` (`spike_count/npts > cfg.qc.max_spike_fraction`, §3's isolated-impulse
+metric), `"flat"` (`flat_count/npts > cfg.qc.max_flat_fraction` **or**
+`longest_flat_run_s > cfg.qc.max_flat_run_s` -- either alone is sufficient,
+M1.9), `"clipped"`, `"excluded_by_config"`, `"network_outlier"`.
+
+**Gap policy (M1.9):** a short data gap (e.g. a 10-minute gap out of a full
+day, ~99.3% coverage) is deliberately *not* flagged by the shipped
+`cfg.qc.min_availability_pct` default (80%) -- the day is still usable for
+downstream steps. It still appears in `qc/availability.csv` with its real
+`coverage_pct`/`n_gaps`/`gap_s` (M1.3), so nothing about the gap is hidden;
+only the day/channel/flags output's pass/fail *summary* doesn't treat a
+gap this small as disqualifying on its own.
 
 ### 4.3 `detections/detections.csv`
 

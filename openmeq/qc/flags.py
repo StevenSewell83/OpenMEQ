@@ -235,8 +235,16 @@ def compute_channel_flags(
 
     - ``"availability<{min_availability_pct}"`` if ``coverage_pct <
       cfg.qc.min_availability_pct``.
-    - ``"spikes"`` if ``spike_count / npts > cfg.qc.max_spike_fraction``.
-    - ``"flat"`` if ``flat_count / npts > cfg.qc.max_flat_fraction``.
+    - ``"spikes"`` if ``spike_count / npts > cfg.qc.max_spike_fraction``
+      (``spike_count`` is M1.9's isolated-impulse metric --
+      :mod:`openmeq.qc.stats` module docstring).
+    - ``"flat"`` if ``flat_count / npts > cfg.qc.max_flat_fraction`` **or**
+      ``longest_flat_run_s > cfg.qc.max_flat_run_s`` (M1.9, ``OpenMEQ-5nl.9``
+      -- either criterion alone is enough: a hard fault (e.g. a dead sensor
+      for an hour) should flag on its own *duration* even if that hour is a
+      small fraction of a long day, while ``max_flat_fraction`` still
+      catches a channel that is flat in many short, scattered runs that
+      never individually cross ``max_flat_run_s``).
     - ``"clipped"`` if ``clip_count > cfg.qc.max_clip_count``.
     - ``"excluded_by_config"`` if ``seed_id`` is in
       ``cfg.qc.exclude_channels`` -- a hard override applied to every date
@@ -276,7 +284,15 @@ def compute_channel_flags(
 
     avail_cols = availability_df[["seed_id", "date", "coverage_pct"]].copy()
     stats_cols = daily_stats_df[
-        ["seed_id", "date", "spike_count", "npts", "flat_count", "clip_count"]
+        [
+            "seed_id",
+            "date",
+            "spike_count",
+            "npts",
+            "flat_count",
+            "longest_flat_run_s",
+            "clip_count",
+        ]
     ].copy()
 
     merged = pd.merge(avail_cols, stats_cols, on=["seed_id", "date"], how="outer")
@@ -312,6 +328,7 @@ def compute_channel_flags(
         spike_count = row.spike_count
         npts = row.npts
         flat_count = row.flat_count
+        longest_flat_run_s = row.longest_flat_run_s
         clip_count = row.clip_count
 
         reasons: list[str] = []
@@ -323,9 +340,14 @@ def compute_channel_flags(
             if (spike_count / npts) > qc.max_spike_fraction:
                 reasons.append("spikes")
 
+        is_flat = False
         if pd.notna(flat_count) and pd.notna(npts) and npts > 0:
             if (flat_count / npts) > qc.max_flat_fraction:
-                reasons.append("flat")
+                is_flat = True
+        if pd.notna(longest_flat_run_s) and longest_flat_run_s > qc.max_flat_run_s:
+            is_flat = True
+        if is_flat:
+            reasons.append("flat")
 
         if pd.notna(clip_count) and clip_count > qc.max_clip_count:
             reasons.append("clipped")

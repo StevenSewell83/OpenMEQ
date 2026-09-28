@@ -17,7 +17,6 @@ mutate/consume state other tests care about).
 
 from __future__ import annotations
 
-import time
 from datetime import date, timedelta
 
 import numpy as np
@@ -33,7 +32,6 @@ from openmeq.qc.stats import (
     _fast_kurtosis,
     _write_qc_worker_cfg,
     compute_channel_day_stats,
-    compute_daily_stats,
     stats_for_channel_day,
     write_daily_stats_csv,
 )
@@ -48,30 +46,18 @@ def _issue(truth: dict, kind: str) -> dict:
 
 
 @pytest.fixture(scope="module")
-def stats_world(synthetic_project):
+def stats_world(synthetic_qc_tables):
     """``(df, truth, cfg, idx)`` -- daily stats for every channel over both days.
 
-    Computed once per test module (indexing + reading ~48 channel-days),
-    reused read-only by every test below.
+    OpenMEQ-5nl.9: no longer computes anything itself -- just repackages
+    the session-scoped ``synthetic_qc_tables`` fixture (shared with
+    ``tests/test_qc_monthly_flags.py``, see ``tests/conftest.py``) into the
+    tuple shape every test in this module already expects, so the ~48
+    channel-day daily-stats computation runs once per *session* rather than
+    once per test *module*.
     """
-    config_path, truth = synthetic_project
-    cfg = load_config(config_path)
-    idx = build_index(cfg)
-
-    seed_ids = idx.seed_ids()
-    dates = [DAY1, DAY2]
-
-    t0 = time.perf_counter()
-    df = compute_daily_stats(idx, seed_ids, dates, cfg)
-    elapsed = time.perf_counter() - t0
-
-    n = len(seed_ids) * len(dates)
-    print(
-        f"\n[qc.stats throughput] {n} channel-days in {elapsed:.2f}s "
-        f"({n / elapsed:.1f} channel-days/s, n_workers={cfg.parallel.n_workers})"
-    )
-
-    return df, truth, cfg, idx
+    cfg, idx, _availability_df, daily_stats_df, _monthly_df, truth = synthetic_qc_tables
+    return daily_stats_df, truth, cfg, idx
 
 
 def _row(df, seed_id: str, day: date):
@@ -145,13 +131,25 @@ def test_known_spiky_channel_flagged_by_stats(stats_world):
     single very large, very close event pulse can out-rank the deliberately
     spiky channel/day on kurtosis alone (confirmed: ``XX.BH02.00.DP2``'s
     2025-01-02 kurtosis exceeds the known spiky channel's that same day).
-    ``spike_count`` (MAD-threshold impulse counting) is the more robust
-    discriminator here; M1.5's monthly comparison / flagging logic should
-    weigh multiple statistics together rather than trust kurtosis in
-    isolation. ``test_kurtosis_and_spike_count_rise_with_injected_spikes``
-    below isolates the effect on a controlled trace with no real-event
-    confound, showing both statistics behave correctly in the absence of
-    that confound.
+    M1.5's monthly comparison / flagging logic should weigh multiple
+    statistics together rather than trust kurtosis in isolation.
+
+    **Verified fact for M1.9** (isolated-impulse ``spike_count``, default
+    ``spike_threshold_mad=10``, ``spike_median_window=7``): the *old*
+    global-MAD ``spike_count`` gave the known spiky channel/day only
+    ~600-above-baseline and a ~1.15x network-outlier ratio against real
+    quake-swamped values of 1300-1850 (the M1.9 issue's own numbers) --
+    not a usable discriminator. The new residual-based metric measures
+    ``XX.STA06.00.HHE`` 2025-01-02 at **388** isolated impulses, against a
+    **80**-impulse baseline the day before (no anomaly that day) and a
+    **119**-impulse next-highest *ordinary* channel/day that same day --
+    over 3x the next-highest channel and ~4.85x its own clean-day baseline,
+    comfortably clearing every margin asserted below (this replaces the
+    old MAD-threshold impulse counting docstring reference).
+    ``test_kurtosis_and_spike_count_rise_with_injected_spikes`` below
+    isolates the effect on a controlled trace with no real-event confound,
+    showing both statistics behave correctly in the absence of that
+    confound.
     """
     df, truth, cfg, idx = stats_world
     issue = _issue(truth, "spikes")
@@ -233,6 +231,13 @@ def test_known_flat_channel_flagged_by_stats(stats_world):
     # far above any ordinary channel that day (background noise essentially
     # never repeats the same raw sample value >= flat_run_min_samples times)
     assert flat_row["flat_count"] > 100 * (other_rows["flat_count"].max() + 1)
+
+    # M1.9: the single longest flat run is (virtually) the whole 1-hour
+    # window, in seconds -- comfortably past qc.max_flat_run_s's default
+    # (60s), while every ordinary channel's longest run is a small fraction
+    # of a second (see the module docstring's "1-3 samples" note).
+    assert flat_row["longest_flat_run_s"] == pytest.approx(window_samples / 200.0, rel=0.01)
+    assert other_rows["longest_flat_run_s"].max() < 1.0
 
 
 def test_flat_window_is_almost_entirely_one_run(synthetic_project):
@@ -362,6 +367,7 @@ def test_empty_channel_day_no_crash():
     assert result["mean_abs"] == 0.0
     assert result["spike_count"] == 0
     assert result["flat_count"] == 0
+    assert result["longest_flat_run_s"] == 0.0
     assert result["clip_count"] == 0
     assert np.isnan(result["kurtosis"])
 
@@ -390,17 +396,31 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
     """Deliberately naive reference implementation.
 
     Independent of ``openmeq.qc.stats``'s optimised helpers (does not call
-    ``_median_mad_spike_count``, ``_fast_kurtosis`` or the boundary-based
+    ``_spike_count_from_residual``, ``_fast_kurtosis`` or the boundary-based
     ``_segment_run_counts``): plain ``scipy.stats.kurtosis``, ``np.median``
-    with no ``overwrite_input``, ``np.abs(x - median)`` recomputed from
-    scratch for the spike comparison, ``np.sum(x**2)`` (not ``np.dot``),
-    and a textbook per-sample run-length encoding (cumulative-sum run ids,
-    ``np.bincount``, then a full per-sample gather) for flat/clip runs.
-    Slower, by design -- this is the "obviously correct by inspection"
-    baseline OpenMEQ-5nl.8 optimised the real implementation against.
+    with no ``overwrite_input``, a textbook per-sample run-length encoding
+    (cumulative-sum run ids, ``np.bincount``, then a full per-sample gather)
+    for flat/clip/longest-run, and ``scipy.ndimage.median_filter`` (the same
+    external library call the optimised path uses -- this is the isolated-
+    impulse metric's own *definition*, not an internal helper being
+    trusted) run on the per-segment concatenation rather than per-segment,
+    for the spike residual. Slower, by design -- this is the "obviously
+    correct by inspection" baseline OpenMEQ-5nl.8/5nl.9 optimised the real
+    implementation against.
+
+    OpenMEQ-5nl.9 note on cross-segment concatenation: this reference
+    deliberately computes the residual on the whole-day concatenation
+    (not per-segment like the optimised path), which *could* differ at a
+    gap boundary -- see :func:`compute_channel_day_stats`'s own docstring.
+    ``_build_sample_channel_day_trace`` below has no gap (a single
+    contiguous segment), so this difference never triggers in
+    ``test_optimised_output_matches_reference_implementation``; it would
+    need reconciling before reusing this reference against a gappy trace.
     """
+    from scipy.ndimage import median_filter
     from scipy.stats import kurtosis as scipy_kurtosis
 
+    sampling_rate = float(stream[0].stats.sampling_rate) if len(stream) > 0 else None
     segments = [tr.data for tr in stream.split()] if len(stream) > 0 else []
     segments = [seg for seg in segments if seg.size > 0]
     if not segments:
@@ -412,6 +432,7 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
             "spike_count": 0,
             "kurtosis": float("nan"),
             "flat_count": 0,
+            "longest_flat_run_s": 0.0,
             "clip_count": 0,
             "npts": 0,
         }
@@ -442,6 +463,7 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
     sum_abs = 0.0
     flat_count = 0
     clip_count = 0
+    longest_flat_run_samples = 0
     float_segments = []
 
     for seg in segments:
@@ -449,6 +471,7 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
 
         run_len = run_lengths_per_sample(seg)
         flat_count += int(np.count_nonzero(run_len >= qc_cfg.flat_run_min_samples))
+        longest_flat_run_samples = max(longest_flat_run_samples, int(run_len.max()))
         if is_int:
             is_sat = (seg == int32_max) | (seg == int32_min)
         elif float_saturation_value is not None:
@@ -466,10 +489,14 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
     mean_abs = float(sum_abs / total_npts)
 
     x_all = np.concatenate(float_segments)
-    median = np.median(x_all)
-    mad = np.median(np.abs(x_all - median))
-    spike_count = int(np.count_nonzero(np.abs(x_all - median) > qc_cfg.spike_threshold_mad * mad))
     kurt = float(scipy_kurtosis(x_all, fisher=True))
+
+    med_local = median_filter(x_all, size=qc_cfg.spike_median_window, mode="nearest")
+    r_all = x_all - med_local
+    mad = np.median(np.abs(r_all))
+    spike_count = int(np.count_nonzero(np.abs(r_all) > qc_cfg.spike_threshold_mad * mad))
+
+    longest_flat_run_s = longest_flat_run_samples / sampling_rate if sampling_rate else 0.0
 
     return {
         "seed_id": seed_id,
@@ -479,6 +506,7 @@ def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) ->
         "spike_count": spike_count,
         "kurtosis": kurt,
         "flat_count": flat_count,
+        "longest_flat_run_s": longest_flat_run_s,
         "clip_count": clip_count,
         "npts": total_npts,
     }
@@ -513,10 +541,12 @@ def _build_sample_channel_day_trace(rng) -> Trace:
 def test_optimised_output_matches_reference_implementation():
     """The optimised ``compute_channel_day_stats`` matches the from-scratch
     naive reference on a sample channel-day exercising rms, mean_abs,
-    spike_count, kurtosis, flat_count and clip_count together.
+    spike_count, kurtosis, flat_count, longest_flat_run_s and clip_count
+    together.
 
     Tolerances (documented, per OpenMEQ-5nl.8's "identical, or within
-    documented float tolerance" requirement):
+    documented float tolerance" requirement, extended by OpenMEQ-5nl.9 to
+    the new isolated-impulse ``spike_count``):
 
     - ``rms``/``mean_abs``: both implementations do the same pooled
       summation *except* ``sum_sq`` uses ``np.dot`` instead of
@@ -524,10 +554,12 @@ def test_optimised_output_matches_reference_implementation():
       mathematical sum, so these agree to ``rel=1e-9`` (comfortably above
       float64 rounding noise for a ~1.4M-term reduction, comfortably below
       anything that would matter for a noise statistic).
-    - ``spike_count``/``flat_count``/``clip_count``: integer counts from
+    - ``spike_count``/``flat_count``/``longest_flat_run_s``/``clip_count``:
       exact-equality/threshold comparisons on the *same* underlying
       float64 values either way (only ``kurtosis`` runs in float32) --
-      required to match **exactly**.
+      required to match **exactly** (``longest_flat_run_s`` is an exact
+      integer sample count divided by the same ``sampling_rate`` either
+      way, so still an exact float equality, not an approximate one).
     - ``kurtosis``: the optimised path computes this in float32 (see
       :func:`openmeq.qc.stats._fast_kurtosis`); ``rel=1e-3`` comfortably
       covers that precision difference while still catching any real
@@ -546,6 +578,7 @@ def test_optimised_output_matches_reference_implementation():
     assert optimised["mean_abs"] == pytest.approx(reference["mean_abs"], rel=1e-9)
     assert optimised["spike_count"] == reference["spike_count"]
     assert optimised["flat_count"] == reference["flat_count"]
+    assert optimised["longest_flat_run_s"] == reference["longest_flat_run_s"]
     assert optimised["clip_count"] == reference["clip_count"]
     assert optimised["kurtosis"] == pytest.approx(reference["kurtosis"], rel=1e-3)
 
@@ -554,6 +587,7 @@ def test_optimised_output_matches_reference_implementation():
     # reference computed the same wrong way if the sample didn't).
     assert reference["spike_count"] > 50
     assert reference["flat_count"] >= 80
+    assert reference["longest_flat_run_s"] == pytest.approx(80 / 200.0)
     assert reference["clip_count"] == 6
     assert reference["kurtosis"] > 5.0
 

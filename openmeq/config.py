@@ -154,10 +154,23 @@ class QcConfig(_StrictModel):
     flat_run_min_samples: int = 50
     clip_run_min_samples: int = 3
     # M1.5 / OpenMEQ-5nl.5: monthly cross-station comparison pass/fail thresholds.
-    max_spike_fraction: float = 0.01
+    # M1.9 / OpenMEQ-5nl.9 retuned max_spike_fraction for the new isolated-impulse
+    # spike_count definition -- see docs/performance.md for the measured
+    # synthetic_project numbers this default is chosen against (the known
+    # spiky channel/day measures ~2.25e-5, every ordinary channel/day <= ~7.3e-6).
+    max_spike_fraction: float = 0.000012
     max_flat_fraction: float = 0.5
     max_clip_count: int = 0
     monthly_outlier_ratio: float = 3.0
+    # M1.9 / OpenMEQ-5nl.9: isolated-impulse spike metric (ARCHITECTURE.md §3)
+    # -- the odd-length running-median window (samples) the residual
+    # r = x - running_median(x, spike_median_window) is computed against.
+    spike_median_window: int = 7
+    # M1.9 / OpenMEQ-5nl.9: flag "flat" when the single longest flat run on
+    # a channel/day exceeds this many seconds (a real fault, e.g. a dead
+    # sensor for an hour, regardless of what fraction of the whole day that
+    # is), in addition to the existing max_flat_fraction criterion.
+    max_flat_run_s: float = 60.0
 
 
 # ---------------------------------------------------------------------------
