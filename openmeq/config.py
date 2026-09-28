@@ -299,13 +299,38 @@ class PAndSFilterConfig(_StrictModel):
 
 
 class EventsFilterConfig(_StrictModel):
-    """Event-level accept/reject thresholds, applied after pass A/B."""
+    """Event-level accept/reject thresholds, applied after pass A/B.
+
+    ``max_gap_deg`` (M11.2 / OpenMEQ-m1f.2): raised from an earlier 270.0 to
+    285.0. On ``tests/data/make_synthetic.py``'s own 8-station, ~13 km-
+    aperture network (event offsets drawn up to 9 km from the array centre
+    in each of x/y, so some fall near or outside the stations' convex
+    hull), a full deterministic ``openmeq run`` over the 20-event synthetic
+    truth catalogue located every single event with all 8 stations'
+    P *and* S picks (``locate/summary.csv``'s ``n_p``/``n_s`` == 8
+    throughout, and every ``err_z_km`` well inside ``max_err_z_km``;
+    ``err_h_km`` itself is left empty by NLLoc's OCT search for every event
+    in this dataset, so that check never fires either way -- see
+    ``openmeq/locate/finalize.py``'s "a missing value is never counted as a
+    failure" rule) -- i.e. every event was fully, tightly constrained -- yet
+    two of them (azimuthal gap 270.3 deg and 270.6 deg, against a
+    continuous 75-269 deg spread for the other 18) were rejected purely for
+    sitting a fraction of a degree past the old 270.0 deg cutoff. That is a
+    network-geometry artifact of a small, roughly ring-shaped station
+    layout (any event outside the ring inherently has less azimuthal
+    coverage), not evidence of a poorly constrained location -- the
+    location-quality criteria (``max_err_h_km``/``max_err_z_km``) already
+    gate on solution quality directly. 285.0 keeps a ~15 deg margin above
+    the largest gap observed in that full run, so it still rejects a
+    genuinely one-sided/poorly-surrounded geometry without discarding
+    otherwise fully-constrained events at this network's edge.
+    """
 
     min_p_phases: int = 4
     min_phases: int = 6
     min_s_phases: int = 1
     max_rms_s: float = 0.1
-    max_gap_deg: float = 270.0
+    max_gap_deg: float = 285.0
     max_err_h_km: float = 1.0
     max_err_z_km: float = 2.0
 

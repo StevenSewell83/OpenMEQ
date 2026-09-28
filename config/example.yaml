@@ -131,7 +131,12 @@ nlloc:
       min_phases: 6
       min_s_phases: 1
       max_rms_s: 0.1
-      max_gap_deg: 270
+      max_gap_deg: 285              # M11.2: raised from 270 -- on a small, ~ring-shaped local
+                                     # network, events near/outside the station hull naturally reach
+                                     # gaps in the high 260s-270s even when fully constrained by every
+                                     # station's P+S picks (openmeq/config.py's EventsFilterConfig
+                                     # docstring has the measured numbers); max_err_h_km/max_err_z_km
+                                     # already gate on solution quality directly.
       max_err_h_km: 1.0
       max_err_z_km: 2.0
   # --- M5.2 / OpenMEQ-mev.2: ObsPyck's expected model-link directory ---

@@ -119,7 +119,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `nlloc.filter.events.min_phases` | int | `6` | Reject an event (checked after pass B) with fewer than this many total accepted picks. |
 | `nlloc.filter.events.min_s_phases` | int | `1` | Reject an event (checked after pass B) with fewer than this many accepted S picks. |
 | `nlloc.filter.events.max_rms_s` | float | `0.1` | Reject an event whose final origin RMS residual exceeds this many seconds. |
-| `nlloc.filter.events.max_gap_deg` | float | `270.0` | Reject an event whose azimuthal gap exceeds this many degrees. |
+| `nlloc.filter.events.max_gap_deg` | float | `285.0` | Reject an event whose azimuthal gap exceeds this many degrees. |
 | `nlloc.filter.events.max_err_h_km` | float | `1.0` | Reject an event whose horizontal location error exceeds this many km. |
 | `nlloc.filter.events.max_err_z_km` | float | `2.0` | Reject an event whose vertical (depth) location error exceeds this many km. |
 | `nlloc.obspyck_pluginpath` | path | `external/obspyck_plugin` | Directory ObsPyck's `setup_external_programs` expects as its `pluginpath` (ARCHITECTURE.md §2's `openmeq.review.obspyck_config` entry); refreshed by `scripts/setup_nlloc.py`/the `locate` step. |
