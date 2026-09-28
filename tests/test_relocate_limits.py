@@ -59,6 +59,7 @@ from openmeq.relocate.hypodd_limits import (
     _substitute_inc_params,
     check_compiled_limits,
     check_vel3d_coverage,
+    compiled_vel3d_node_limits,
     ensure_compiled_limits,
     recompile_hypodd,
 )
@@ -123,6 +124,12 @@ c   maxny: maximum number of nodes in y direction
       parameter(maxny= {maxny})
 c   maxnz: maximum number of nodes in z direction
       parameter(maxnz= {maxnz})
+c   ixkms/iykms/izkms: size of the bldmap node-lookup arrays, in bld units
+c   of physical map span (M9.5 / OpenMEQ-6ld.5 -- a different quantity from
+c   maxnx/maxny/maxnz above).
+      parameter(ixkms={ixkms})
+      parameter(iykms={iykms})
+      parameter(izkms={izkms})
 """
 
 
@@ -138,6 +145,9 @@ def _write_fake_inc_tree(
     maxnx: int = 25,
     maxny: int = 25,
     maxnz: int = 20,
+    ixkms: int = 10000,
+    iykms: int = 10000,
+    izkms: int = 10000,
 ) -> Path:
     """Write a fake ``<root>/include/{hypoDD,ph2dt,vel3d}.inc`` tree with
     generous defaults (all overridable), returning `root`.
@@ -149,7 +159,9 @@ def _write_fake_inc_tree(
     )
     (include_dir / "ph2dt.inc").write_text(_FAKE_PH2DT_INC.format(mev=mev, msta=msta, mobs=mobs))
     (include_dir / "vel3d.inc").write_text(
-        _FAKE_VEL3D_INC.format(maxnx=maxnx, maxny=maxny, maxnz=maxnz)
+        _FAKE_VEL3D_INC.format(
+            maxnx=maxnx, maxny=maxny, maxnz=maxnz, ixkms=ixkms, iykms=iykms, izkms=izkms
+        )
     )
     return root
 
@@ -265,6 +277,44 @@ def test_check_detects_3d_grid_over_limit(tmp_path):
     assert result.by_name("grid_ny").exceeded is False
     assert result.by_name("grid_nz").exceeded is False
     assert result.any_exceeded is True
+
+
+def test_check_detects_3d_grid_span_over_limit(tmp_path):
+    """M9.5 / OpenMEQ-6ld.5: ``grid_span_x``/``grid_span_y``/``grid_span_z``
+    check the *physical* map span (bld units) against vel3d.inc's
+    ixkms/iykms/izkms -- a different compiled limit from grid_nx/ny/nz's
+    node count, and the one `get_vel3d.f`'s ``bldmap`` subroutine actually
+    stops fatally on if exceeded.
+    """
+    fake_root = _write_fake_inc_tree(tmp_path / "HYPODD", ixkms=100, iykms=100, izkms=100)
+    cat = Catalog(events=[_make_event(UTCDateTime(2025, 1, 1))])
+    station_table = _station_table(1)
+    # bld=0.1, span = (500 - (-500)) / 0.1 = 10000 bld units -- well over the
+    # fake tree's ixkms=100, even though the node *count* (nx=2) is tiny.
+    grid = Vel3DGrid(bld=0.1, nx=2, ny=2, nz=2, xn=[-500.0, 500.0], yn=[-1.0, 1.0], zn=[-1.0, 1.0])
+
+    result = check_compiled_limits(
+        load_config(EXAMPLE_CONFIG),
+        cat,
+        station_table,
+        vel3d_grid=grid,
+        include_dir=fake_root / "include",
+    )
+
+    assert result.by_name("grid_nx").exceeded is False  # node count is fine
+    span_x = result.by_name("grid_span_x")
+    assert span_x.current == 10001  # (500 - -500) / 0.1 + 1
+    assert span_x.limit == 100
+    assert span_x.exceeded is True
+    assert result.by_name("grid_span_y").exceeded is False
+    assert result.by_name("grid_span_z").exceeded is False
+    assert result.any_exceeded is True
+
+
+def test_compiled_vel3d_node_limits_reads_currently_compiled_values(tmp_path):
+    fake_root = _write_fake_inc_tree(tmp_path / "HYPODD", maxnx=7, maxny=8, maxnz=9)
+    max_nx, max_ny, max_nz = compiled_vel3d_node_limits(include_dir=fake_root / "include")
+    assert (max_nx, max_ny, max_nz) == (7, 8, 9)
 
 
 def test_check_no_vel3d_grid_means_no_grid_checks(tmp_path):

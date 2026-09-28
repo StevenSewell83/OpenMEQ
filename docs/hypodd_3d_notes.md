@@ -268,10 +268,12 @@ mechanism — this task did not find that to be necessary here.
 
 ## Follow-ups / contract gaps
 
-- `check_vel3d_coverage` is a library function; wiring it into
-  `scripts/setup_hypodd.py` (M9.5, out of scope for this task) should call
-  it immediately after `check_compiled_limits` whenever
-  `cfg.hypodd.velocity_model.type == "3d"`, before ph2dt/hypoDD run.
+- Done (M9.5 / OpenMEQ-6ld.5): `check_vel3d_coverage` is wired into
+  `openmeq.relocate.setup.setup_hypodd` (`scripts/setup_hypodd.py`'s CLI),
+  called for every 3D run immediately after `ensure_compiled_limits`,
+  before ph2dt/hypoDD ever run. It runs regardless of whether a catalogue
+  is available yet (an empty one only checks station registration, which
+  is still worth catching on day one).
 - `openmeq.relocate.nlloc_to_simul`'s own `_check_coordinate_frame` only
   validates the *building* of a `vel3D.dat` from an NLLoc grid; it does
   nothing for a user-supplied `vel3D.dat` (`cfg.hypodd.velocity_model.file`

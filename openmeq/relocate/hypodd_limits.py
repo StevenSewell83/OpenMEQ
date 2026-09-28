@@ -118,7 +118,17 @@ logger = get_logger("relocate.hypodd_limits")
 #: `recompile_hypodd` (which file to edit for a given `new_limits` key).
 HYPODD_INC_PARAMS = ("MAXEVE", "MAXDATA", "MAXEVE0", "MAXDATA0", "MAXLAY", "MAXSTA", "MAXCL")
 PH2DT_INC_PARAMS = ("MEV", "MSTA", "MOBS")
-VEL3D_INC_PARAMS = ("maxnx", "maxny", "maxnz")
+#: ``maxnx``/``maxny``/``maxnz`` are the compiled node-count limits;
+#: ``ixkms``/``iykms``/``izkms`` (M9.5 / OpenMEQ-6ld.5) are a *different*
+#: quantity -- the compiled size of `get_vel3d.f`'s ``bldmap`` node-lookup
+#: arrays (``vel3d.inc``'s ``/locate/`` common block), in ``bld`` units of
+#: physical map span, not node count. `openmeq.relocate.nlloc_to_simul`'s own
+#: ``_check_map_span`` only guards its own conversion output against a
+#: hardcoded stand-in (``_IXKMS_IYKMS_IZKMS = 10000``, the shipped default)
+#: -- `check_compiled_limits` checks the *actual currently compiled* value
+#: instead, for any `Vel3DGrid` (converted or user-supplied), since a
+#: previous recompile could have changed it just like `maxnx`/`maxny`/`maxnz`.
+VEL3D_INC_PARAMS = ("maxnx", "maxny", "maxnz", "ixkms", "iykms", "izkms")
 
 _INC_FILE_PARAMS = {
     "hypoDD.inc": HYPODD_INC_PARAMS,
@@ -147,6 +157,9 @@ _CHECK_NAME_TO_PARAMS = {
     "grid_nx": ("maxnx",),
     "grid_ny": ("maxny",),
     "grid_nz": ("maxnz",),
+    "grid_span_x": ("ixkms",),
+    "grid_span_y": ("iykms",),
+    "grid_span_z": ("izkms",),
 }
 
 
@@ -273,7 +286,11 @@ class LimitCheck:
     name : str
         One of ``"event_count"``, ``"station_count"``,
         ``"observation_count"``, ``"phases_per_event"``, or (only when a
-        3D grid is checked) ``"grid_nx"``/``"grid_ny"``/``"grid_nz"``.
+        3D grid is checked) ``"grid_nx"``/``"grid_ny"``/``"grid_nz"`` (node
+        count vs. ``maxnx``/``maxny``/``maxnz``) or ``"grid_span_x"``/
+        ``"grid_span_y"``/``"grid_span_z"`` (physical map span, in ``bld``
+        units, vs. ``ixkms``/``iykms``/``izkms`` -- M9.5 / OpenMEQ-6ld.5,
+        see `_bldmap_ixmax`).
     current : int
         The current dataset's value for this quantity.
     limit : int
@@ -317,6 +334,54 @@ class LimitCheckResult:
             if check.name == name:
                 return check
         raise KeyError(name)
+
+
+def _bldmap_ixmax(nodes: list[float], bld: float) -> int:
+    """The node-lookup array index `get_vel3d.f`'s ``bldmap`` subroutine
+    actually builds up to, for one axis -- ``ixmax=(xn(nx)+xl)/bld`` where
+    ``xl=bld-xn(1)`` (`bldmap`'s own source), i.e. ``(xn[-1]-xn[0])/bld +
+    1`` -- rounded to the nearest int (bld-aligned node coordinates make
+    this exact up to floating-point noise; `bldmap` itself relies on plain
+    Fortran real-to-integer truncation, not rounding, but a
+    correctly-`bld`-aligned grid never has a fractional remainder to
+    truncate).
+
+    `bldmap` fatally ``stop``s (``vel3d.inc``'s own ``ixkms``/``iykms``/
+    ``izkms``, M9.5 / OpenMEQ-6ld.5) if this exceeds the compiled limit --
+    see `check_compiled_limits`'s ``grid_span_x``/``grid_span_y``/
+    ``grid_span_z`` checks.
+    """
+    return int(round((nodes[-1] - nodes[0]) / bld)) + 1
+
+
+def compiled_vel3d_node_limits(include_dir: Path | str | None = None) -> tuple[int, int, int]:
+    """The currently compiled ``vel3d.inc`` node-count limits
+    (``maxnx``, ``maxny``, ``maxnz``), parsed fresh (never the shipped
+    defaults -- see this module's docstring).
+
+    For a caller about to build a ``vel3D.dat``
+    (`openmeq.relocate.nlloc_to_simul.nlloc_grid_to_vel3d`) who wants to
+    pass the *real* current limits rather than that function's own
+    shipped-default fallbacks (`DEFAULT_MAXNX`/`DEFAULT_MAXNY`/
+    `DEFAULT_MAXNZ`) -- its own docstring recommends exactly this
+    (``scripts/setup_hypodd.py``'s M9.5 orchestration is the first caller).
+
+    Parameters
+    ----------
+    include_dir : pathlib.Path or str or None, optional
+        As `check_compiled_limits`; defaults to
+        ``<external_dir()>/HYPODD/include``.
+
+    Returns
+    -------
+    (int, int, int)
+        ``(maxnx, maxny, maxnz)``.
+    """
+    include_dir = (
+        Path(include_dir) if include_dir is not None else external_dir() / "HYPODD" / "include"
+    )
+    vals = _parse_fortran_int_params(include_dir / "vel3d.inc", ("maxnx", "maxny", "maxnz"))
+    return vals["maxnx"], vals["maxny"], vals["maxnz"]
 
 
 def _accepted_event_obs_counts(catalog: Catalog) -> list[int]:
@@ -376,6 +441,16 @@ def check_compiled_limits(
     - ``grid_nx``/``grid_ny``/``grid_nz`` (only if `vel3d_grid` is given):
       each grid axis's node count vs. ``vel3d.inc``'s ``maxnx``/``maxny``/
       ``maxnz``.
+    - ``grid_span_x``/``grid_span_y``/``grid_span_z`` (only if `vel3d_grid`
+      is given, M9.5 / OpenMEQ-6ld.5): each axis's physical map span, in
+      ``bld`` units (`_bldmap_ixmax`, a direct port of `get_vel3d.f`'s
+      ``bldmap`` subroutine), vs. ``vel3d.inc``'s ``ixkms``/``iykms``/
+      ``izkms`` -- a *different* compiled limit from ``maxnx``/``maxny``/
+      ``maxnz`` above (node count vs. physical span), which `bldmap` stops
+      fatally on if exceeded. This replaces relying on
+      `openmeq.relocate.nlloc_to_simul`'s own hardcoded stand-in value for
+      this same limit (see `VEL3D_INC_PARAMS`'s docstring comment) with the
+      actual currently-compiled one.
 
     Parameters
     ----------
@@ -463,6 +538,25 @@ def check_compiled_limits(
             checks.append(
                 LimitCheck(
                     name=f"grid_{axis}",
+                    current=current,
+                    limit=limit,
+                    exceeded=current > limit,
+                )
+            )
+
+        # Map-span checks (M9.5 / OpenMEQ-6ld.5): a *different* compiled
+        # limit from the node counts above -- see VEL3D_INC_PARAMS's and
+        # check_compiled_limits's docstrings.
+        for axis, nodes in (
+            ("x", vel3d_grid.xn),
+            ("y", vel3d_grid.yn),
+            ("z", vel3d_grid.zn),
+        ):
+            current = _bldmap_ixmax(nodes, vel3d_grid.bld)
+            limit = vel3d_inc[f"i{axis}kms"]
+            checks.append(
+                LimitCheck(
+                    name=f"grid_span_{axis}",
                     current=current,
                     limit=limit,
                     exceeded=current > limit,
