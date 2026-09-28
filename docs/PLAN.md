@@ -172,6 +172,13 @@ magnitude:
       coefficients: {a: null, b: null, c: null}
       file: null                        # or a CSV table of -logA0 vs distance (interpolated)
     station_corrections: {}             # {NET.STA: correction}, or a CSV path
+    # --- M8.1 / OpenMEQ-625.1: Wood-Anderson simulation / amplitude window
+    # (see docs/ARCHITECTURE.md §6e for the full algorithm) ---
+    wa_sensitivity: 2080                # WA magnification constant (IASPEI/Uhrhammer & Collins 1990)
+    window_before_s: 1.0                # measurement window = [S_pick - this, S_pick + window_after_s]
+    window_after_s: 4.0
+    taper_pct: 0.05                     # cosine taper fraction before response removal
+    pre_filt: [0.5, 1.0, 45.0, 49.0]    # remove_response's pre_filt corners (Hz); tune per project
   min_stations: 2
   statistic: median                     # event ML = median of station MLs
 

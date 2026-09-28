@@ -507,6 +507,73 @@ unaware of which path produced its input.
   `run_grid2time`; its public signature is unchanged, and it still does not
   call `build_1d_grid`/`link_3d_grid` itself.
 
+## 6e. Wood-Anderson amplitude measurement (M8.1 / OpenMEQ-625.1)
+
+Built in `openmeq/magnitude/amplitude.py`. `measure_event_amplitudes(event,
+stream, inventory, cfg: MagnitudeConfig) -> list[StationAmplitude]` is the
+per-event, per-station amplitude measurement feeding M8.2's -logA0 relation
+(§6b) and M8.3's event-level aggregation/QuakeML writing. Pure function: no
+file I/O beyond the already-parsed `Event`/`Stream`/`Inventory` passed in.
+
+- **`magnitude.ml` config keys** (§3's original PLAN.md sketch predates
+  these; added ahead of this task by M0.8 in `openmeq.config.MlConfig` and
+  `config/example.yaml`, used here for the first time):
+  - `wa_sensitivity` (float, default `2080`): the Wood-Anderson magnification
+    constant multiplied in during simulation (`paz_simulate["sensitivity"]`).
+    The historical/obspy-default value is `2800`; `2080` is the
+    IASPEI-recommended value (Uhrhammer & Collins, 1990), which shifts every
+    recovered ML by `log10(2800/2080) = +0.13` relative to the historical
+    constant -- this project uses the modern value throughout.
+  - `window_before_s` / `window_after_s` (float, defaults `1.0`/`4.0`): the
+    measurement window is `[S_pick - window_before_s, S_pick +
+    window_after_s]`; if no S pick exists for a station, the fallback coda
+    window `[P_pick + 1.0, P_pick + 8.0]` is used instead (logged).
+  - `taper_pct` (float, default `0.05`): cosine taper fraction applied
+    (after demean + linear detrend) before response removal -- same
+    convention as `phasenet.taper_pct`.
+  - `pre_filt` (4-float list, default `[0.5, 1.0, 45.0, 49.0]`): the
+    frequency-domain cosine-taper corners passed to
+    `Trace.remove_response`'s `pre_filt`, a conservative broadband default;
+    override per-project once real station response passbands are known.
+- **Algorithm** (module docstring has the full detail): demean + detrend +
+  taper, `remove_response(output="DISP", water_level=60, pre_filt=...)` to
+  recover true ground displacement in metres, then `Trace.simulate
+  (paz_simulate=WOOD_ANDERSON_PAZ | {"sensitivity": wa_sensitivity})` to
+  produce the Wood-Anderson-simulated trace -- both applied to the whole
+  available trace (not just the measurement window, since these are
+  FFT-based filters). `WOOD_ANDERSON_PAZ` (two zeros at the origin, poles
+  `-6.2832 +/- 4.7124j`, `gain=1.0`) is the literal PAZ from the M8 epic
+  design note, deliberately not `obspy.signal.invsim.WOODANDERSON` (which
+  has only one zero at the origin, a divergent, non-standard convention).
+  The window's `max(abs(samples))` after simulation is the zero-to-peak
+  amplitude, **kept in metres** -- the mm conversion for the log10(A)
+  formula is `relations.station_ml`'s job (§6b), not this module's, so the
+  SI-unit boundary is enforced by the field name and independently
+  testable.
+- **Component selection**: every horizontal channel present (last character
+  `N`/`E`/`1`/`2` -- unoriented borehole `1`/`2` count as horizontal, §6) is
+  measured; the larger zero-to-peak amplitude in the window is used. Falls
+  back to `Z` (logged) if no horizontal channel is usable.
+- **Distance**: hypocentral, 3-D -- epicentral distance
+  (`obspy.geodetics.gps2dist_azimuth`) combined via Pythagoras with the
+  vertical separation between the origin's depth and the chosen channel's
+  effective elevation (`elevation_m - depth_m`, §6; the channel's own
+  `depth` field in the `Inventory`).
+- **Skips** (logged, never raised): no P/S pick, no response for the
+  channel in `inventory` (e.g. a station known only from the stations CSV,
+  §2's `openmeq.stations.load_inventory` merge precedence -- no channels,
+  therefore no response), no waveform data covering the window (or a gap),
+  a flat-lined window (`np.ptp(window) == 0`), or no usable horizontal/Z
+  channel at all.
+- **Response cache**: a module-level `dict[seed_id, Response | None]`,
+  populated lazily from the `Inventory` already passed in (parsed once by
+  the caller, not per call). Per `openmeq.parallel`'s worker model (§2:
+  `pmap` spawns persistent worker processes), this cache stays warm across
+  every event a given worker processes in one run -- matching M8.2's
+  calibration-table cache pattern (§6b) -- and does not itself re-parse or
+  duplicate the `Inventory`; it only saves ObsPy's own per-call linear
+  search for a matching seed id/epoch.
+
 ## 7. External tools
 
 | Tool | Location | Built by |
