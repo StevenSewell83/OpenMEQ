@@ -274,5 +274,7 @@ hypodd:
     maxdist_km: -999                     # max pair-station distance; -999 = not active
     maxgap_deg: -999                     # max azimuthal gap; -999 = not active
   # --- M10.4 / OpenMEQ-16d.4 ---
-  parallel_clusters: false              # opt-in: relocate each ph2dt cluster as an independent
-                                         # hypoDD subprocess in parallel, then merge hypoDD.reloc
+  parallel_clusters: false              # opt-in/experimental: relocate each of hypoDD's own event
+                                         # clusters (OBSCC/OBSCT above -- not a ph2dt feature) as an
+                                         # independent hypoDD subprocess in parallel, then merge
+                                         # hypoDD.reloc (ARCHITECTURE.md §6h)

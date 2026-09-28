@@ -147,7 +147,18 @@ def run(
     """Run a subprocess, logging its output, raising on failure.
 
     Output is captured (not streamed live) and then logged in one shot per
-    stream, which is simpler and sufficient for the batch tools this wraps:
+    stream, which is simpler and sufficient for the batch tools this wraps.
+    Decoded with ``errors="replace"`` (added M10.4 / OpenMEQ-16d.4): the
+    installed ``hypoDD`` binary was observed, empirically, to occasionally
+    emit a single non-UTF-8 byte on stdout (immediately after its startup
+    timestamp line -- most likely an uninitialised-memory artefact in its
+    Fortran ``write`` formatting, not a real encoding), which crashed a
+    plain ``text=True`` decode nondeterministically (same input, same
+    binary, different runs). Replacing an occasional stray byte with the
+    Unicode replacement character only affects a cosmetic log line and
+    never changes `run`'s success/failure semantics (exit code, or the
+    exception raised) -- a purely defensive addition, backward compatible
+    with every existing caller:
     stdout is logged at ``INFO`` level, and stderr at ``WARNING`` level on
     success or ``ERROR`` level on a non-zero exit. On a non-zero exit (or a
     timeout), an `ExternalToolError` is raised with the captured output
@@ -206,6 +217,7 @@ def run(
             cwd=str(cwd) if cwd is not None else None,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             env=full_env,
         )

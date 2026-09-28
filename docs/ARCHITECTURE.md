@@ -260,13 +260,17 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
   - PhaseNet probability goes in `extra` (below), key `probability`.
   - **Channel for PhaseNet picks:** PhaseNet picks per station (instrument), not per channel. P picks go on the station's Z channel; S picks go on the first horizontal present, in the order N, E, 1, 2. The original channel code is used.
 - **Origins:**
-  - `method_id` is `smi:openmeq/nlloc/passA` or `.../passB`, or `smi:openmeq/hypodd`.
+  - `method_id` is `smi:openmeq/nlloc/passA` or `.../passB`, or `smi:openmeq/hypodd` (§6h has the
+    full hypoDD-origin contract: field mapping, the `EX`/`EY`/`EZ` -> `origin_uncertainty`/
+    `depth_errors` convention, and the per-origin/per-event `extra` keys M10.5's diagnostics read).
   - `Origin.arrivals` carry `time_residual`, `distance` (**km** -- M6.1: `obspy.read_events(...,
     format="NLLOC_HYP")` itself parses this as degrees, QuakeML's standard unit for `Arrival.distance`,
     so `openmeq.locate.nlloc_runner.locate_event` converts it to km via `obspy.geodetics.
     degrees2kilometers` before returning the `Origin`, per §1's km convention for the location step),
     `azimuth` and `time_weight`.
-  - `event.preferred_origin_id` points to the latest origin.
+  - `event.preferred_origin_id` points to the latest origin -- for a hypoDD-relocated event (§6h)
+    this is the new `smi:openmeq/hypodd` origin; for an event hypoDD didn't relocate, it stays
+    whatever it was before (§6h's "not linked" case).
 - **Rejection (never delete, always flag):**
   - Picks: `reject_pick` sets `pick.evaluation_status="rejected"`, sets `arrival.time_weight=0` on the current origin, and adds a `Comment` of the form `"rejected:<step>:<reason>"`.
   - Events: `reject_event` sets the preferred origin's `evaluation_status="rejected"` and adds the same kind of comment. `accepted(catalog)` returns only events that are not rejected.
@@ -799,6 +803,109 @@ depend on.
   `openmeq.relocate.xcorr`'s module docstring for the empirical comparison
   against a 5-40 Hz alternative on this project's own synthetic P/S pulse
   spectra.
+
+## 6h. hypoDD runner and `relocate/catalog_dd.xml` (M10.4 / OpenMEQ-16d.4)
+
+Built in `openmeq/relocate/hypodd_runner.py`. Runs the real `hypoDD` binary
+in `relocate/work/` (this project's own convention, §6c: every file
+`hypoDD.inp` references is a bare, cwd-relative filename) and reads
+`hypoDD.reloc` back into `relocate/catalog_dd.xml`. Fixes the defects
+`docs/hypoddpy_audit.md` §4/§6 assign to this task -- see that module's own
+docstring for the full analysis; summarised here since it is a binding
+contract M10.5 depends on.
+
+- **`read_reloc(path, event_id_map) -> dict[str, RelocatedOrigin]`** parses
+  the confirmed 24-field `hypoDD.reloc` layout (`CUSPID LAT LON DEPTH_KM
+  X_M Y_M Z_M EX_M EY_M EZ_M YR MO DY HR MI SEC MAG NCCP NCCS NCTP NCTS RCC
+  RCT CID`, `hypoDD.f:1283-1298`), looking up each line's `CUSPID` via the
+  *persisted* `event_id_map.csv` (never ObsPy's resource-id registry, the
+  hypoddpy template's fragile pattern this task must not port) and raising
+  `openmeq.config.ConfigError` for any `CUSPID` absent from that map (a
+  stale map, never a silent skip).
+- **Origin uncertainty mapping** (a genuine design decision, documented
+  here since it establishes this project's convention for hypoDD-sourced
+  origin uncertainties): `EX`/`EY`/`EZ` are 1-sigma formal errors (metres)
+  in the cluster's own local Cartesian frame, not directly north/east/
+  depth-aligned in general. Rather than a covariance-respecting ellipse
+  (not warranted from the formal errors alone), this project maps
+  `Origin.origin_uncertainty.horizontal_uncertainty = sqrt(EX**2 + EY**2)`
+  (metres) and `Origin.depth_errors.uncertainty = abs(EZ)` (metres) -- the
+  simplest defensible combination, not a true confidence-ellipse semi-axis.
+- **Merge into `relocate/catalog_dd.xml`** (`merge_relocations`), per §5:
+  for every event in `magnitude/catalog_mag.xml` that hypoDD relocated, a
+  new `Origin` (`method_id` `smi:openmeq/hypodd`) is appended (every prior
+  origin is kept, nothing edited in place) and made
+  `event.preferred_origin_id`; the event's existing `Magnitude`/
+  `StationMagnitude`/`Amplitude` objects are left completely untouched (the
+  issue's own "magnitudes carried over" requirement -- hypoDD's own echoed-
+  back `MAG` field is kept only as the origin's `hypodd_mag` extra, for
+  M10.5's QC cross-checking, never turned into a new `Magnitude`). An event
+  ph2dt's own clustering/linking excluded (too few links, or never sent to
+  hypoDD at all because it was already rejected) keeps its prior preferred
+  origin untouched.
+  - **`openmeq.catalog.set_extra` keys** (this task's own new convention):
+    `"hypodd_status"` on every event, `"relocated"` or `"not_linked"` (the
+    downstream-distinguishable flag the issue calls for); on every new
+    hypoDD origin, `"hypodd_mag"`, `"hypodd_nccp"`/`"hypodd_nccs"`/
+    `"hypodd_nctp"`/`"hypodd_ncts"`/`"hypodd_rcc"`/`"hypodd_rct"` (the
+    per-event QC/diagnostics counts `docs/hypoddpy_audit.md` §4 says M10.4
+    must carry through, not discard) and `"hypodd_cluster_id"`/
+    `"hypodd_x_m"`/`"hypodd_y_m"`/`"hypodd_z_m"` (the cluster-local
+    Cartesian coordinates, informative for M10.5's before/after plots).
+- **`invoke_hypodd(hypodd_bin, work_dir, ...)`** runs the binary once,
+  verifies both the exit code *and* that `hypoDD.reloc` actually exists
+  afterward (a data problem -- a singular system, disconnected clusters --
+  can leave `hypoDD.reloc` empty or entirely absent even at exit code 0),
+  and raises `HypoddRunFailed` with `hypoDD.log`'s own tail attached on
+  either failure. `run_hypodd` itself only turns a **fully empty**
+  `hypoDD.reloc` (despite >=2 accepted events and >=1 ph2dt-linked pair)
+  into a `WARNING`, not a hard failure -- a strict enough
+  `OBSCC`/`OBSCT` clustering configuration can legitimately disconnect
+  every event, confirmed empirically during this task, so treating every
+  such outcome as fatal would be a false positive.
+- **M9.3's note, re-applied here**: `run_hypodd` re-runs
+  `openmeq.relocate.hypodd_limits.ensure_compiled_limits` with the real
+  `dt.cc` observation count (counted directly, `dt.cc` now actually
+  exists) before every relocation run, not just the one time M9.5's
+  `setup_hypodd` ran it.
+- **6ld.6's note, re-applied here**: for a 3D (`IMOD=9`) run, `run_hypodd`
+  calls `openmeq.relocate.hypodd_limits.check_vel3d_coverage` before every
+  invocation of the real binary, including each cluster of the optional
+  parallel path below.
+- **`cfg.hypodd.parallel_clusters`** (default `False`, opt-in/experimental
+  per the issue): hypoDD's own event clustering (`OBSCC`/`OBSCT`,
+  `src/hypoDD/cluster1.f`, called from `hypoDD.f` -- confirmed **not** a
+  `ph2dt` feature at all, correcting this task's own issue text) is what
+  actually forms hypoDD's clusters. Rather than reimplementing that
+  union-find algorithm in Python (a real risk of disagreeing with hypoDD's
+  own internal cluster *numbering*), this project cheaply probes the real
+  binary for its own cluster count (`hypoDD.inp`'s `CID` line rewritten to
+  a deliberately out-of-range sentinel -- hypoDD's clustering always runs
+  before the expensive per-cluster relocation solve, so this reaches its
+  `"invalid cluster number"` abort, confirmed still exit code 0, cheaply)
+  and then runs one `hypoDD` subprocess per real cluster (`CID=1..nclust`,
+  via `openmeq.parallel.pmap`), each against the *same*, full, unfiltered
+  input files -- correctness follows directly from hypoDD's own
+  determinism, not from any Python-side bookkeeping. Proven consistent
+  (the issue's own bar for shipping this path):
+  `tests/test_relocate_hypodd_runner.py::test_parallel_clusters_matches_single_run`
+  reproduces this against the real binary and
+  `external/HYPODD/examples/example1`'s own bundled inputs (`OBSCT` raised
+  from 8 to 60, splitting its 16 events into 3 real clusters of sizes
+  6/4/2 plus 4 isolated events -- confirmed empirically): the merged
+  per-cluster relocations are bit-identical to a single `CID=0` run over
+  the same inputs. This path requires a `hypoDD.inp` written by this
+  project's own writer (`openmeq.relocate.hypodd_files`'s fixed `CID`-line
+  marker/format) -- a hand-edited or externally-supplied `hypoDD.inp`
+  raises `ConfigError` rather than silently doing the wrong thing.
+- **`StepManifest` skip-unchanged** (`relocate/manifest.json`, key
+  `"hypodd_run"`, sharing the file with M9.5's `"hypodd_setup"` and
+  M10.2's `"ph2dt"` keys): fingerprinted on `dt.ct`+`dt.cc`+`hypoDD.inp`
+  only (work item 8) -- gates re-invoking hypoDD itself (the expensive
+  part), not the merge into `catalog_dd.xml`, which is always redone (so a
+  `magnitude/catalog_mag.xml` change alone, e.g. a re-run magnitude step,
+  still refreshes `catalog_dd.xml`'s carried-over magnitudes without
+  needlessly re-invoking hypoDD).
 
 ## 7. External tools
 
