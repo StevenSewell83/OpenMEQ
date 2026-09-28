@@ -33,10 +33,12 @@ from __future__ import annotations
 # import ``matplotlib.pyplot``.
 from ._bar import plot_bar
 from ._boxplot import plot_boxplot
+from ._gr import plot_gutenberg_richter
 from ._heatmap import plot_heatmap
 from ._hist import plot_hist
 from ._maps import plot_map_sections
 from ._save import save_fig
+from ._scatter import plot_scatter
 from ._style import setup_style
 from ._timeseries import plot_timeseries
 
@@ -49,4 +51,6 @@ __all__ = [
     "plot_timeseries",
     "plot_boxplot",
     "plot_bar",
+    "plot_scatter",
+    "plot_gutenberg_richter",
 ]

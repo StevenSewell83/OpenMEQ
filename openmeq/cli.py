@@ -227,9 +227,17 @@ def review(
     help="Override the input catalogue (default: review/catalog_final.xml if review "
     "was run, else locate/catalog_auto.xml).",
 )
-def magnitude(config_path: str, catalog: str | None) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Recompute magnitudes even if the input catalogue and cfg.magnitude are "
+    "unchanged since the last run.",
+)
+def magnitude(config_path: str, catalog: str | None, force: bool) -> None:
     """Local magnitude (ML) calculation."""
-    _dispatch("magnitude", config_path, catalog=catalog)
+    _dispatch("magnitude", config_path, catalog=catalog, force=force)
 
 
 @main.command()

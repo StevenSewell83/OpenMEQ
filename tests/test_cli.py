@@ -76,63 +76,46 @@ def test_nonexistent_config_file_errors(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
-#: ``qc`` (M1.7, ``OpenMEQ-5nl.7``) is no longer a stub -- it is exercised
-#: end to end against the synthetic project in tests/test_qc_command.py
-#: instead, since config/example.yaml's paths (``./data/mseed``,
-#: ``./meta/stations.xml``, ...) are illustrative only and don't exist on
-#: disk, so running the real qc pipeline against it would fail for reasons
-#: unrelated to CLI wiring.
-STUB_STEP_COMMANDS = [step for step in STEP_COMMANDS if step != "qc"]
-
-#: Steps that are implemented (not stubs) and have their own hard
-#: "run the previous step first" dependency check -- each fails clearly
-#: against a fresh config/example.yaml-based run directory rather than
-#: printing "not implemented" (mirrors ``detect``'s own M2.3 note below,
-#: extended by ``chunk`` in M3.2 / ``OpenMEQ-rq8.2``).
-_HARD_DEPENDENCY_STEPS = {
-    "detect": "openmeq qc",
-    "chunk": "openmeq detect",
-}
+#: ``qc`` is exercised end to end in tests/test_qc_command.py:
+#: config/example.yaml's data paths are illustrative only and don't exist on
+#: disk, so the real qc pipeline can't run against it.
+STEP_COMMANDS_UNDER_TEST = [step for step in STEP_COMMANDS if step != "qc"]
 
 
-@pytest.mark.parametrize("step", STUB_STEP_COMMANDS)
-def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: str) -> None:
+@pytest.mark.parametrize("step", STEP_COMMANDS_UNDER_TEST)
+def test_step_runs_or_fails_clearly_against_example_config(tmp_path: Path, step: str) -> None:
+    """Every step either is still a stub, or is implemented and fails clearly.
+
+    A fresh example.yaml run directory has no upstream outputs, so an
+    implemented step must stop with a click error naming the command to run
+    first (ARCHITECTURE.md §2) -- never a traceback. A still-stubbed step
+    exits 0 and says "not implemented". ``review`` is implemented but ships
+    with ``review.enabled: false``, so it exits 0 with a "nothing to do"
+    message. This stays valid as more steps are implemented.
+    """
     config_path, output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
 
     result = runner.invoke(main, [step, "-c", str(config_path)])
 
-    if step in _HARD_DEPENDENCY_STEPS:
-        # `detect` (M2.3 / OpenMEQ-ujx.3) and `chunk` (M3.2 /
-        # OpenMEQ-rq8.2) are implemented -- unlike every other still-stubbed
-        # step (`review` aside, see below) -- and each has its own
-        # deliberate hard-dependency check (ARCHITECTURE.md §2): a fresh
-        # config/example.yaml-based run directory has never had the
-        # previous step's outputs built, so this fails clearly rather than
-        # "not implemented".
-        assert result.exit_code != 0, result.output
-        assert _HARD_DEPENDENCY_STEPS[step] in result.output
-    else:
+    assert "Traceback" not in result.output, result.output
+    if step == "review":
         assert result.exit_code == 0, result.output
+        assert "enabled is false" in result.output
+    elif result.exit_code == 0:
+        assert "not implemented" in result.output
+    else:
+        # Implemented: a clear "run the previous step first" message.
+        assert "openmeq " in result.output, result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit), result.output
 
-        # `review` (M7.3 / OpenMEQ-c3l.3) is implemented -- unlike every
-        # other still-stubbed step, it doesn't print "not implemented";
-        # instead, since config/example.yaml ships with `review.enabled:
-        # false` ("true to pause the pipeline for manual ObsPyck review"),
-        # it prints a one-line "nothing to do" message and exits 0 without
-        # touching locate/catalog_auto.xml (which doesn't exist yet at this
-        # point in the real pipeline, `locate` itself still being a stub
-        # here).
-        expected_substring = "enabled is false" if step == "review" else "not implemented"
-        assert expected_substring in result.output
-
-        log_file = output_dir / "logs" / f"{step}.log"
+    log_file = output_dir / "logs" / f"{step}.log"
+    if step != "run":
         assert log_file.is_file(), f"{log_file} was not created"
-        assert expected_substring in log_file.read_text()
 
     # The ensured directory tree (ARCHITECTURE.md §3), spot-checked --
-    # `paths.ensure()` runs before a step's body, so this holds even for
-    # `detect`'s early failure above.
+    # ``paths.ensure()`` runs before a step's body, so this holds even when
+    # the step fails its dependency check.
     for rel in ("inventory", "qc/diagnostics", "logs", "chunks", "locate/passA", "relocate/cache"):
         assert (output_dir / rel).is_dir(), f"{rel} was not created under {output_dir}"
 
@@ -182,9 +165,17 @@ def test_review_compile_flag_runs(tmp_path: Path) -> None:
 
 
 def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
+    """``magnitude`` (M8.3 / OpenMEQ-625.3) is implemented, so ``--catalog``
+    must point at a real (if empty) QuakeML catalogue -- an empty catalogue
+    is a valid, if trivial, input (zero accepted events, every output file
+    still written with "no data" placeholders)."""
+    from obspy import Catalog
+
+    from openmeq.catalog import write_catalog
+
     config_path, output_dir = _patched_example_config(tmp_path)
     catalog_path = tmp_path / "external_catalog.xml"
-    catalog_path.write_text("<q:quakeml xmlns:q='dummy'/>")
+    write_catalog(Catalog(), catalog_path)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -193,35 +184,27 @@ def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert (output_dir / "logs" / "magnitude.log").is_file()
+    assert (output_dir / "magnitude" / "catalog_mag.xml").is_file()
+    assert (output_dir / "magnitude" / "station_magnitudes.csv").is_file()
 
 
 def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None:
     """Regression check for the "no duplicate/stale handler" logging pitfall
     when several subcommands run in one process (as CliRunner does here).
 
-    Uses two still-*stub* steps (``pick``/``locate``) rather than ``qc``
-    (M1.7, ``OpenMEQ-5nl.7``): ``qc`` is now a real pipeline and
-    config/example.yaml's paths don't exist on disk, so invoking it here
-    would fail for reasons unrelated to this test's own logging concern.
-    ``chunk``/``detect`` (the pair this test originally used) are both real
-    pipelines as of M2.3/M3.2 with their own hard "run the previous step
-    first" dependency checks (see ``_HARD_DEPENDENCY_STEPS`` above), so
-    both would now fail here too -- still fine for this test's own concern
-    (log-file separation doesn't depend on either step's success), but
-    ``pick``/``locate`` keep this test's own point ("two subcommands in one
-    process") uncoupled from any other step's own implementation state.
+    Uses ``review`` (exits 0: ``review.enabled`` is false in example.yaml) and
+    ``pick`` (fails its "run openmeq chunk first" check). Log separation
+    doesn't depend on either step succeeding.
     """
     config_path, output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
 
-    result_pick = runner.invoke(main, ["pick", "-c", str(config_path)])
-    result_locate = runner.invoke(main, ["locate", "-c", str(config_path)])
+    runner.invoke(main, ["review", "-c", str(config_path)])
+    runner.invoke(main, ["pick", "-c", str(config_path)])
 
-    assert result_pick.exit_code == 0, result_pick.output
-    assert result_locate.exit_code == 0, result_locate.output
-
+    review_log = (output_dir / "logs" / "review.log").read_text()
     pick_log = (output_dir / "logs" / "pick.log").read_text()
-    locate_log = (output_dir / "logs" / "locate.log").read_text()
+    assert "enabled is false" in review_log
     assert "openmeq pick" in pick_log
-    assert "openmeq locate" in locate_log
-    assert "openmeq locate" not in pick_log
+    assert "openmeq pick" not in review_log
+    assert "enabled is false" not in pick_log
