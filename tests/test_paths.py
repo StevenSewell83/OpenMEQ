@@ -75,8 +75,8 @@ _EXPECTED_PROPERTIES = {
     "station_magnitudes_csv": "magnitude/station_magnitudes.csv",
     "relocate_work_dir": "relocate/work",
     "relocate_cache_dir": "relocate/cache",
-    "dt_ct": "relocate/dt.ct",
-    "dt_cc": "relocate/dt.cc",
+    "dt_ct": "relocate/work/dt.ct",
+    "dt_cc": "relocate/work/dt.cc",
     "catalog_dd_xml": "relocate/catalog_dd.xml",
 }
 

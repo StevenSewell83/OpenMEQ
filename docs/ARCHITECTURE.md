@@ -73,11 +73,11 @@ review/catalog_final.xml
 magnitude/catalog_mag.xml
 magnitude/station_magnitudes.csv
 relocate/work/                  # hypoDD run folder(s): station.dat, phase.dat, event.dat,
-                                 # ph2dt.inp, hypoDD.inp, event.sel/station.sel (ph2dt output), ...
+                                 # ph2dt.inp, hypoDD.inp, event.sel/station.sel (ph2dt output),
+                                 # dt.ct (ph2dt output, M10.2), dt.cc (M10.3), ...
 relocate/work/event_id_map.csv         # event_id,cuspid -- persisted, append-only (§6c)
 relocate/work/station_label_map.csv    # net_sta,label -- persisted, append-only (§6c)
 relocate/cache/<event_id>.npz   # pre-filtered waveforms for xcorr
-relocate/dt.ct, relocate/dt.cc
 relocate/catalog_dd.xml
 <step>/diagnostics/             # every step
 <step>/manifest.json            # every step
@@ -109,6 +109,58 @@ logs/<step>.log
   alongside the existing `max_flat_fraction` criterion: a real fault (e.g.
   a dead sensor for an hour) should flag on its own duration even when that
   hour is a small fraction of a long day.
+
+**`relocate/work/` layout, resolved (M10.2 / OpenMEQ-16d.2).** An earlier
+sketch of this layout showed `dt.ct`/`dt.cc` as top-level `relocate/dt.ct`,
+`relocate/dt.cc`. That was ambiguous: `hypoDD.inp`'s `dt.cc`/`dt.ct`
+input-file-selection lines (§6c) are bare filenames, read relative to
+hypoDD's own `cwd`, and hypoDD is always run with `relocate/work/` as that
+`cwd` (alongside `hypoDD.inp`, `event.sel`, `station.sel`). So `dt.ct`
+(written by `ph2dt`, M10.2) and `dt.cc` (written by cross-correlation,
+M10.3) are colocated in `relocate/work/` -- there is no separate top-level
+copy. `openmeq.paths.RunPaths.dt_ct`/`.dt_cc` resolve to
+`relocate/work/dt.ct`/`relocate/work/dt.cc` accordingly.
+
+**The `dt.ct` file and the event-pair list (M10.2).**
+`openmeq.relocate.ph2dt_step.run_ph2dt(cfg, paths)` runs the real `ph2dt`
+binary in `relocate/work/` (inputs: `station.dat`, `phase.dat`, `ph2dt.inp`,
+written by `openmeq.relocate.setup.setup_hypodd`/`openmeq.relocate.hypodd_files`
+from `magnitude/catalog_mag.xml`'s accepted events/non-rejected picks only)
+and parses its `relocate/work/dt.ct` output into the in-memory **event-pair
+list** M10.3's cross-correlation consumes. `dt.ct` itself (`ph2dt.f`'s own
+format, confirmed against `examples/example1/dt.ct`) is:
+
+```
+# CUSPID1 CUSPID2
+STA  TT1  TT2  WGHT  PHA
+STA  TT1  TT2  WGHT  PHA
+...
+# CUSPID1 CUSPID2
+...
+```
+
+- A `#`-prefixed header line starts each linked event pair: two whitespace-
+  separated integer fields, `CUSPID1 CUSPID2` (the two events' hypoDD
+  `cuspid`s, `build_event_id_map`'s persisted `event_id_map.csv` mapping,
+  §6c) -- no `OTC` third field (that's `dt.cc`'s header, `# ID1 ID2 OTC`,
+  `docs/hypoddpy_audit.md` §2.1; `dt.ct`'s header is ground-truth-confirmed
+  as exactly 2 fields, `getdata.f:485`).
+- Each following non-`#` line, until the next `#` line or end of file, is
+  one linked observation: station label (`STA`, `station_label_map.csv`'s
+  mapped `character*7` label), `TT1`/`TT2` (each event's travel time to
+  `STA`, seconds), `WGHT` (ph2dt's own averaged pick-quality weight, 0-1),
+  `PHA` (`P` or `S`).
+- `run_ph2dt`'s return value, `list[tuple[int, int]]`, is the ordered list
+  of `(cuspid1, cuspid2)` pairs from every `#` header line, in the order
+  `ph2dt` wrote them (ph2dt has already applied `ph2dt.inp`'s
+  `MAXSEP`/`MAXNGH`/`MINLNK`/etc. filtering by the time `dt.ct` exists, so
+  this is the exact, already-filtered set of pairs to cross-correlate --
+  not the full O(n_events²) combinatorial space, `docs/hypoddpy_audit.md`
+  §3/§6 defect #6's "port-rewritten" guidance). M10.3 resolves a `cuspid`
+  back to an `event_id` via `openmeq.relocate.hypodd_files.invert_event_id_map`
+  over the same persisted `event_id_map.csv`, and re-reads `dt.ct` itself
+  for each pair's per-station/phase data -- the returned list is only the
+  pair identities, not a duplicate copy of `dt.ct`'s per-line content.
 
 ## 4. File formats
 
