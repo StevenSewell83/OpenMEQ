@@ -24,6 +24,11 @@ dependencies = [
     "tensorflow==2.11.0",
     "PyQt5",
     "obspyck",
+    # obspyck.util.gk2lonlat imports pyproj lazily and crashes with
+    # ModuleNotFoundError without it; obspyck itself does not declare it as
+    # a dependency. Confirmed missing during the OpenMEQ-c3l.1 spike -- see
+    # docs/obspyck_notes.md.
+    "pyproj",
 ]
 
 [project.scripts]
