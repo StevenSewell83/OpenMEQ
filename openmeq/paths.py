@@ -250,11 +250,21 @@ class RunPaths:
 
     @property
     def dt_ct(self) -> Path:
-        return self.root / "relocate" / "dt.ct"
+        """``relocate/work/dt.ct`` (ph2dt's output, M10.2 / OpenMEQ-16d.2).
+
+        Lives in :attr:`relocate_work_dir`, not a separate top-level
+        ``relocate/dt.ct`` -- ``hypoDD.inp``'s ``dt.ct``/``dt.cc`` lines are
+        bare filenames read relative to hypoDD's own ``cwd`` (§6c), so
+        ``dt.ct``/``dt.cc`` are colocated with ``event.sel``/``station.sel``/
+        ``hypoDD.inp`` in one working directory rather than duplicated
+        (ARCHITECTURE.md §3).
+        """
+        return self.relocate_work_dir / "dt.ct"
 
     @property
     def dt_cc(self) -> Path:
-        return self.root / "relocate" / "dt.cc"
+        """``relocate/work/dt.cc`` (M10.3's cross-correlation output). See :attr:`dt_ct`."""
+        return self.relocate_work_dir / "dt.cc"
 
     @property
     def catalog_dd_xml(self) -> Path:
