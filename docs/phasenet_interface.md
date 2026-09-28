@@ -214,6 +214,23 @@ Written to `<result_dir>/<result_fname>.csv` (`result_fname` defaults to
 by `predict.py` if it doesn't already exist (confirmed: no need to
 pre-`mkdir` it, though doing so is harmless).
 
+**Gotcha confirmed while building M4.3's runner:** `predict.py`'s own
+`main()` only writes `picks.csv` at all `if len(picks) > 0` (verified by
+reading `predict.py` directly) — a run that finds **zero** picks overall
+(across every file in `data_list.csv`) exits 0 and prints
+`"Done with 0 P-picks and 0 S-picks"`, but never creates `picks.csv`, not
+even an empty one with just a header row. A caller must treat "exit 0 but
+no `picks.csv`" as a real (if rare) outcome to check for, not assume a
+successful exit implies the file exists — `openmeq.pick.run_phasenet.run_phasenet`
+raises `PhaseNetRunError` in this case (per M4.3's own spec: "on non-zero
+exit or a missing picks.csv, raise PhaseNetRunError"). Also confirmed: a
+per-file read error (e.g. an unresolvable `fname` in `data_list.csv`) does
+**not** crash the whole run — `read_mseed`'s caller catches it, logs
+`"Error reading ..."`, and that file simply contributes zero picks; only a
+`data_list.csv` that's malformed enough to break `DataReader`'s own
+`__init__` (e.g. missing the `fname` column entirely — confirmed to raise
+`KeyError: 'fname'`) actually crashes the subprocess (non-zero exit).
+
 Confirmed columns (no `--amplitude`):
 
 ```

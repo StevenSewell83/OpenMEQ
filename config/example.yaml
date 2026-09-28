@@ -84,7 +84,9 @@ phasenet:
   highpass_hz: 1.0                      # applied before decimation; 0 disables
   min_p_prob: 0.3                       # discard P picks below this probability
   min_s_prob: 0.3                       # discard S picks below this probability
-  batch_size: 20                        # events per PhaseNet predict() batch
+  batch_size: 20                        # currently unused: M4.3's runner always passes --batch_size=1
+                                         # (predict.py's batching needs equal station counts across
+                                         # events too, not just equal length -- docs/phasenet_interface.md §7)
   # --- M4.2 / OpenMEQ-1m7.2 ---
   max_gap_fill_s: 2.0                   # gaps longer than this are zero-filled rather than interpolated
   # --- M4.4 / OpenMEQ-1m7.4 ---

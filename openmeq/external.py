@@ -142,6 +142,7 @@ def run(
     cwd: Path | None = None,
     log: logging.Logger | None = None,
     timeout: float | None = None,
+    env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess, logging its output, raising on failure.
 
@@ -169,6 +170,19 @@ def run(
         Timeout in seconds. A `subprocess.TimeoutExpired` is caught and
         re-raised as an `ExternalToolError` (same exception family as a
         non-zero exit), rather than left as a separate exception type.
+    env : dict or None, optional
+        Extra/overriding environment variables for the subprocess, merged
+        over a copy of the parent process's ``os.environ`` (so a caller only
+        needs to name the variable(s) it wants to change, e.g.
+        ``env={"CUDA_VISIBLE_DEVICES": ""}``, without losing `PATH` or
+        anything else the subprocess needs). ``None`` (the default) leaves
+        the subprocess's environment exactly as `subprocess.run` would with
+        no `env` argument at all (inherits the parent's `os.environ`
+        unchanged) — this is a one-off override for a single call, not a
+        replacement for mutating `os.environ` globally. Added in M4.3 /
+        ``OpenMEQ-1m7.3``; see ``docs/phasenet_interface.md`` §1 for the gap
+        this closes (forcing `CUDA_VISIBLE_DEVICES` for a single PhaseNet
+        subprocess call without touching the parent process's environment).
 
     Returns
     -------
@@ -184,6 +198,8 @@ def run(
     cmd_str = " ".join(str(c) for c in cmd)
     logger.info("running: %s", cmd_str)
 
+    full_env = {**os.environ, **env} if env is not None else None
+
     try:
         proc = subprocess.run(
             cmd,
@@ -191,6 +207,7 @@ def run(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=full_env,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""
