@@ -33,7 +33,7 @@ This document is the **contract between modules**. Every task in the build (see 
 | `openmeq.index` | `DataIndex.load(path)`; `.files(seed_id, t1, t2) -> list[Path]`; `.seed_ids(pattern="*")`; `.read(seed_ids, t1, t2, pad=0) -> Stream`, which reads only the needed files with `starttime`/`endtime` slicing and merges them. |
 | `openmeq.stations` | `load_inventory(cfg.stations) -> obspy.Inventory` (StationXML file/folder + CSV merge); `station_table(cfg.stations) -> pandas.DataFrame` with columns `network,station,location,latitude,longitude,elevation_m,depth_m`; `apply_channel_map(stream, cfg.stations) -> obspy.Stream`; `write_merged_inventory(inv, paths, cfg.stations=None)` writes `inventory/stations.xml`/`.csv`; `check_coverage(seed_ids: Iterable[str], inv) -> dict` (takes a plain iterable of seed ids, e.g. `DataIndex.seed_ids()` — does not import `openmeq.index`) plus `write_metadata_report(report, paths)` for `inventory/metadata_report.json` (M1.2). |
 | `openmeq.plotting` | `setup_style()`, `save_fig(fig, path)`, `plot_map_sections(df, stations, path, ...)`, `plot_hist(...)`, `plot_heatmap(...)`, `plot_timeseries(...)`, `plot_boxplot(...)`. |
-| `openmeq.nlloc_setup` (M5.2) | 1D NLLoc setup, backing `scripts/setup_nlloc.py` (PLAN.md §7). `write_control_common(cfg, paths) -> str` (shared `CONTROL`/`TRANS` boilerplate every Vel2Grid/Grid2Time/NLLoc control file in the project uses, including M6.1's). `write_station_list(station_table) -> list[str]` (one `GTSRCE` line per unique `NET.STA`, raises `ConfigError` on a bare-station-code clash). `location_grid_bounds(cfg, station_table) -> LocationGridBounds` (the convention for the eventual `LOCGRID` bounds -- §6d). `build_1d_grid(cfg, paths, station_table)` (runs `Vel2Grid`). `run_grid2time(cfg, paths, station_table)` (runs `Grid2Time` per (station, phase) via `openmeq.parallel.pmap`). `link_obspyck_model(cfg, paths, station_table)` (refreshes ObsPyck's model link, docs/obspyck_notes.md). `setup_nlloc(cfg, paths, force=False) -> bool` (top-level orchestration with `openmeq.manifest.StepManifest` skip-unchanged). |
+| `openmeq.nlloc_setup` (M5.2, 3D grids M5.3) | 1D/3D NLLoc setup, backing `scripts/setup_nlloc.py` (PLAN.md §7). `write_control_common(cfg, paths) -> str` (shared `CONTROL`/`TRANS` boilerplate every Vel2Grid/Grid2Time/NLLoc control file in the project uses, including M6.1's). `write_station_list(station_table) -> list[str]` (one `GTSRCE` line per unique `NET.STA`, raises `ConfigError` on a bare-station-code clash). `location_grid_bounds(cfg, station_table) -> LocationGridBounds` (the convention for the eventual `LOCGRID` bounds -- §6d). `build_1d_grid(cfg, paths, station_table)` (1D: runs `Vel2Grid`). `read_grid3d_hdr(hdr_path) -> Grid3DHeader` (parses an NLLoc 3D grid `.hdr`). `check_3d_grid_coverage(hdr_path, cfg, bounds)` (raises `ConfigError` unless the grid strictly covers `bounds` and its own `TRANSFORM` matches `cfg.nlloc.grid.origin` -- §6d). `link_3d_grid(cfg, paths, station_table)` (3D: validates then copies/symlinks the user-supplied grid in, same `<root>.{P,S}.mod.{hdr,buf}` convention as `build_1d_grid`). `run_grid2time(cfg, paths, station_table)` (runs `Grid2Time` per (station, phase) via `openmeq.parallel.pmap`; auto-detects `GTMODE GRID2D`/`GRID3D` per phase from its own model grid's `.hdr`, so it's agnostic to which of the two setup paths produced its input). `link_obspyck_model(cfg, paths, station_table)` (refreshes ObsPyck's model link, docs/obspyck_notes.md). `setup_nlloc(cfg, paths, force=False) -> bool` (top-level orchestration, dispatches on `cfg.nlloc.velocity_model.type`, with `openmeq.manifest.StepManifest` skip-unchanged). |
 
 ## 3. Run directory layout (`cfg.project.output_dir`)
 
@@ -332,7 +332,7 @@ writers above — a distinct concern, not a competing writer):
   (reading the real catalogue/station table, deciding when to call it in
   the pipeline) is M9.5, out of scope here.
 
-## 6d. NLLoc 1D grids and the location-grid-bounds convention
+## 6d. NLLoc 1D/3D grids and the location-grid-bounds convention
 
 Built in M5.2 (`openmeq/nlloc_setup.py`), verified against
 `docs/nlloc_interface.md` (the M5.1 spike). `docs/nlloc_interface.md`'s
@@ -363,6 +363,47 @@ that renders `CONTROL`/`TRANS` (`TRANS SIMPLE latOrig lonOrig 0.0`, centered
 on `cfg.nlloc.grid.origin`) -- every control file for one project must use
 byte-identical `TRANS`/`MAPLINE` statements (`docs/nlloc_interface.md` §4),
 so M6.1 must call this function too rather than re-deriving the line.
+
+**3D model grids (M5.3 / OpenMEQ-mev.3).** `cfg.nlloc.velocity_model.type ==
+"3d"` skips `build_1d_grid`/`Vel2Grid` entirely: `openmeq.nlloc_setup.link_3d_grid`
+validates and then copies/symlinks a user-supplied NLLoc grid
+(`cfg.nlloc.velocity_model.file` is a *root name*; `<file>.{P,S}.mod.{hdr,buf}`
+must already exist -- PLAN.md §1, 3D grids are always user-supplied, never
+built by this project) into the same `<root>.{P,S}.mod.{hdr,buf}` convention
+`build_1d_grid` produces, so `run_grid2time` and everything downstream is
+unaware of which path produced its input.
+
+- `openmeq.nlloc_setup.read_grid3d_hdr(hdr_path) -> Grid3DHeader` parses an
+  NLLoc 3D grid `.hdr` file (format verified directly against the installed
+  `external/NonLinLoc/src/GridLib.c` source, not a doc page -- no page states
+  it as a single worked example). The grid's own `TRANSFORM` line is kept
+  verbatim (`Grid3DHeader.transform_line`).
+- `openmeq.nlloc_setup.check_3d_grid_coverage(hdr_path, cfg, bounds)` raises
+  `ConfigError` (naming the specific shortfall, e.g. `"3D grid covers z in
+  [0.000, 8.000] km but location grid needs [-2.000, 10.000] km"`) unless the
+  grid's own extent **strictly contains** `bounds` (a `LocationGridBounds`
+  from `location_grid_bounds`, §6d above) on every axis -- **zero tolerance
+  margin** (NLLoc's own out-of-grid behaviour should not be relied upon;
+  confirmed empirically for the 3D case too, `external/NonLinLoc/src/NLLocLib.c:1904-1911`:
+  a genuine 3D travel-time grid that doesn't entirely contain the initial
+  `LOCGRID` gets its observation *silently* rejected, exit code 0, the same
+  failure mode as the already-documented 2D/`LOCGRID` case above). It also
+  validates the grid's own `TRANSFORM` against `cfg.nlloc.grid.origin`: the
+  `.hdr` format *does* self-describe its transform (resolving this task's own
+  design-note hedge), so rather than a separate user-supplied config field,
+  a 3D grid built with anything other than a matching `TRANS SIMPLE
+  latOrig lonOrig 0.0` (no rotation) is rejected outright -- this project has
+  no general point-transform code to reconcile two different projections,
+  and guessing wrong would silently misplace every travel time.
+- `Grid2Time`'s `GTMODE` `gridMode` field (`GRID2D` vs `GRID3D`) cannot be
+  hardcoded for both paths: `external/NonLinLoc/src/Grid2Time1.c:288-296`
+  hard-errors `GTMODE GRID2D` unless the model grid's own `numx == 2`
+  exactly (`build_1d_grid`'s own convention), while `GRID3D` accepts any
+  `numx`. `run_grid2time` therefore reads each phase's own model `.hdr` at
+  run time (`_grid_mode_for_model`) rather than being told which setup path
+  produced it -- this is the one internal change M5.3 made inside
+  `run_grid2time`; its public signature is unchanged, and it still does not
+  call `build_1d_grid`/`link_3d_grid` itself.
 
 ## 7. External tools
 
