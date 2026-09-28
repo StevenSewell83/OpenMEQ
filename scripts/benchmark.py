@@ -29,6 +29,15 @@ Usage
     # runners have far fewer cores than a dev workstation):
     python scripts/benchmark.py --n-workers 2
 
+    # M11.3: generate a larger, opt-in "realistic data volume" benchmark
+    # dataset (more stations / more days than the default 8-station,
+    # 2-day fixture) instead of the default -- see "Larger benchmark
+    # datasets (M11.3)" below. Not part of the default fast test suite;
+    # run this on demand, and clean up --tmp-dir yourself afterwards if
+    # you passed one (the default scratch dir is removed automatically
+    # unless --keep-scratch is given).
+    python scripts/benchmark.py --n-stations 20 --n-days 7 --tmp-dir /path/with/space
+
 Why this script exists (M11.3)
 -------------------------------
 This is deliberately a thin, self-contained harness, not a second pipeline
@@ -89,6 +98,22 @@ Results are not committed
 meaningful to diff) -- only this script and ``benchmarks/README.md`` (the
 documented schema) are committed. See that file for a standalone schema
 reference.
+
+Larger benchmark datasets (M11.3, ``OpenMEQ-m1f.3``)
+-------------------------------------------------------
+``--n-stations``/``--n-days`` pass through to
+``tests/data/make_synthetic.generate``'s own ``n_stations``/``n_days``
+parameters (added in M11.3, per M0.9's documented one-line-extension
+design -- this script did not need a second, separate "large dataset"
+generator, only these two extra CLI flags forwarded to the *existing* one).
+Omit them (the default) to get the original 8-station, 2-day fixture
+exactly as before. A larger request (e.g. ``--n-stations 20 --n-days 7``)
+is opt-in, not part of the default fast test suite, generated on demand
+into a temp directory (``--tmp-dir`` to control *where*, since the default
+system temp dir may share limited disk space with other uses -- see
+``docs/performance.md`` for this project's own measured dataset sizes) and
+deleted afterwards unless ``--keep-scratch`` is given, same as the default
+dataset.
 """
 
 from __future__ import annotations
@@ -159,6 +184,9 @@ class BenchmarkContext:
     config_path: Path | None
     seed: int
     n_workers_override: int | str | None
+    n_stations: int | None = None
+    n_days: int | None = None
+    tmp_dir: Path | None = None
     cfg: Config | None = None
     paths: RunPaths | None = None
     dataset_info: dict[str, Any] = field(default_factory=dict)
@@ -273,14 +301,21 @@ def _stage_generate_dataset(ctx: BenchmarkContext) -> str:
     """Build a fresh synthetic project via ``make_synthetic.generate`` directly.
 
     Skipped when ``--config`` was given: the caller already has a project
-    to benchmark against, and generation (~500 MB, ~8 s) is exactly the
-    thing they're opting out of.
+    to benchmark against, and generation (~500 MB, ~8 s for the default
+    8-station/2-day size -- more for a larger ``--n-stations``/``--n-days``
+    request, see the module docstring's "Larger benchmark datasets" section)
+    is exactly the thing they're opting out of.
     """
     if ctx.config_path is not None:
         raise StageSkipped(f"dataset provided via --config ({ctx.config_path}); not generated")
 
-    scratch_dir = Path(tempfile.mkdtemp(prefix="openmeq_benchmark_"))
-    truth = make_synthetic.generate(scratch_dir, seed=ctx.seed)
+    tmp_root = str(ctx.tmp_dir) if ctx.tmp_dir is not None else None
+    if tmp_root is not None:
+        Path(tmp_root).mkdir(parents=True, exist_ok=True)
+    scratch_dir = Path(tempfile.mkdtemp(prefix="openmeq_benchmark_", dir=tmp_root))
+    truth = make_synthetic.generate(
+        scratch_dir, seed=ctx.seed, n_stations=ctx.n_stations, n_days=ctx.n_days
+    )
     ctx.config_path = scratch_dir / "config.yaml"
     ctx.dataset_info = {
         "source": "generated",
@@ -288,10 +323,11 @@ def _stage_generate_dataset(ctx: BenchmarkContext) -> str:
         "seed": truth["seed"],
         "n_events": len(truth["events"]),
         "n_stations": len(truth["stations"]),
+        "n_days": ctx.n_days if ctx.n_days is not None else make_synthetic.N_DAYS,
     }
     return (
-        f"generated {len(truth['events'])} events, {len(truth['stations'])} stations "
-        f"(seed={truth['seed']}) at {scratch_dir}"
+        f"generated {len(truth['events'])} events, {len(truth['stations'])} stations, "
+        f"{ctx.dataset_info['n_days']} day(s) (seed={truth['seed']}) at {scratch_dir}"
     )
 
 
@@ -513,7 +549,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--keep-scratch",
         action="store_true",
         help="Don't delete a freshly generated dataset's scratch directory afterwards "
-        "(~500 MB; useful for inspecting output). Has no effect with --config.",
+        "(~500 MB at the default size; more for a larger --n-stations/--n-days request; "
+        "useful for inspecting output). Has no effect with --config.",
+    )
+    parser.add_argument(
+        "--n-stations",
+        type=int,
+        default=None,
+        help="Station count for a freshly generated dataset (ignored with --config); see "
+        "tests/data/make_synthetic.generate's own n_stations parameter. Default: the fixed "
+        f"{len(make_synthetic.STATIONS)}-station network. Must be >= that if given (M11.3: "
+        "this dataset only ever grows, see make_synthetic.generate's docstring).",
+    )
+    parser.add_argument(
+        "--n-days",
+        type=int,
+        default=None,
+        help="Day count for a freshly generated dataset (ignored with --config); see "
+        "tests/data/make_synthetic.generate's own n_days parameter. Default: "
+        f"{make_synthetic.N_DAYS} days. Must be >= that if given.",
+    )
+    parser.add_argument(
+        "--tmp-dir",
+        type=Path,
+        default=None,
+        help="Parent directory for a freshly generated dataset's scratch directory "
+        "(ignored with --config). Default: the system temp dir. Point this at a disk with "
+        "enough free space for a larger --n-stations/--n-days request.",
     )
     return parser
 
@@ -540,6 +602,9 @@ def main(argv: list[str] | None = None) -> int:
         config_path=config_path,
         seed=args.seed,
         n_workers_override=args.n_workers,
+        n_stations=args.n_stations,
+        n_days=args.n_days,
+        tmp_dir=args.tmp_dir,
     )
 
     stage_results: list[StageResult] = []

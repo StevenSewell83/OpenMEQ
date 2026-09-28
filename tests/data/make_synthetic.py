@@ -1,6 +1,7 @@
 """Deterministic synthetic test dataset generator (M0.8, ARCHITECTURE.md §8).
 
-``generate(outdir, seed=DEFAULT_SEED) -> dict`` builds, under ``outdir``:
+``generate(outdir, seed=DEFAULT_SEED, n_stations=None, n_days=None) -> dict``
+builds, under ``outdir``:
 
 - ``inventory/stations.xml`` / ``inventory/stations.csv`` -- 8 stations (6
   surface ``HH?``, 2 borehole ``DP?``), each with a *flat* instrument
@@ -19,6 +20,15 @@
 It returns ``truth`` (see "Truth structure" below); the caller (normally the
 ``synthetic_project`` pytest fixture, ``tests/conftest.py``) pairs it with
 ``outdir / "config.yaml"``.
+
+``n_stations``/``n_days`` (M11.3, ``OpenMEQ-m1f.3``): optional overrides,
+each ``>=`` the fixed default (8 stations, 2 days) -- this dataset only
+ever grows, it does not generalize to an arbitrary smaller network. Left at
+their default ``None``, every call is byte-identical to every pre-M11.3
+call (no extra RNG draws happen at all); see :func:`generate`'s own
+docstring for the full contract. Built for ``scripts/benchmark.py``'s
+opt-in larger benchmark dataset (``--n-stations``/``--n-days``), not for
+the correctness-test fixture other tests rely on.
 
 Determinism
 ------------
@@ -635,12 +645,14 @@ def _add_pulse(
 # ---------------------------------------------------------------------------
 
 
-def _build_events(rng: np.random.Generator) -> list[dict]:
-    offsets = rng.uniform(*EVENT_OFFSET_KM_RANGE, size=(N_EVENTS, 2))
-    depths = rng.uniform(*EVENT_DEPTH_KM_RANGE, size=N_EVENTS)
-    mls = rng.uniform(ML_MIN, ML_MAX, size=N_EVENTS)
-    time_offsets = rng.uniform(0.0, N_DAYS * 86400.0, size=N_EVENTS)
-    polarities = rng.choice([-1.0, 1.0], size=N_EVENTS)
+def _build_events(
+    rng: np.random.Generator, n_days: int = N_DAYS, n_events: int = N_EVENTS
+) -> list[dict]:
+    offsets = rng.uniform(*EVENT_OFFSET_KM_RANGE, size=(n_events, 2))
+    depths = rng.uniform(*EVENT_DEPTH_KM_RANGE, size=n_events)
+    mls = rng.uniform(ML_MIN, ML_MAX, size=n_events)
+    time_offsets = rng.uniform(0.0, n_days * 86400.0, size=n_events)
+    polarities = rng.choice([-1.0, 1.0], size=n_events)
 
     # Deliberately place event 0 a few seconds before the day-1/day-2
     # boundary (ARCHITECTURE.md §8 pitfall).
@@ -703,9 +715,18 @@ def _generate_channel_buffer(
     layers: pd.DataFrame,
     rng: np.random.Generator,
     seed: int,
+    total_samples: int = TOTAL_SAMPLES,
+    station_index: dict[str, int] = _STATION_INDEX,
 ) -> np.ndarray:
-    """Build the full 2-day float buffer (noise + injected pulses) for one channel."""
-    buffer = rng.uniform(-NOISE_HALF_RANGE, NOISE_HALF_RANGE, size=TOTAL_SAMPLES)
+    """Build the full multi-day float buffer (noise + injected pulses) for one channel.
+
+    ``total_samples`` defaults to the fixed 2-day ``TOTAL_SAMPLES`` constant;
+    :func:`generate`'s ``n_days`` override (M11.3, ``OpenMEQ-m1f.3``) passes
+    a larger value to extend the buffer (and therefore the number of
+    per-day files :func:`_write_channel_days` later splits it into) without
+    changing anything about the default 2-day path's own RNG draw sequence.
+    """
+    buffer = rng.uniform(-NOISE_HALF_RANGE, NOISE_HALF_RANGE, size=total_samples)
 
     sta_code, kind, x_km, y_km, elev_m, depth_m, _ = station
     is_vertical = channel.endswith("Z")
@@ -728,7 +749,7 @@ def _generate_channel_buffer(
         # fraction draw, seeded from (seed, event index, station index) --
         # stable regardless of which channel of the station is being built,
         # and independent of Python's randomized-per-process hash().
-        local_rng = np.random.default_rng((seed, ev["idx"], _STATION_INDEX[sta_code]))
+        local_rng = np.random.default_rng((seed, ev["idx"], station_index[sta_code]))
         primary_idx = int(local_rng.integers(0, 2))
         secondary_frac = float(local_rng.uniform(0.5, 0.9))
 
@@ -772,12 +793,18 @@ def _apply_flat(buffer: np.ndarray) -> None:
 
 
 def _write_channel_days(
-    outdir: Path, sta_code: str, channel: str, buffer: np.ndarray, seed_id: str
+    outdir: Path,
+    sta_code: str,
+    channel: str,
+    buffer: np.ndarray,
+    seed_id: str,
+    n_days: int = N_DAYS,
+    day_samples: int = DAY_SAMPLES,
 ) -> None:
     counts = np.round(buffer).astype(np.int32)
-    for day in range(N_DAYS):
+    for day in range(n_days):
         day_start = DAY0 + day * 86400.0
-        lo, hi = day * DAY_SAMPLES, (day + 1) * DAY_SAMPLES
+        lo, hi = day * day_samples, (day + 1) * day_samples
         day_data = counts[lo:hi]
         date_str = day_start.strftime("%Y-%m-%d")
         day_dir = outdir / "waveforms" / date_str
@@ -849,9 +876,9 @@ _CHANNEL_ORIENTATION = {
 }
 
 
-def _build_inventory() -> Inventory:
+def _build_inventory(stations: list[tuple] = STATIONS) -> Inventory:
     network = Network(code=NETWORK, stations=[], description="OpenMEQ synthetic test network")
-    for sta_code, kind, x_km, y_km, elev_m, depth_m, channels in STATIONS:
+    for sta_code, kind, x_km, y_km, elev_m, depth_m, channels in stations:
         lat, lon = _to_latlon(x_km, y_km)
         station = Station(
             code=sta_code,
@@ -884,9 +911,9 @@ def _build_inventory() -> Inventory:
     )
 
 
-def _station_rows() -> list[dict]:
+def _station_rows(stations: list[tuple] = STATIONS) -> list[dict]:
     rows = []
-    for sta_code, _kind, x_km, y_km, elev_m, depth_m, _channels in STATIONS:
+    for sta_code, _kind, x_km, y_km, elev_m, depth_m, _channels in stations:
         lat, lon = _to_latlon(x_km, y_km)
         rows.append(
             {
@@ -907,7 +934,7 @@ def _station_rows() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _build_config(outdir: Path) -> dict:
+def _build_config(outdir: Path, n_days: int = N_DAYS) -> dict:
     return {
         "project": {"name": "synthetic", "output_dir": "./runs/synthetic"},
         "parallel": {"n_workers": 1, "threads_per_worker": 1},
@@ -915,7 +942,7 @@ def _build_config(outdir: Path) -> dict:
             "waveform_dirs": ["./waveforms"],
             "file_pattern": "*.mseed",
             "start": DAY0.date,
-            "end": (DAY0 + (N_DAYS - 1) * 86400.0).date,
+            "end": (DAY0 + (n_days - 1) * 86400.0).date,
         },
         "stations": {
             "stationxml": "./inventory/stations.xml",
@@ -983,14 +1010,117 @@ def _truth_to_jsonable(truth: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def generate(outdir: str | Path, seed: int = DEFAULT_SEED) -> dict:
+#: Aperture (km) each *extra* station (beyond the fixed 8, ``STATIONS``) is
+#: drawn from, centred on the network origin -- wide enough to keep station
+#: density roughly comparable to the original 8-station, ~14.9 km-aperture
+#: network as ``n_stations`` grows (M11.3, ``OpenMEQ-m1f.3``: "reuse M0.8's
+#: generator, parametrized for a larger station count", see
+#: :func:`generate`'s ``n_stations`` parameter).
+_EXTRA_STATION_APERTURE_KM = 10.0
+
+
+def _extra_stations(rng: np.random.Generator, n_extra: int) -> list[tuple]:
+    """``n_extra`` additional, deterministically-placed *surface* ``HH?`` stations.
+
+    Appended *after* the fixed :data:`STATIONS` list (never mutating it --
+    several tests import ``make_synthetic.STATIONS`` directly and expect
+    exactly the original 8), so the original 8 stations' own per-channel RNG
+    draw sequence (and therefore their exact waveform content) is completely
+    unaffected by ``n_extra`` -- only consumed *after* every original
+    station/channel's own draws, when ``n_extra > 0``.  Named ``STA{9,10,...}``
+    to avoid colliding with the fixed ``STA01``-``STA06``/``BH01``-``BH02``
+    codes.  All-surface, all-``HHZ``/``HHN``/``HHE`` (no borehole variety)
+    -- this task only needs *more channel-days of realistic-shaped data* to
+    profile/benchmark against, not more hand-tuned network-geometry
+    diversity (that's what the fixed 8 already exercise).
+    """
+    if n_extra <= 0:
+        return []
+    xs = rng.uniform(-_EXTRA_STATION_APERTURE_KM, _EXTRA_STATION_APERTURE_KM, size=n_extra)
+    ys = rng.uniform(-_EXTRA_STATION_APERTURE_KM, _EXTRA_STATION_APERTURE_KM, size=n_extra)
+    elevs = rng.uniform(500.0, 700.0, size=n_extra)
+    stations = []
+    for i in range(n_extra):
+        code = f"STA{9 + i:02d}"
+        stations.append(
+            (
+                code,
+                "surface",
+                float(xs[i]),
+                float(ys[i]),
+                float(elevs[i]),
+                0.0,
+                ("HHZ", "HHN", "HHE"),
+            )
+        )
+    return stations
+
+
+def generate(
+    outdir: str | Path,
+    seed: int = DEFAULT_SEED,
+    n_stations: int | None = None,
+    n_days: int | None = None,
+) -> dict:
     """Generate the full synthetic dataset under ``outdir``. Returns ``truth``.
 
     See the module docstring for the exact directory layout, truth
     structure, travel-time method and ML calibration.
+
+    Parameters
+    ----------
+    outdir : str or pathlib.Path
+    seed : int, optional
+        Default :data:`DEFAULT_SEED`.
+    n_stations : int or None, optional
+        Total station count. ``None`` (default) uses exactly the fixed
+        :data:`STATIONS` list (8 stations) -- byte-identical to every
+        pre-M11.3 call, since no extra RNG draws happen at all in that case
+        (see :func:`_extra_stations`). A larger value appends
+        deterministically-placed extra surface stations (M11.3,
+        ``OpenMEQ-m1f.3``: "parametrized for a larger station count", for
+        ``scripts/benchmark.py``'s larger benchmark dataset) *after* the
+        fixed 8, which are otherwise completely unchanged. Must be
+        ``>= len(STATIONS)`` (this parameter only ever makes the network
+        bigger, matching the fixed 8's own deliberate anomaly/geometry
+        design -- it is not a general-purpose "any station count" generator).
+    n_days : int or None, optional
+        Total day count. ``None`` (default) uses exactly :data:`N_DAYS`
+        (2) -- byte-identical to every pre-M11.3 call. A larger value
+        extends the continuous background-noise buffer (the known
+        gap/spike/flat anomalies and the day-boundary event stay fixed on
+        their original days 1/2) and scales the event count proportionally
+        (:data:`N_EVENTS` per :data:`N_DAYS`, rounded) so a larger dataset
+        still has a comparable event rate per day rather than the same 20
+        events spread arbitrarily thin. Must be ``>= N_DAYS`` (the fixed
+        spike anomaly's window is on calendar day 2, which must exist).
+
+    Raises
+    ------
+    ValueError
+        If ``n_stations < len(STATIONS)`` or ``n_days < N_DAYS`` -- this
+        parametrization only ever grows the fixed dataset (see above), not
+        the pre-existing tiny correctness-test fixture other tests depend on.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    if n_stations is None:
+        n_stations = len(STATIONS)
+    elif n_stations < len(STATIONS):
+        raise ValueError(
+            f"n_stations must be >= {len(STATIONS)} (the fixed base network); got {n_stations}"
+        )
+    if n_days is None:
+        n_days = N_DAYS
+    elif n_days < N_DAYS:
+        raise ValueError(
+            f"n_days must be >= {N_DAYS} (the fixed anomalies span 2 days); got {n_days}"
+        )
+
+    day_samples = int(round(86400 * SAMPLE_RATE_HZ))
+    total_samples = day_samples * n_days
+    n_events = N_EVENTS if n_days <= N_DAYS else int(round(N_EVENTS * n_days / N_DAYS))
 
     rng = np.random.default_rng(seed)
 
@@ -1002,9 +1132,12 @@ def generate(outdir: str | Path, seed: int = DEFAULT_SEED) -> dict:
     vel1d_path.write_text(VEL1D_TEXT)
     layers = read_layers(vel1d_path)
 
-    events = _build_events(rng)
+    events = _build_events(rng, n_days=n_days, n_events=n_events)
 
-    for sta_code, _kind, x_km, y_km, elev_m, depth_m, channels in STATIONS:
+    stations = STATIONS + _extra_stations(rng, n_stations - len(STATIONS))
+    station_index = {s[0]: i for i, s in enumerate(stations)}
+
+    for sta_code, _kind, x_km, y_km, elev_m, depth_m, channels in stations:
         for cha in channels:
             seed_id = f"{NETWORK}.{sta_code}.{LOCATION}.{cha}"
             buffer = _generate_channel_buffer(
@@ -1016,18 +1149,22 @@ def generate(outdir: str | Path, seed: int = DEFAULT_SEED) -> dict:
                 layers,
                 rng,
                 seed,
+                total_samples=total_samples,
+                station_index=station_index,
             )
-            _write_channel_days(outdir, sta_code, cha, buffer, seed_id)
+            _write_channel_days(
+                outdir, sta_code, cha, buffer, seed_id, n_days=n_days, day_samples=day_samples
+            )
 
     inventory_dir = outdir / "inventory"
     inventory_dir.mkdir(parents=True, exist_ok=True)
-    inv = _build_inventory()
+    inv = _build_inventory(stations)
     inv.write(str(inventory_dir / "stations.xml"), format="STATIONXML")
 
-    station_rows = _station_rows()
+    station_rows = _station_rows(stations)
     pd.DataFrame(station_rows).to_csv(inventory_dir / "stations.csv", index=False)
 
-    config = _build_config(outdir)
+    config = _build_config(outdir, n_days=n_days)
     (outdir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
 
     known_issues = [

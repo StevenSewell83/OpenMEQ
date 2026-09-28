@@ -123,6 +123,46 @@ reason -- ``coincidence_trigger`` triggers on a **copy** of each trace
 internally, so this halves the *steady-state* memory the still-referenced,
 filtered ``stream`` object occupies while that per-trace triggering loop
 runs.
+
+**Fast linear detrend (M11.3, ``OpenMEQ-m1f.3``).** cProfile against one
+full day-window (25 traces, 200 Hz synthetic data) showed
+``stream.detrend("linear")`` costing **~49% of the whole
+:func:`detect_window` call** (~7.0s of 14.4s) -- almost entirely
+``scipy.signal.detrend``'s own ``scipy.linalg.lstsq`` (SVD-based) call, a
+generic solver built for arbitrary-column design matrices and multiple
+breakpoints, neither of which this call site ever uses (ObsPy's
+``Trace.detrend("linear")`` always calls it with zero breakpoints, i.e. one
+single-segment ordinary-least-squares fit of a straight line against the
+sample index). :func:`_fast_linear_detrend` replaces it with a closed-form
+OLS solve (two ``float64``-accumulated reductions -- ``sum(x*y)`` and
+``sum(y)``, via a mean-centred index so ``sum(x) == 0`` and the normal
+equations collapse to ``slope = sum(x*y) / sum(x**2)``,
+``intercept = mean(y)`` -- no matrix factorization at all). Least-squares
+linear regression is invariant to an affine reparametrization of its single
+predictor, so this fits the mathematically *identical* line
+``scipy.signal.detrend(data, type="linear")`` does; measured against it
+directly (``tests/test_detect_fast_detrend.py``) the two agree to within
+~1e-5 relative amplitude on a full 17.28M-sample float32 channel-day (the
+residual is float64-accumulation rounding, not an algorithm difference), a
+downstream-irrelevant difference against a bandpass/STA-LTA pipeline that
+already discards DC/near-DC content. Measured ~2-4x faster than
+``scipy.signal.detrend`` at this array size (float32/float64
+respectively) -- see ``docs/performance.md`` for the full before/after
+``detect_window`` numbers.
+
+**Per-worker-process caching of ``DataIndex``/``Config`` (M11.3).** Mirrors
+``openmeq.qc.stats``'s and ``openmeq.chunk``'s identical
+``_cached_index``/``_cached_*_cfg`` pattern (see either module's docstring
+for the full rationale): a long-lived ``ProcessPoolExecutor`` worker handles
+many :func:`detect_window` calls (one per window) over its lifetime, all
+sharing the same ``index_path``/``cfg_path`` -- without caching, every
+single window re-parsed the whole ``inventory/index.json`` and
+re-validated/re-loaded the entire project YAML from scratch. This was not
+yet applied to this module before M11.3 (unlike ``qc``/``chunk``, which
+already had it); at production scale (e.g. one window per day over a
+multi-month survey) this is a per-run fixed cost proportional to the number
+of windows, not to the data volume, so it does not show up in a
+per-channel-day profile but does shorten real wall-clock time.
 """
 
 from __future__ import annotations
@@ -210,6 +250,60 @@ def _read_window(
     return stream
 
 
+def _fast_linear_detrend(data: np.ndarray) -> np.ndarray:
+    """Closed-form single-segment linear-regression detrend (M11.3 optimisation).
+
+    Drop-in replacement for ``scipy.signal.detrend(data, type="linear")``
+    (what ``obspy.core.trace.Trace.detrend("linear")`` calls internally with
+    zero breakpoints) -- see the module docstring's "Fast linear detrend"
+    section for the full profiling rationale and measured speedup/tolerance.
+
+    Fits ``y = slope * x + intercept`` by ordinary least squares against the
+    sample index ``x = arange(n)``, mean-centred so ``sum(x) == 0`` (which
+    both simplifies the normal equations to two reductions and avoids the
+    large-magnitude cancellation a raw ``arange(n)`` parametrization would
+    hit for a multi-million-sample array), then returns ``data - trend``.
+    Least-squares regression against a single predictor is invariant to any
+    affine reparametrization of that predictor, so the fitted line -- and
+    therefore the detrended output -- is mathematically identical to
+    scipy's own ``lstsq``-based fit; the two differ only by
+    floating-point-accumulation rounding (see
+    ``tests/test_detect_fast_detrend.py``).
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        1-D array (a ``Trace.data`` array). Not modified in place; a new
+        array of the same dtype is returned (matching
+        ``scipy.signal.detrend``'s own return-a-new-array contract, which
+        ``obspy.core.trace.Trace.detrend`` then assigns back to
+        ``self.data``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Detrended data, same shape and dtype as ``data``. A constant
+        (zero-variance index, i.e. ``n <= 1``) array is returned demeaned
+        only (slope forced to 0), matching scipy's own behaviour for a
+        single-sample segment.
+    """
+    orig_dtype = data.dtype
+    n = data.shape[0]
+    if n == 0:
+        return data.copy()
+    x = np.arange(n, dtype=np.float64)
+    x -= x.mean()
+    sum_x2 = np.dot(x, x)
+    sum_y = float(data.sum(dtype=np.float64))
+    slope = 0.0
+    if sum_x2 != 0.0:
+        sum_xy = np.dot(x, data.astype(np.float64, copy=False))
+        slope = sum_xy / sum_x2
+    intercept = sum_y / n
+    trend = (slope * x + intercept).astype(orig_dtype, copy=False)
+    return data - trend
+
+
 def _apply_filter(stream: Stream, filter_cfg) -> None:
     """Filter ``stream`` in place per ``cfg.detection.filter`` (one call, one pass per trace).
 
@@ -271,6 +365,30 @@ def _normalize_trigger(trig: dict) -> dict:
     }
 
 
+#: Per-worker-*process* caches, keyed by the path string each worker was
+#: called with -- see the module docstring's "Per-worker-process caching"
+#: (M11.3) note, and ``openmeq.qc.stats``'s identical caches for the full
+#: rationale.
+_worker_index_cache: dict[str, DataIndex] = {}
+_worker_cfg_cache: dict[str, Config] = {}
+
+
+def _cached_index(index_path: str) -> DataIndex:
+    index = _worker_index_cache.get(index_path)
+    if index is None:
+        index = DataIndex.load(index_path)
+        _worker_index_cache[index_path] = index
+    return index
+
+
+def _cached_cfg(cfg_path: str) -> Config:
+    cfg = _worker_cfg_cache.get(cfg_path)
+    if cfg is None:
+        cfg = load_config(cfg_path)
+        _worker_cfg_cache[cfg_path] = cfg
+    return cfg
+
+
 def detect_window(
     window_start: str,
     window_end: str,
@@ -307,11 +425,11 @@ def detect_window(
     t1 = UTCDateTime(window_start)
     t2 = UTCDateTime(window_end)
 
-    index = DataIndex.load(index_path)
+    index = _cached_index(index_path)
     with open(flags_path, encoding="utf-8") as f:
         channel_flags = json.load(f)
     flags = channel_flags.get("flags", {})
-    cfg = load_config(cfg_path)
+    cfg = _cached_cfg(cfg_path)
     det_cfg = cfg.detection
 
     stream = _read_window(index, flags, t1, t2, pad=det_cfg.day_overlap_s)
@@ -332,7 +450,12 @@ def detect_window(
     for tr in stream:
         tr.data = tr.data.astype(np.float32)
 
-    stream.detrend("linear")
+    # M11.3: closed-form OLS detrend (see module docstring's "Fast linear
+    # detrend" note) instead of ``stream.detrend("linear")`` (ObsPy ->
+    # ``scipy.signal.detrend`` -> ``scipy.linalg.lstsq``), which cProfile
+    # showed costing ~49% of this function's total time.
+    for tr in stream:
+        tr.data = _fast_linear_detrend(tr.data)
     _apply_filter(stream, det_cfg.filter)
 
     for tr in stream:

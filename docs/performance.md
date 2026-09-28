@@ -437,3 +437,323 @@ shipped `config/example.yaml` defaults (`spike_threshold_mad=10`,
   *exactly* the two channel-days above (`["flat"]` and `["spikes"]`
   respectively) and nothing else -- verified directly (also asserted in
   `tests/test_qc_monthly_flags.py::test_e2e_zero_false_positives_on_ordinary_channel_days`).
+
+# M11.3: pipeline-wide profiling, parallel scaling, and further optimisation (`OpenMEQ-m1f.3`)
+
+Scope: the *whole* pipeline (M11.2 already proved it correct end to end),
+profiled and optimised on this project's own dev machine (28 logical / 20
+physical cores -- a hybrid performance/efficiency-core CPU, see §5 below --
+94 GB RAM). Measured baseline (`docs/validation.md`, `n_workers=1` on the
+tiny 8-station/2-day `synthetic_project` fixture): `openmeq run` took
+**108 s** total -- qc 41 s, detect 42 s, chunk 1 s, pick 10 s, locate 5 s,
+magnitude 3 s, relocate 5 s.
+
+Real archives are ~50 channels x 365 days (~18k channel-days), so
+per-channel-day and per-day costs matter far more than this tiny fixture's
+absolute numbers -- `docs/performance.md`'s existing §§1-9 (`OpenMEQ-5nl.8`/
+`OpenMEQ-5nl.9`) already did this profiling pass for `qc`; this section
+covers `detect` (not previously profiled), re-verifies the machine-level
+concerns flagged in earlier notes (thread oversubscription, `auto`
+resolving to logical vs. physical cores, `DataIndex.read`'s decode
+behaviour), and adds a parallel-scaling measurement at a larger,
+purpose-generated dataset.
+
+## 1. `detect_window` profiling and optimisation
+
+cProfile against one real `detect_window` call (25 traces, one full
+200 Hz day, 8-station `synthetic_project` fixture), before any change:
+
+| Function | Cumulative time | % of total |
+|---|---:|---:|
+| **Total** (`detect_window`) | 14.43 s | 100% |
+| `stream.detrend("linear")` (-> `scipy.signal.detrend` -> `scipy.linalg.lstsq`) | 7.00 s | 48.5% |
+| `coincidence_trigger` (incl. `recursive_sta_lta`/`trigger_onset`) | 2.86 s | 19.8% |
+| `stream.filter("bandpass")` (`scipy.signal.sosfilt`) | 1.99 s | 13.8% |
+| `DataIndex.read` (miniSEED I/O) | 1.34 s | 9.3% |
+| everything else (astype casts, gap-split, etc.) | ~1.24 s | 8.6% |
+
+**`stream.detrend("linear")` is the single largest cost, at essentially
+half the function's total time**, and it is calling a generic solver where
+this call site never needs the generality it pays for.
+
+### 1.1 Root cause
+
+ObsPy's `Trace.detrend("linear")` dispatches to
+`scipy.signal.detrend(data, type="linear")`, which -- even for the
+single-segment (no breakpoints) case this call site always uses -- solves
+the least-squares fit via `scipy.linalg.lstsq` (an SVD-based solver
+general enough for an arbitrary-column design matrix and multiple
+breakpoints). Neither generality is used here: it is always exactly one
+straight-line OLS fit against the sample index.
+
+### 1.2 Fix: closed-form OLS detrend (`_fast_linear_detrend`)
+
+`openmeq/detect/worker.py`'s new `_fast_linear_detrend` replaces the call
+with a closed-form solve: a mean-centred index (`sum(x) == 0` by
+construction) collapses the normal equations to two `float64`-accumulated
+reductions (`slope = sum(x*y) / sum(x**2)`, `intercept = mean(y)`) -- no
+matrix factorization. Least-squares regression against a single predictor
+is invariant to affine reparametrization of that predictor, so this fits
+the **mathematically identical line** `scipy.signal.detrend` does; the two
+differ only by floating-point accumulation rounding.
+
+**Accuracy** (`tests/test_detect_fast_detrend.py`, synthetic arrays up to
+200,001 samples and a real synthetic-project channel-day, `float32`/
+`float64`): max relative difference against the `scipy.signal.detrend`
+reference stayed under `1e-4` of the input's own amplitude scale in every
+case tested -- a downstream-irrelevant difference against a
+bandpass/STA-LTA pipeline that already discards DC/near-DC content.
+
+**Speed** (isolated micro-benchmark, one 17.28M-sample channel):
+
+| dtype | `scipy.signal.detrend` | `_fast_linear_detrend` | speedup |
+|---|---:|---:|---:|
+| float32 | ~299 ms | ~139 ms | ~2.1x |
+| float64 | ~486 ms | ~126 ms | ~3.9x |
+
+**In situ** (same `detect_window` call as above, all 25 traces, float32):
+`stream.detrend("linear")`'s share dropped from 7.00 s to 3.60 s (~1.9x),
+and **`detect_window`'s total wall time dropped from 14.43 s to 11.58 s
+(~20% faster)**, with `coincidence_trigger` (3.21 s) now the largest single
+component. No change to detection results: `tests/test_detect_worker.py`'s
+full existing suite (event recovery, flagged-channel exclusion, gap
+handling, day-boundary events) passes unchanged after the swap.
+
+### 1.3 Second fix: per-worker-process `DataIndex`/`Config` caching
+
+Profiling this module also surfaced a gap versus the pattern
+`openmeq.qc.stats`/`openmeq.chunk` already established (`OpenMEQ-5nl.8`):
+`detect_window` called `DataIndex.load(index_path)` and
+`load_config(cfg_path)` **on every single window**, even though a
+long-lived `ProcessPoolExecutor` worker handles many windows over its
+lifetime, all sharing the same `index_path`/`cfg_path`. This doesn't show
+up in a single-window profile (it's a fixed cost, not proportional to data
+volume), but at production scale (e.g. one window per day over a
+multi-month survey, `cfg.parallel.chunk_days=1`) it is a real, avoidable
+per-run cost: `openmeq.qc.stats`'s own measurement of `DataIndex.load()`
+against a realistic 50x365 index was ~43 ms/call, so re-loading it once per
+day over a year is ~15.7 s of pure redundant re-parsing that per-worker
+caching eliminates entirely (paid once per worker process instead).
+Mirrored `qc`/`chunk`'s exact `_cached_index`/`_cached_*` pattern into
+`openmeq/detect/worker.py`; verified with a call-counting monkeypatch test
+(`tests/test_detect_fast_detrend.py::test_detect_window_caches_index_and_config_per_worker_process`)
+that the index/config are loaded exactly once across multiple windows.
+
+## 2. `qc` daily-stats: confirmatory profiling, no further change
+
+`openmeq/qc/stats.py` already went through a dedicated optimisation pass
+(`OpenMEQ-5nl.8`/`OpenMEQ-5nl.9`, this document's own §§1-9 above). Per
+this task's "profile first" design note, it was re-profiled rather than
+assumed unchanged:
+
+```
+_fast_kurtosis                    ~3-7%
+partition (median/MAD)            ~9%
+_segment_run_counts (run-length)  ~9%
+rank_filter (isolated-impulse median filter, k=7)   ~32-38%
+```
+
+This matches §9's own documented finding exactly (the isolated-impulse
+spike metric's `scipy.ndimage.median_filter` call is now the dominant
+cost, already investigated and its cheaper "candidate-window" alternative
+already rejected there on correctness grounds -- §9.2). No new hot spot
+appeared and no further optimisation was applied here: the already-shipped
+5nl.8/5nl.9 work covers this step, and re-deriving an already-answered
+question is out of this task's scope.
+
+## 3. Chunk memory / `DataIndex.read` (M3.2 follow-up): resolved, no bug
+
+A note on this issue asked whether the ~830 MB RSS still observed while
+chunking a sparse day (M3.2, after its own sub-window-splitting fix) meant
+`DataIndex.read` decodes a whole day file even for a short window read.
+Measured directly: reading a 60 s window out of a full 17.28M-sample/day
+miniSEED file costs **~3.4 ms / ~1.1 MB** of Python-visible allocation,
+versus **~83 ms / ~70 MB** for the whole file -- proportional to the
+*window*, not the file. ObsPy's native miniSEED selective decode (passing
+`starttime`/`endtime` straight through, exactly as `openmeq/index.py`'s
+own docstring already documented) does not decode whole-day files. No bug;
+no code change needed.
+
+The 830 MB figure is explained instead by `resource.getrusage(...)
+.ru_maxrss` being a **whole-process, monotonically non-decreasing**
+high-water mark (`scripts/benchmark.py`'s own docstring already flags this
+caveat): by the time `chunk` runs, `qc` and `detect` have already touched
+several GB in the same process (especially at `n_workers=1`, where `pmap`
+runs every window in-process rather than in a subprocess), and that
+earlier peak is still counted against `chunk`'s number even though `chunk`
+itself never allocated it. A direct measurement with `scripts/benchmark.py`
+(now that it can be run with `psutil` installed for a stage-*local*
+sampled peak, not just `ru_maxrss`) on the small fixture confirmed this:
+
+| stage | `ru_maxrss` (whole-process, cumulative) | `psutil`-sampled (stage-local) |
+|---|---:|---:|
+| qc | 1,232 MB | 1,199 MB |
+| detect | 4,948 MB | 5,068 MB |
+| chunk | 4,948 MB (unchanged -- never exceeded detect's peak) | **293 MB** |
+
+`chunk`'s own actual contribution (293 MB) is far below the 830 MB
+figure; the apparent "830 MB in chunk" was really `detect`'s own peak
+(driven by holding a full day's worth of 25 float32/float64 traces through
+detrend/filter/STA-LTA in one process at `n_workers=1`), attributed to the
+next stage that happened to run afterward in the same process. Documented
+here and in `openmeq/chunk.py`'s own module docstring for future readers.
+
+## 4. BLAS/OMP thread-oversubscription: checked, confirmed not an issue
+
+M0.5 flagged (and this task's design notes repeated) the risk of each
+`pmap` worker spawning `threads_per_worker` BLAS threads *on top of*
+`n_workers` processes -- verified here under actual `pmap` execution (not
+just `openmeq.parallel`'s own unit test), using `threadpoolctl` inside a
+real worker process at `n_workers=4, threads_per_worker=2`:
+
+```json
+{"OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2", "MKL_NUM_THREADS": "2",
+ "threadpool_info": [{"internal_api": "openblas", "num_threads": 2, ...}]}
+```
+
+OpenBLAS's own runtime thread count (`threadpool_info`, not just the env
+var) matches `threads_per_worker` exactly in every one of 4 worker
+processes. No oversubscription found; `openmeq.parallel`'s `spawn`-based
+thread-env-var mechanism (module docstring) works as designed.
+
+## 5. `n_workers: "auto"`: physical cores, not logical (bug fix)
+
+`docs/ARCHITECTURE.md` and `config/example.yaml` already documented
+`n_workers: auto` as resolving to **physical** cores (`"auto = all
+physical cores"`) -- but `openmeq/parallel.py`'s actual implementation
+resolved it to `len(os.sched_getaffinity(0))`, the **logical** (hyperthread)
+count, contradicting its own project's already-published contract (M0.5's
+own note flagged exactly this as an open question for this task).
+
+This dev machine makes the distinction concrete: a hybrid
+performance/efficiency-core CPU (Intel Core i7-14700F) with **28 logical /
+20 physical** cores -- 8 performance cores each exposing 2 hyperthread
+siblings, plus 12 efficiency cores exposing 1 each. A naive `logical // 2`
+would get this wrong (14, not 20); `openmeq.parallel._physical_core_count`
+instead counts unique `(physical id, core id)` pairs from `/proc/cpuinfo`,
+restricted to whatever `os.sched_getaffinity(0)` allows (so a cgroup/CPU
+quota restriction, e.g. inside a container, is still respected). Falls
+back to the logical count if `/proc/cpuinfo` is unavailable/unparseable
+(non-Linux, or any other platform where this can't be determined) --
+`_resolve_n_workers` never raises or returns 0 because of this.
+
+This also lines up with this document's original §5 ("Documented
+bottleneck: memory bandwidth, not I/O or scheduling") own earlier finding
+(that QC-stats plateaus by ~4-8 workers and *regresses* by 28 on this
+machine, i.e. its old bottleneck is memory bandwidth, not core count) --
+requesting every
+logical core by default was actively counter-productive for at least one
+profiled step, and physical cores is a better single default across the
+whole pipeline without this module needing to know which step is calling
+it. A user who has measured their own workload/machine can still always
+set `n_workers` to an explicit integer.
+
+New tests: `tests/test_parallel_physical_cores.py` (synthetic
+`/proc/cpuinfo` content covering the hybrid-topology and
+affinity-restricted cases, plus the missing/malformed-file fallback).
+
+## 6. Larger benchmark dataset + parallel scaling (1/4/8/16/28 workers)
+
+`tests/data/make_synthetic.generate` gained `n_stations`/`n_days`
+parameters (M11.3), reusing its existing generator code rather than
+building a second one (`generate()`'s own docstring has the full contract;
+left at their default `None`, output is byte-identical to every pre-M11.3
+call -- verified directly, diffing every generated file). `scripts/
+benchmark.py` gained matching `--n-stations`/`--n-days`/`--tmp-dir` flags.
+
+Generated a 20-station x 7-day dataset (60 channels x 7 days = 420
+channel-days, 70 events, ~4.4 GB) into the scratchpad (deleted after this
+measurement -- disk on this machine has ~10-15 GB free). Machine load
+checked with `uptime` before running (`load average: ~3-8` against 28
+logical cores -- not perfectly idle, some background activity, but well
+under saturation; noted as a measurement caveat below, matching this
+document's own §"Measurement caveats" precedent).
+
+Both `qc` and `detect` re-ran from a clean output directory at each
+`n_workers` (forced, not skip-cached), on the same generated data (qc's
+channel flags -- and therefore which channels `detect` reads -- are
+deterministic given the same data/config, independent of `n_workers`, so
+these five runs are a fair comparison of the exact same work at each
+worker count):
+
+**`qc` (420 channel-days):**
+
+| n_workers | wall time | channel-days/s | speedup |
+|---:|---:|---:|---:|
+| 1 | 306.04 s | 1.37 | 1.00x |
+| 4 | 123.02 s | 3.41 | 2.49x |
+| 8 | 102.37 s | 4.10 | 2.99x |
+| 16 | 100.57 s | 4.18 | 3.04x |
+| 28 | 103.83 s | 4.05 | 2.95x |
+
+Plateaus by 8 workers and *regresses slightly* by 28 -- reproducing, at
+this larger 420-channel-day scale, this document's original §5
+("Documented bottleneck: memory bandwidth...") finding
+(memory-bandwidth-bound, not I/O/scheduling-bound) almost exactly (the
+original §4's post-optimisation table showed the same 8-worker plateau and
+16+-worker regression shape on the tiny 48-channel-day fixture). This is
+direct supporting evidence for the "`n_workers: auto` -> physical-cores"
+fix above (§5 of *this* M11.3 section): on this machine, physical cores
+(20) sits right at the plateau, not past it -- a better default than
+logical cores (28), which measurably regresses.
+
+**`detect` (7 windows/days, one task per day at `chunk_days=1`):**
+
+| n_workers | wall time | speedup |
+|---:|---:|---:|
+| 1 | 187.09 s | 1.00x |
+| 4 | 142.96 s | 1.31x |
+| 8 | 98.94 s | 1.89x |
+| 16 | 89.99 s | 2.08x |
+| 28 | 87.07 s | 2.15x |
+
+`detect`'s scaling is capped well below `qc`'s not because of a bug, but
+by its own unit of parallelism: PLAN.md §4 documents `detect` as "day (all
+stations)" -- one `pmap` task per day. With only 7 days in this benchmark
+dataset, no more than 7 tasks can ever run concurrently, and the
+per-window costs are themselves wildly uneven (event-dependent: a
+quiet day finishes in ~4-13 s, the busiest in this run took ~85-137 s
+*regardless of `n_workers`*, since one window is never split across
+workers). Wall time above `n_workers=8` is essentially bounded by that one
+slowest single window, not by available parallelism -- a classic
+load-imbalance-with-few-tasks ceiling, not a scaling defect. At production
+scale (e.g. a full year, 365 potential day-tasks with `chunk_days=1`),
+this ceiling is far less binding; this benchmark's 7-day size (chosen to
+keep dataset generation/runtime within this task's budget) is simply too
+short to demonstrate `detect`'s scaling past ~8 workers on its own. This
+is exactly what `cfg.parallel.chunk_days`/finer day-splitting would need
+to address for a short survey with very uneven per-day event rates -- noted
+as a follow-up, not implemented here (out of scope: no profiling evidence
+that *this* project's own realistic archives are that short/bursty).
+
+**Machine load during this sweep** (`uptime`, checked before starting and
+at the start of each configuration): load average ranged ~3-10 against 28
+logical cores -- some background activity present (this is a shared dev
+machine), but well under saturation throughout; re-measuring on a
+perfectly idle machine might shift absolute numbers slightly but is
+unlikely to change the qualitative shape (plateau/regression for `qc`,
+task-count-capped scaling for `detect`) given how closely it reproduces
+this document's original §4/§5, separately measured months earlier on a
+different (tiny) dataset.
+
+## 7. Recommendations
+
+1. **`n_workers: auto` now resolves to physical cores** (§5) -- matches the
+   already-documented contract; no user action needed, but anyone who had
+   set `auto` on a hyperthreaded machine expecting the *logical* count
+   should pin an explicit integer if they specifically want that.
+2. For memory-bandwidth-bound steps (QC stats, per this document's original
+   §5) on a machine where physical cores still oversubscribes
+   available memory bandwidth, pin `n_workers` explicitly lower (e.g. 4-8)
+   in that project's config -- a full per-step override is a larger
+   `ParallelConfig` contract change, flagged as a follow-up, not applied
+   here (single shared `cfg.parallel` block, out of this task's scope to
+   restructure).
+3. `detect`'s linear detrend and per-worker caching optimisations (§1) are
+   safe to rely on for production-scale runs; no output change.
+4. `DataIndex.read`/chunk memory: no action needed (§3) -- already correct.
+5. Follow-up (not filed as a bd issue per the "don't run bd write commands"
+   worker rule): a true per-step `n_workers`/`threads_per_worker` override
+   in `ParallelConfig`, if a future profiling pass finds another step with
+   a meaningfully different optimal worker count than the pipeline-wide
+   default.

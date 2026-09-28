@@ -115,6 +115,27 @@ detections are genuinely spread out. Each sub-window's ``Stream`` is
 dropped (falls out of scope) before the next sub-window is read, so peak
 memory is bounded by one sub-window's span, not the whole day's.
 
+**M11.3 follow-up (``OpenMEQ-m1f.3``): confirmed ``DataIndex.read`` does
+not decode whole day files.** A later note on this issue asked whether a
+still-observed ~830 MB process RSS while chunking a sparse day (8
+stations) meant :meth:`~openmeq.index.DataIndex.read` was decoding a whole
+day file even for a short sub-window read. Measured directly (M11.3):
+reading a 60 s window out of a full 17.28M-sample/day file costs ~3.4 ms
+and ~1.1 MB of Python-visible allocation, versus ~83 ms/~70 MB for the
+whole file -- proportional to the *window*, not the file (ObsPy's native
+miniSEED selective decode, exactly as this module's own docstring already
+documented). The 830 MB figure is explained instead by
+``resource.getrusage(...).ru_maxrss`` being a **whole-process**,
+monotonically non-decreasing high-water mark (``scripts/benchmark.py``'s
+own docstring flags this same caveat): by the time ``chunk`` runs, ``qc``
+and ``detect`` have already touched several GB in the same process (at
+``n_workers=1`` especially, where ``pmap`` runs every window in-process,
+not a subprocess), and that earlier peak is still counted against
+``chunk``'s number. A ``psutil``-sampled, stage-local peak (not
+``ru_maxrss``) put ``chunk``'s own contribution at under 300 MB on the
+same run. No code change was needed here; see ``docs/performance.md``
+for the full measurement.
+
 ``cfg_path`` design (worker IPC)
 -----------------------------------
 Mirrors ``openmeq.qc.stats``'s ``cfg_path`` convention exactly (see that
