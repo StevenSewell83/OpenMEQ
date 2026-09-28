@@ -2,9 +2,10 @@
 
 ``run(cfg, paths, **opts)`` (the ``openmeq.cli`` step-module contract,
 ``docs/ARCHITECTURE.md`` §2) is this package's CLI entry point:
-``--compile`` dispatches to M7.4's compile step (not yet built -- logs "not
-implemented" like every other not-yet-built step, matching
-``openmeq/cli.py``'s own convention); otherwise, if ``cfg.review.enabled``
+``--compile`` dispatches to M7.4's compile step,
+:func:`openmeq.review.compile.compile_review` (merges ``review/events/*.xml``
+over ``locate/catalog_auto.xml`` into ``review/catalog_final.xml``);
+otherwise, if ``cfg.review.enabled``
 (``config/example.yaml``: "true to pause the pipeline for manual ObsPyck
 review"), it runs M7.3's batch review loop,
 :func:`openmeq.review.batch.run_review`; if not, it logs and prints a
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from openmeq.log import get_logger
 from openmeq.review.batch import run_review
+from openmeq.review.compile import compile_review
 
 if TYPE_CHECKING:
     from openmeq.config import Config
@@ -56,8 +58,8 @@ def run(
         it's still missing once the batch loop is actually about to run.
     compile : bool, keyword-only, optional
         ``--compile``: merge reviewed events into
-        ``review/catalog_final.xml`` instead of running the batch loop.
-        M7.4's job -- not yet implemented.
+        ``review/catalog_final.xml`` instead of running the batch loop
+        (:func:`openmeq.review.compile.compile_review`, M7.4).
     reset, reset_all
         ``--reset``/``--reset-all``: forwarded to
         :func:`openmeq.review.batch.run_review`.
@@ -66,7 +68,11 @@ def run(
         (ARCHITECTURE.md §2's ``run(cfg, paths, **opts)`` contract).
     """
     if compile:
-        message = "openmeq review --compile: not implemented (see M7.4)"
+        final_catalog = compile_review(cfg, paths)
+        message = (
+            f"openmeq review --compile: wrote {paths.catalog_final_xml} "
+            f"({len(final_catalog)} event(s))"
+        )
         logger.info(message)
         print(message)
         return
