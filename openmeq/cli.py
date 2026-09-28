@@ -167,9 +167,17 @@ def chunk(config_path: str, force: bool) -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def pick(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Rerun even if cfg.phasenet, cfg.stations and every chunks/<event_id>/<event_id>.mseed "
+    "are unchanged since the last run.",
+)
+def pick(config_path: str, force: bool) -> None:
     """PhaseNet preparation, running PhaseNet, and converting picks to QuakeML."""
-    _dispatch("pick", config_path)
+    _dispatch("pick", config_path, force=force)
 
 
 @main.command()
