@@ -28,3 +28,7 @@ htmlcov/
 
 # install.sh log
 /install.log
+
+# scripts/benchmark.py run output (M0.9): timestamped, machine/run-dependent,
+# not meaningful to diff -- see benchmarks/README.md for the committed schema.
+benchmarks/results/
