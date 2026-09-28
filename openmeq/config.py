@@ -454,13 +454,20 @@ class Simul2000RaytraceConfig(_StrictModel):
     """SIMUL2000 ray-tracing parameters for hypoDD.inp's IMOD=9 (3D) block:
     ``IPHA NDIP ISKIP SCALE1 SCALE2 XFAC TLIM NITPB``.
 
-    TODO(OpenMEQ-6ld.3): the M9 epic design note flags this field-to-parameter
-    mapping as needing a second confirmation pass against
-    ``src/hypoDD/get_vel3d.f``'s subroutine argument order
-    (``iphase,lat_3d,lon_3d,rot_3d,indip,iiskip,iscale1,iscale2,ixfac,itlim,
-    initpb``) before M9.3 ships the 3D writer -- do not treat these defaults
-    (taken from examples/example1/hypoDD.inp's commented-out IMOD=9 block,
-    "2 9 4 1 1 1.35 0.0005 50") as final without that re-verification.
+    M9.3 / OpenMEQ-6ld.3's second confirmation pass (called for by the M9
+    epic design note's original ``TODO`` here) confirms this field order
+    against ``src/hypoDD/get_vel3d.f``'s subroutine signature
+    (``fn_vel3d,iphase,lat_3d,lon_3d,rot_3d,indip,iiskip,iscale1,iscale2,
+    ixfac,itlim,initpb,log``), ``src/hypoDD/hypoDD.f:449-452``'s call site
+    (same variables, same order), and ``src/hypoDD/getinp2.f:236-237``'s
+    ``hypoDD.inp`` read (``ipha3d,ndip,iskip,scale1,scale2,xfac,tlim,
+    nitpb``) -- all three agree, and this field order already matched
+    before the confirmation pass; see
+    `openmeq.relocate.hypodd_files.write_hypodd_inp_3d`'s docstring for the
+    full citation trail. The defaults below (taken from
+    ``examples/example1/hypoDD.inp``'s commented-out, non-authoritative but
+    corroborating ``IMOD=9`` block, ``"2 9 4 1 1 1.35 0.0005 50"``) are
+    confirmed final.
     """
 
     iphase: int = 2
