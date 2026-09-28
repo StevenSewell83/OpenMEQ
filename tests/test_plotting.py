@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from openmeq.plotting import (
+    plot_bar,
     plot_boxplot,
     plot_heatmap,
     plot_hist,
@@ -269,6 +270,32 @@ def test_plot_boxplot_basic(tmp_path):
 def test_plot_boxplot_empty(tmp_path):
     out = tmp_path / "boxplot_empty.png"
     plot_boxplot(pd.DataFrame(columns=["station", "ratio"]), out, by="station", column="ratio")
+    _png_ok(out)
+
+
+# --------------------------------------------------------------------------
+# plot_bar (M2.3 / OpenMEQ-ujx.3)
+# --------------------------------------------------------------------------
+
+
+def test_plot_bar_basic(tmp_path):
+    categories = [f"XX.STA{i:02d}" for i in range(8)]
+    values = list(range(1, 9))
+    out = tmp_path / "station_participation.png"
+    plot_bar(
+        categories,
+        values,
+        out,
+        xlabel="Station (NET.STA)",
+        ylabel="Detections",
+        title="Station participation",
+    )
+    _png_ok(out)
+
+
+def test_plot_bar_empty(tmp_path):
+    out = tmp_path / "bar_empty.png"
+    plot_bar([], [], out)
     _png_ok(out)
 
 

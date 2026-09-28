@@ -137,9 +137,17 @@ def qc(config_path: str, force: bool) -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def detect(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Rerun even if qc/channel_flags.json, inventory/index.json and cfg.detection "
+    "are unchanged since the last run.",
+)
+def detect(config_path: str, force: bool) -> None:
     """Network coincidence detection."""
-    _dispatch("detect", config_path)
+    _dispatch("detect", config_path, force=force)
 
 
 @main.command()

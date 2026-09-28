@@ -87,23 +87,37 @@ def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: st
 
     result = runner.invoke(main, [step, "-c", str(config_path)])
 
-    assert result.exit_code == 0, result.output
+    if step == "detect":
+        # `detect` (M2.3 / OpenMEQ-ujx.3) is implemented -- unlike every
+        # other still-stubbed step (`review` aside, see below) -- and has
+        # its own deliberate hard-dependency check (ARCHITECTURE.md §2/
+        # §4.2): a fresh config/example.yaml-based run directory has never
+        # had `openmeq qc` (M1.7, still a stub in this test file's own
+        # scope) produce inventory/index.json / qc/channel_flags.json, so
+        # this fails clearly rather than "not implemented".
+        assert result.exit_code != 0, result.output
+        assert "openmeq qc" in result.output
+    else:
+        assert result.exit_code == 0, result.output
 
-    # `review` (M7.3 / OpenMEQ-c3l.3) is implemented -- unlike every other
-    # still-stubbed step, it doesn't print "not implemented"; instead, since
-    # config/example.yaml ships with `review.enabled: false` ("true to pause
-    # the pipeline for manual ObsPyck review"), it prints a one-line
-    # "nothing to do" message and exits 0 without touching
-    # locate/catalog_auto.xml (which doesn't exist yet at this point in the
-    # real pipeline, `locate` itself still being a stub here).
-    expected_substring = "enabled is false" if step == "review" else "not implemented"
-    assert expected_substring in result.output
+        # `review` (M7.3 / OpenMEQ-c3l.3) is implemented -- unlike every
+        # other still-stubbed step, it doesn't print "not implemented";
+        # instead, since config/example.yaml ships with `review.enabled:
+        # false` ("true to pause the pipeline for manual ObsPyck review"),
+        # it prints a one-line "nothing to do" message and exits 0 without
+        # touching locate/catalog_auto.xml (which doesn't exist yet at this
+        # point in the real pipeline, `locate` itself still being a stub
+        # here).
+        expected_substring = "enabled is false" if step == "review" else "not implemented"
+        assert expected_substring in result.output
 
-    log_file = output_dir / "logs" / f"{step}.log"
-    assert log_file.is_file(), f"{log_file} was not created"
-    assert expected_substring in log_file.read_text()
+        log_file = output_dir / "logs" / f"{step}.log"
+        assert log_file.is_file(), f"{log_file} was not created"
+        assert expected_substring in log_file.read_text()
 
-    # The ensured directory tree (ARCHITECTURE.md §3), spot-checked.
+    # The ensured directory tree (ARCHITECTURE.md §3), spot-checked --
+    # `paths.ensure()` runs before a step's body, so this holds even for
+    # `detect`'s early failure above.
     for rel in ("inventory", "qc/diagnostics", "logs", "chunks", "locate/passA", "relocate/cache"):
         assert (output_dir / rel).is_dir(), f"{rel} was not created under {output_dir}"
 
@@ -147,7 +161,13 @@ def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None
     result_detect = runner.invoke(main, ["detect", "-c", str(config_path)])
 
     assert result_chunk.exit_code == 0, result_chunk.output
-    assert result_detect.exit_code == 0, result_detect.output
+    # `detect` (M2.3) fails here since `chunk` doesn't produce
+    # inventory/index.json / qc/channel_flags.json -- see
+    # test_step_runs_to_completion_against_example_config's own "detect"
+    # branch. The point of this test (no duplicate/stale log handler across
+    # two subcommands in one process) doesn't depend on `detect` succeeding,
+    # only on each step's log file being separate and correctly named.
+    assert result_detect.exit_code != 0, result_detect.output
 
     chunk_log = (output_dir / "logs" / "chunk.log").read_text()
     detect_log = (output_dir / "logs" / "detect.log").read_text()

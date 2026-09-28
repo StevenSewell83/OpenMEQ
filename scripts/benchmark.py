@@ -319,10 +319,11 @@ def _make_cli_step_stage(step_name: str) -> Callable[[BenchmarkContext], str]:
 
     Mirrors ``openmeq.cli._dispatch`` exactly (config logging, then lazily
     import the step's module and call its ``run(cfg, paths, **opts)`` if
-    present) -- reusing ``openmeq.cli._STEP_MODULES`` as the single source
-    of truth for module names / plan keys, rather than a second, divergent
-    copy of that mapping (see the "pitfalls" design note this task shipped
-    with).
+    present, always forwarding ``config_path`` -- ARCHITECTURE.md §2: "the
+    dispatcher passes common options such as `config_path` to every step")
+    -- reusing ``openmeq.cli._STEP_MODULES`` as the single source of truth
+    for module names / plan keys, rather than a second, divergent copy of
+    that mapping (see the "pitfalls" design note this task shipped with).
     """
     module_name, plan_key = _STEP_MODULES[step_name]
 
@@ -337,7 +338,7 @@ def _make_cli_step_stage(step_name: str) -> Callable[[BenchmarkContext], str]:
             raise StageSkipped(f"not implemented yet (see {plan_key})")
         configure_logging(ctx.paths, step_name)
         opts = _EXTRA_STEP_OPTS.get(step_name, {})
-        run_func(ctx.cfg, ctx.paths, **opts)
+        run_func(ctx.cfg, ctx.paths, config_path=str(ctx.config_path), **opts)
         return f"{step_name}.run(cfg, paths) completed"
 
     _stage.__name__ = f"stage_{step_name}"
