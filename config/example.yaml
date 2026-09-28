@@ -140,6 +140,16 @@ nlloc:
     sigma_time_fraction: 0.01
     sigma_time_min_s: 0.05
     sigma_time_max_s: 2.0
+  locmeth:                             # LOCMETH: location method (no config section before M6.1)
+    method: EDT_OT_WT
+    max_dist_sta_grid: 9999.0
+    min_number_phases: 4
+    max_number_phases: -1
+    min_number_s_phases: -1
+    vp_vs_ratio: -1.0                  # negative: use the real S travel-time grids, not a fixed Vp/Vs ratio
+    max_num_3d_grid_memory: 6
+    min_dist_sta_grid: -1.0
+    reject_duplicate_arrivals: true
   # Ascending time_errors.uncertainty (s) bucket edges -> NLLoc LOCQUAL2ERR
   # quality classes 0..N. NLLoc ignores this statement's values for NLLOC_OBS
   # input (which always carries a literal per-pick error, docs/nlloc_interface.md

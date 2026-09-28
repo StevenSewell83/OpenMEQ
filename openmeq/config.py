@@ -326,6 +326,35 @@ class NllocLocGau2Config(_StrictModel):
     sigma_time_max_s: float = 2.0
 
 
+class NllocLocMethConfig(_StrictModel):
+    """NLLoc ``LOCMETH`` (location method) parameters.
+
+    ``LOCMETH method maxDistStaGrid minNumberPhases maxNumberPhases
+    minNumberSphases VpVsRatio maxNum3DGridMemory minDistStaGrid
+    iRejectDuplicateArrivals`` (docs/nlloc_interface.md §4) -- no
+    ``openmeq.config`` model existed for this statement before M6.1
+    (docs/nlloc_interface.md §8's flagged follow-up). Defaults match the
+    values verified end-to-end in the M5.1 spike
+    (``tests/test_nlloc_spike.py``) and already hardcoded in
+    ``openmeq.nlloc_setup._obspyck_nlloc_control``'s own control file
+    (``LOCMETH EDT_OT_WT 9999.0 4 -1 -1 -1.0 6 -1.0 1``):
+    ``vp_vs_ratio=-1.0`` so NLLoc uses the real S travel-time grids
+    Grid2Time built (this project always has real per-station S grids,
+    ARCHITECTURE.md §6d) rather than deriving S times from a fixed Vp/Vs
+    ratio applied to the P grid.
+    """
+
+    method: Literal["GAU_ANALYTIC", "EDT", "EDT_OT_WT", "EDT_OT_WT_ML"] = "EDT_OT_WT"
+    max_dist_sta_grid: float = 9999.0
+    min_number_phases: int = 4
+    max_number_phases: int = -1
+    min_number_s_phases: int = -1
+    vp_vs_ratio: float = -1.0
+    max_num_3d_grid_memory: int = 6
+    min_dist_sta_grid: float = -1.0
+    reject_duplicate_arrivals: bool = True
+
+
 class NllocConfig(_StrictModel):
     velocity_model: NllocVelocityModelConfig
     grid: NllocGridConfig
@@ -337,6 +366,7 @@ class NllocConfig(_StrictModel):
     locsearch: NllocLocSearchConfig = Field(default_factory=NllocLocSearchConfig)
     locgau: NllocLocGauConfig = Field(default_factory=NllocLocGauConfig)
     locgau2: NllocLocGau2Config = Field(default_factory=NllocLocGau2Config)
+    locmeth: NllocLocMethConfig = Field(default_factory=NllocLocMethConfig)
     # Ascending time_errors.uncertainty (s) bucket edges mapping to NLLoc
     # LOCQUAL2ERR quality classes 0..N. **Correction (docs/nlloc_interface.md
     # §5, LOCQUAL2ERR)**: this statement is "required, non-repeatable, for

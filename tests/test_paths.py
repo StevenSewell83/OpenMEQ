@@ -121,6 +121,16 @@ def test_relocate_cache_file(paths: RunPaths) -> None:
     assert paths.relocate_cache_file("ev1") == paths.relocate_cache_dir / "ev1.npz"
 
 
+def test_locate_pass_dir(paths: RunPaths) -> None:
+    assert paths.locate_pass_dir("passA", "ev1") == paths.passA_dir / "ev1"
+    assert paths.locate_pass_dir("passB", "ev1") == paths.passB_dir / "ev1"
+
+
+def test_locate_pass_dir_rejects_unknown_pass_name(paths: RunPaths) -> None:
+    with pytest.raises(ValueError, match="passA.*passB"):
+        paths.locate_pass_dir("passC", "ev1")
+
+
 @pytest.mark.parametrize(
     "step",
     [
