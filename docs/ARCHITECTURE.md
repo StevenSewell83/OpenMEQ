@@ -34,6 +34,8 @@ This document is the **contract between modules**. Every task in the build (see 
 | `openmeq.stations` | `load_inventory(cfg.stations) -> obspy.Inventory` (StationXML file/folder + CSV merge); `station_table(cfg.stations) -> pandas.DataFrame` with columns `network,station,location,latitude,longitude,elevation_m,depth_m`; `apply_channel_map(stream, cfg.stations) -> obspy.Stream`; `write_merged_inventory(inv, paths, cfg.stations=None)` writes `inventory/stations.xml`/`.csv`; `check_coverage(seed_ids: Iterable[str], inv) -> dict` (takes a plain iterable of seed ids, e.g. `DataIndex.seed_ids()` — does not import `openmeq.index`) plus `write_metadata_report(report, paths)` for `inventory/metadata_report.json` (M1.2). |
 | `openmeq.plotting` | `setup_style()`, `save_fig(fig, path)`, `plot_map_sections(df, stations, path, ...)`, `plot_hist(...)`, `plot_heatmap(...)`, `plot_timeseries(...)`, `plot_boxplot(...)`. |
 | `openmeq.review.obspyck_config` (M7.2) | ObsPyck ini + pluginpath generator, backing M7.3's batch loop (docs/obspyck_notes.md). `generate_obspyck_config(cfg, paths, force=False) -> Path` writes `cfg.review.obspyck_config` (`[base]`/`[seismic_phases]`/`[seed_id_lookup]`/`[nonlinloc]` from `cfg`, `[keys]`/`[misc]`/`[gui_defaults]`/`[matplotlibrc]`/`[ar_picker]` spliced byte-identical from a packaged copy of ObsPyck's own `example.cfg`; no `server_*`/`[station_combinations]`), calls `openmeq.nlloc_setup.link_obspyck_model` (reused, not duplicated) and adds the empty `hyp_2000/`/`focmec/` dirs `ObsPyck.__init__` requires alongside `nlloc/`, gated by `openmeq.manifest.StepManifest` on `cfg.review`+`cfg.nlloc`+the station table. `openmeq.review._obspyck_compat.apply_obspyck_compat_patches(cfg)` is the one entry point for the two ObsPyck 0.8.2 monkeypatches (`gk2lonlat` re-derived from `cfg.nlloc.grid.origin`'s `TRANS SIMPLE`, and stripping NLLoc 7.1.05's stray `>` `PHASE`-line token) -- M7.3's launcher must call it once after import and again immediately after every `ObsPyck(...)` construction. |
+| `openmeq.review._launch_obspyck` (M7.3) | `python -m openmeq.review._launch_obspyck <obspyck argv>` -- the in-process launcher `docs/obspyck_notes.md` §6a requires (not the pip-installed `obspyck` console script, so the compat patches actually take effect). Reads the OpenMEQ run config from the `OPENMEQ_CONFIG` env var (not a CLI flag -- ObsPyck's own argv already claims `-c`/`--config` for its ini file), calls `apply_obspyck_compat_patches(cfg)` once at import, wraps `obspyck.obspyck.ObsPyck.__init__` to reapply it after every construction, then hands the rest of `sys.argv` to `obspyck.obspyck.main()` unchanged (which never returns normally -- it ends via `os._exit`, per `docs/obspyck_notes.md` §9's confirmed exit codes: `0` save/no-save-ambiguous, `1` startup/config error). |
+| `openmeq.review.batch` (M7.3) | `run_review(cfg, paths, *, config_path, reset=(), reset_all=False, non_interactive=False, input_func=input) -> BatchReviewResult` -- the resumable batch loop backing `openmeq review` (docs/ARCHITECTURE.md §3a for `review/state.json` semantics). Iterates `accepted(read_catalog(paths.catalog_auto_xml))` sorted by origin time, skipping any `event_id` already in `state.json`; launches `python -m openmeq.review._launch_obspyck` per remaining event in its own `paths.review_work_dir(event_id)`, detects a save by diffing `work_dir.glob("obspyck_*.xml")` before/after (never trusting the exit code for save/no-save, only for a hard startup failure, exit code `!= 0`, which aborts the whole run rather than being silently recorded as a review decision), files a detected save to `paths.review_event_file(event_id)` (re-stamping `Event.resource_id` back to OpenMEQ's own convention, since ObsPyck's `setXMLEventID` overwrites it with its own timestamp-based id), and otherwise prompts (or, `non_interactive=True`, auto-skips) for skip/reject/quit. Writes `state.json` after every event. `--reset`/`--reset-all` (`openmeq review` CLI flags) clear entries before the loop runs. |
 | `openmeq.nlloc_setup` (M5.2, 3D grids M5.3) | 1D/3D NLLoc setup, backing `scripts/setup_nlloc.py` (PLAN.md §7). `write_control_common(cfg, paths) -> str` (shared `CONTROL`/`TRANS` boilerplate every Vel2Grid/Grid2Time/NLLoc control file in the project uses, including M6.1's). `write_station_list(station_table) -> list[str]` (one `GTSRCE` line per unique `NET.STA`, raises `ConfigError` on a bare-station-code clash). `location_grid_bounds(cfg, station_table) -> LocationGridBounds` (the convention for the eventual `LOCGRID` bounds -- §6d). `build_1d_grid(cfg, paths, station_table)` (1D: runs `Vel2Grid`). `read_grid3d_hdr(hdr_path) -> Grid3DHeader` (parses an NLLoc 3D grid `.hdr`). `check_3d_grid_coverage(hdr_path, cfg, bounds)` (raises `ConfigError` unless the grid strictly covers `bounds` and its own `TRANSFORM` matches `cfg.nlloc.grid.origin` -- §6d). `link_3d_grid(cfg, paths, station_table)` (3D: validates then copies/symlinks the user-supplied grid in, same `<root>.{P,S}.mod.{hdr,buf}` convention as `build_1d_grid`). `run_grid2time(cfg, paths, station_table)` (runs `Grid2Time` per (station, phase) via `openmeq.parallel.pmap`; auto-detects `GTMODE GRID2D`/`GRID3D` per phase from its own model grid's `.hdr`, so it's agnostic to which of the two setup paths produced its input). `link_obspyck_model(cfg, paths, station_table)` (refreshes ObsPyck's model link, docs/obspyck_notes.md). `setup_nlloc(cfg, paths, force=False) -> bool` (top-level orchestration, dispatches on `cfg.nlloc.velocity_model.type`, with `openmeq.manifest.StepManifest` skip-unchanged). |
 | `openmeq.locate.nlloc_runner` (M6.1) | Per-event NLLoc runner: the single reusable primitive M6.2 (pass A) and M6.3 (pass B) call once per event per iteration. `locate_event(event, picks_to_use, paths, cfg, pass_name, iteration) -> obspy.core.event.Origin`. `picks_to_use` is built entirely by the caller ("accepted, correct phase type for this pass, this iteration") -- this function never decides inclusion. Writes exactly `picks_to_use` via `Catalog.write(..., format="NLLOC_OBS")` into `paths.locate_pass_dir(pass_name, event_id) / f"iter_{iteration:02d}"`; renders the control file from `openmeq.nlloc_setup.write_control_common`/`location_grid_bounds` (never re-derived) plus `cfg.nlloc.locsearch`/`locgau`/`locgau2`/`locmeth`/`locqual2err_thresholds_s`; runs `NLLoc` via `openmeq.external.run`; locates the produced per-event `.hyp` file from NLLoc's own `"Finished location: <path>"` stdout line (falling back to a glob), and parses it with `obspy.read_events(..., format="NLLOC_HYP", picks=picks_to_use)` so `Arrival.pick_id` resolves back to the exact `Pick` objects passed in. Raises `DuplicatePickError` (before any subprocess runs) if two picks share `(station_code, phase_hint)`; `ValueError` if any pick has no `time_errors.uncertainty`; `openmeq.config.ConfigError` if the `LOCGRID` volume isn't fully covered by every used station/phase's own travel-time grid (docs/nlloc_interface.md's `LOCGRID` note); `NLLocFailed(event_id, pass_name, iteration, stderr_tail)` on a non-zero NLLoc exit or a missing `.hyp` (0 events located) -- the caller treats this as "0 accepted picks this iteration". `cfg.nlloc.locmeth` (new, this task) models the `LOCMETH` statement, with no config section before M6.1 (docs/nlloc_interface.md §8). |
 
@@ -67,7 +69,12 @@ locate/passB/<event_id>/iter_NN/
 locate/catalog_auto.xml
 locate/summary.csv              # event_id,time,lat,lon,depth_km,rms,gap,n_p,n_s,err_h_km,err_z_km,status,reason
 locate/removal_log.csv          # event_id,pass,iteration,seed_id,phase,residual_s,reason
-review/state.json               # {event_id: "done"|"skipped"|"rejected"}
+review/state.json               # {event_id: "done"|"skipped"|"rejected"} (§3a)
+review/work/<event_id>/         # (M7.3) ObsPyck subprocess cwd; obspyck_*.xml
+                                 # save-detection scratch; kept, never cleaned
+                                 # (except stale obspyck_*.xml from a crashed
+                                 # previous attempt at the *same* event, right
+                                 # before relaunching it)
 review/events/<event_id>.xml
 review/catalog_final.xml
 magnitude/catalog_mag.xml
@@ -161,6 +168,35 @@ STA  TT1  TT2  WGHT  PHA
   over the same persisted `event_id_map.csv`, and re-reads `dt.ct` itself
   for each pair's per-station/phase data -- the returned list is only the
   pair identities, not a duplicate copy of `dt.ct`'s per-line content.
+
+## 3a. `review/state.json` semantics (M7.3 / OpenMEQ-c3l.3)
+
+An event with **no entry** is "not yet attempted" and is offered again by
+the next `openmeq review` run (this is the resume behaviour). Once an event
+has an entry, it is **never** re-offered automatically:
+
+- `"done"`: a QuakeML was saved by ObsPyck and filed to
+  `review/events/<event_id>.xml`.
+- `"skipped"`: the reviewer chose to skip after no save was detected. This
+  is a **permanent** decision (matches PLAN.md §6, "Already-reviewed events
+  are skipped") -- it does not mean "retry automatically next time"; the
+  reviewer must explicitly clear it (`openmeq review --reset EVENT_ID` /
+  `--reset-all`) to have it offered again.
+- `"rejected"`: the reviewer explicitly marked the event bad after no save
+  was detected. M7.3 only persists this decision; M7.4's compile step is
+  what actually applies `openmeq.catalog.reject_event` semantics when
+  building `review/catalog_final.xml`.
+
+A batch run that is quit early (`[q]uit` at the interactive prompt, or a
+killed process) leaves the in-progress event **without** an entry (it is
+neither "done" nor "skipped"), so it is offered again on the next run --
+`state.json` is written after every event, not just at the end, so a killed
+session loses at most the in-progress event.
+
+`review/work/<event_id>/` is a distinct concept from `state.json`: it is the
+ObsPyck subprocess's own working directory (`openmeq.paths.RunPaths.review_work_dir`),
+kept around after every event (even a "done" one) for debugging, never
+interpreted as part of the resume/skip/reject state itself.
 
 ## 4. File formats
 

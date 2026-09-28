@@ -79,11 +79,20 @@ def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: st
     result = runner.invoke(main, [step, "-c", str(config_path)])
 
     assert result.exit_code == 0, result.output
-    assert "not implemented" in result.output
+
+    # `review` (M7.3 / OpenMEQ-c3l.3) is implemented -- unlike every other
+    # still-stubbed step, it doesn't print "not implemented"; instead, since
+    # config/example.yaml ships with `review.enabled: false` ("true to pause
+    # the pipeline for manual ObsPyck review"), it prints a one-line
+    # "nothing to do" message and exits 0 without touching
+    # locate/catalog_auto.xml (which doesn't exist yet at this point in the
+    # real pipeline, `locate` itself still being a stub here).
+    expected_substring = "enabled is false" if step == "review" else "not implemented"
+    assert expected_substring in result.output
 
     log_file = output_dir / "logs" / f"{step}.log"
     assert log_file.is_file(), f"{log_file} was not created"
-    assert "not implemented" in log_file.read_text()
+    assert expected_substring in log_file.read_text()
 
     # The ensured directory tree (ARCHITECTURE.md §3), spot-checked.
     for rel in ("inventory", "qc/diagnostics", "logs", "chunks", "locate/passA", "relocate/cache"):
