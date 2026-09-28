@@ -129,6 +129,21 @@ MANDATORY_BASE_KEYS = (
     "verbosity",
     "event_server",
     "magnitude_pick_color",
+    # Added by OpenMEQ-c3l.3 (M7.3): `ObsPyck.drawAxes()` (called
+    # unconditionally from `__init__`) does `self.config.getboolean("base",
+    # "normalization")` with no fallback -- missing it crashes construction
+    # before the GUI ever appears, exactly like the `[gui_defaults]`/
+    # `hyp_2000`/`focmec` pitfalls this module's own docstring already
+    # documents (confirmed empirically by M7.3's requires_gui end-to-end
+    # test: a real launch against this module's own generated config
+    # crashed with `configparser.NoOptionError: No option 'normalization'`
+    # until this was added). `magnitude_picker_width` is similarly read with
+    # `self.config.getint(...)` and no fallback, but only from the
+    # `setMagMin`/`setMagMax` key handler (a real reviewer's normal
+    # workflow, not construction) -- added for the same reason before it
+    # bites a real review session instead of a test.
+    "normalization",
+    "magnitude_picker_width",
 )
 
 
@@ -187,6 +202,15 @@ def _build_config(cfg: Config, pluginpath: Path) -> ConfigParser:
         # matching the local-file-only batch design.
         "event_server": "",
         "magnitude_pick_color": "green",
+        # See MANDATORY_BASE_KEYS' own comment: read unconditionally by
+        # `drawAxes()`/the magnitude-pick key handler, no fallback default.
+        # `normalization=false` matches this module's own `zero_mean=false`/
+        # `no_metadata=false` choice (no implicit reshaping of the raw
+        # counts ObsPyck displays); `magnitude_picker_width` is ObsPyck's
+        # own shipped example.cfg value (a plausible pixel width, with no
+        # OpenMEQ-specific meaning to derive it from).
+        "normalization": "false",
+        "magnitude_picker_width": "10",
     }
     parser["seismic_phases"] = {"P": "red", "S": "blue"}
     parser["seed_id_lookup"] = {}

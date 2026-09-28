@@ -123,13 +123,23 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
     assert stages["load_config"]["duration_s"] is not None
     assert stages["load_config"]["peak_rss_kb"] is not None
 
-    # No pipeline step has a `run()` yet at M0 -- every one must be reported
+    # No pipeline step had a `run()` yet at M0 -- every one must be reported
     # skipped, not silently dropped or erroring, so the report stays
-    # well-formed as the pipeline is built out from here.
-    for step in ("qc", "detect", "chunk", "pick", "locate", "review", "magnitude", "relocate"):
+    # well-formed as the pipeline is built out from here. `review` (M7.3 /
+    # OpenMEQ-c3l.3) is implemented now, so it is checked separately below
+    # instead of asserting it stayed "skipped" forever.
+    for step in ("qc", "detect", "chunk", "pick", "locate", "magnitude", "relocate"):
         assert stages[step]["status"] == "skipped"
         assert stages[step]["duration_s"] is None
         assert "not implemented" in stages[step]["note"]
+
+    # `review` actually ran (this dataset never sets `review.enabled: true`,
+    # so `openmeq.review.run()` took its "nothing to do" early-return path
+    # rather than launching ObsPyck -- either way, the stage genuinely
+    # executed, so it is reported "ran", not "skipped").
+    assert stages["review"]["status"] == "ran"
+    assert stages["review"]["duration_s"] is not None
+    assert "completed" in stages["review"]["note"]
 
     for stage in report["stages"]:
         assert set(stage) == {

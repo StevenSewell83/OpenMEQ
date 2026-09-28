@@ -193,11 +193,25 @@ def patch_nlloc_call() -> None:
     :func:`apply_obspyck_compat_patches`. Idempotent: if ``Call`` is already
     one of this function's wrappers (checked via a marker attribute), it is
     left alone rather than double-wrapped.
+
+    ``obspyck.util.PROGRAMS['nlloc']`` itself only gains a ``'Call'`` key
+    once ``setup_external_programs()`` has actually run at least once (its
+    module-level initial value has only a ``'filenames'`` key -- confirmed
+    directly against the installed ``obspyck.util`` source); this is a no-op
+    when called before that has happened (e.g. the launcher's "once after
+    import" call, before any ``ObsPyck(...)`` has been constructed in this
+    process yet) rather than raising ``KeyError`` -- the launcher's
+    post-construction call always finds and wraps the real ``Call`` once it
+    exists (confirmed empirically: the OpenMEQ-c3l.3 batch loop's
+    requires_gui end-to-end test crashed with exactly this ``KeyError``
+    until this guard was added).
     """
     import obspyck.util as ou
 
     prog_dict = ou.PROGRAMS["nlloc"]
-    current_call = prog_dict["Call"]
+    current_call = prog_dict.get("Call")
+    if current_call is None:
+        return
     if getattr(current_call, "_openmeq_patched", False):
         return
 

@@ -223,6 +223,23 @@ class RunPaths:
     def catalog_final_xml(self) -> Path:
         return self.root / "review" / "catalog_final.xml"
 
+    def review_work_dir(self, event_id: str) -> Path:
+        """Per-event ObsPyck subprocess working directory
+        (``review/work/<event_id>/``, ARCHITECTURE.md §3, added by M7.3).
+
+        This is the batch review loop's (:mod:`openmeq.review.batch`) chosen
+        ``cwd`` for launching ``python -m openmeq.review._launch_obspyck``:
+        ObsPyck's "save locally" writes ``obspyck_<timestamp>.xml`` into its
+        own current working directory, so each event gets an isolated
+        directory the loop can snapshot before launch and diff after exit to
+        detect a save (never trusting the process exit code alone, see the
+        module's own docstring). Deliberately **not** cleaned up between runs
+        (kept for debugging a bad review session) -- only stale
+        ``obspyck_*.xml`` files from a previous crashed attempt at the same
+        event are removed, and only immediately before relaunching.
+        """
+        return self.root / "review" / "work" / event_id
+
     # -- magnitude (Step 7 / M8) -------------------------------------------------------
 
     @property

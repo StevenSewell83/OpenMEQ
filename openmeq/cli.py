@@ -33,6 +33,7 @@ task starts; here it is a stub that only logs "not implemented".
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from typing import Any
 
 import click
@@ -101,7 +102,13 @@ def _dispatch(step: str, config_path: str, **opts: Any) -> None:
         return
 
     logger.info("openmeq %s: starting (config=%s)", step, config_path)
-    run_func(cfg, paths, **opts)
+    # Every step module's `run` follows the `run(cfg, paths, **opts)`
+    # contract (ARCHITECTURE.md §2), so passing `config_path` here is always
+    # safe even for a step whose own `run` doesn't use it -- it just lands
+    # in that `run`'s own `**opts`. M7.3 (`openmeq.review`) is the first
+    # step that actually needs it (its batch loop launches ObsPyck in a
+    # subprocess, which must reload the same config file).
+    run_func(cfg, paths, config_path=str(Path(config_path).resolve()), **opts)
     logger.info("openmeq %s: done", step)
 
 
@@ -158,9 +165,25 @@ def locate(config_path: str) -> None:
     default=False,
     help="Merge reviewed events over the automatic catalogue into review/catalog_final.xml.",
 )
-def review(config_path: str, compile_: bool) -> None:
+@click.option(
+    "--reset",
+    "reset_events",
+    metavar="EVENT_ID",
+    multiple=True,
+    help="Clear this event's review/state.json entry so it is offered again. May be repeated.",
+)
+@click.option(
+    "--reset-all",
+    "reset_all",
+    is_flag=True,
+    default=False,
+    help="Clear every event's review/state.json entry so all are offered again.",
+)
+def review(
+    config_path: str, compile_: bool, reset_events: tuple[str, ...], reset_all: bool
+) -> None:
     """Manual review, ObsPyck batch mode (optional)."""
-    _dispatch("review", config_path, compile=compile_)
+    _dispatch("review", config_path, compile=compile_, reset=reset_events, reset_all=reset_all)
 
 
 @main.command()
