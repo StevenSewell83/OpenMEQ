@@ -264,13 +264,77 @@ file:line citations.
   writes `CID=0` (relocate all) with a blank `ID` list; per-cluster
   relocation is M10.4's `parallel_clusters` option.
 
+**3D (SIMUL2000, `IMOD=9`)**, built in M9.3 (`write_hypodd_inp_3d`, same
+module, sharing every section but the model block with `write_hypodd_inp_1d`
+via `_write_hypodd_inp_common`/`_write_hypodd_inp_footer`):
+
+- Requires `cfg.hypodd.velocity_model.origin_3d`, `.rotation_3d_deg` and
+  `.simul2000` all set (raises `ConfigError` otherwise).
+- The `IMOD=9` block's three data lines and field order — `vel3D.dat`
+  filename (basename only, matching `write_ph2dt_inp`'s bare-filename
+  convention since hypoDD always runs with the run folder as `cwd`);
+  `LAT_3D LON_3D ROT_3D`; `IPHA NDIP ISKIP SCALE1 SCALE2 XFAC TLIM
+  NITPB` — are confirmed directly against `get_vel3d.f:6-9`'s subroutine
+  signature, `hypoDD.f:449-452`'s call site, and `getinp2.f:231-237`'s
+  `hypoDD.inp` read (all three agree; see `write_hypodd_inp_3d`'s
+  docstring for the full citation trail). This resolves the `TODO` M0.3
+  left on `openmeq.config.Simul2000RaytraceConfig`'s field order — it was
+  already correct; no config schema change was needed.
+- `openmeq.relocate.hypodd_files.Vel3DGrid` (dataclass: `bld`, `nx`, `ny`,
+  `nz`, `xn`, `yn`, `zn`) and `read_vel3d_header(path)` parse just a
+  SIMUL2000 `vel3D.dat`'s grid header (not the velocity values), mirroring
+  `get_vel3d.f:68-82`'s four list-directed Fortran reads exactly (including
+  tokens left over on the header line, e.g. `examples/example1/vel3D.dat`'s
+  own `1.0 13 19 11 2  computed`, being discarded rather than misread).
+  Used by this module's own limit-check (below) and, in M9.4, to validate
+  an NLLoc-grid-to-SIMUL2000 conversion.
+
+**Compiled-array-limit checking and recompilation**, built in M9.3
+(`openmeq/relocate/hypodd_limits.py`, a separate module from the file
+writers above — a distinct concern, not a competing writer):
+
+- `check_compiled_limits(cfg, catalog, station_table, vel3d_grid=None) ->
+  LimitCheckResult` parses the *currently compiled* values out of
+  `include/hypoDD.inc`/`ph2dt.inc`/`vel3d.inc` at check time (never
+  hardcodes the shipped defaults — a previous recompile may have already
+  changed them) and checks: event count vs. `min(MAXEVE, MEV)`; station
+  count vs. `min(MAXSTA, MSTA)`; total observation count (catalog phases,
+  rejected picks excluded, plus an optional `xcorr_obs_count` once M10.1's
+  `dt.cc` exists) vs. `MAXDATA`; largest per-event phase count vs. `MOBS`
+  (ph2dt only); and, if a `Vel3DGrid` is given, each grid axis vs.
+  `vel3d.inc`'s `maxnx`/`maxny`/`maxnz`. `LimitCheckResult` holds a list of
+  `LimitCheck(name, current, limit, exceeded)`.
+- `recompile_hypodd(new_limits, external_hypodd_dir, external_bin_dir,
+  log)` rewrites just the changed `.inc` files' numeric values via a
+  regex substitution that preserves Fortran continuation lines and
+  comments (including `hypoDD.inc`'s own commented-out "small size
+  problems" alternate block, which every parse/rewrite here explicitly
+  skips), then runs `make clean && make` in `<external_hypodd_dir>/src`
+  (`openmeq.external.run`) and installs the rebuilt `hypoDD`/`ph2dt` into
+  `external_bin_dir`. `ensure_compiled_limits(...)` composes the two:
+  checks, and recompiles only if something is exceeded (idempotent — a
+  dataset that already fits never triggers a rebuild), raising each
+  exceeded parameter to `ceil(current * 1.5)` (`DEFAULT_HEADROOM_FACTOR`)
+  headroom so small further growth doesn't immediately force another
+  recompile.
+- **Never run any of these three against the main checkout's
+  `external/HYPODD`/`external/bin` from a test** — copy the source tree to
+  a scratch directory first (`recompile_hypodd` itself is directory-
+  agnostic; this is a caller discipline, enforced by every test in
+  `tests/test_relocate_limits.py`). A full `make clean && make` of the
+  whole tree takes well under 2 seconds, so tests recompile for real
+  rather than mocking the compiler.
+- `scripts/setup_hypodd.py`'s CLI wiring around `ensure_compiled_limits`
+  (reading the real catalogue/station table, deciding when to call it in
+  the pipeline) is M9.5, out of scope here.
+
 ## 7. External tools
 
 | Tool | Location | Built by |
 |---|---|---|
 | PhaseNet | `external/PhaseNet` (git clone at a pinned commit, `pip install -e`); model `external/PhaseNet/model/190703-214543` | `install.sh` |
 | NonLinLoc | `external/NonLinLoc` source → `external/bin/{NLLoc,Vel2Grid,Vel2Grid3D,Grid2Time,...}` | `install.sh` (cmake) |
-| hypoDD 2.1 (3D) | `HYPODD.zip` → `external/HYPODD` → `external/bin/{hypoDD,ph2dt}` | `install.sh` (make); `setup_hypodd.py` may recompile with larger limits |
+| hypoDD 2.1 (3D) | `HYPODD.zip` → `external/HYPODD` → `external/bin/{hypoDD,ph2dt}` | `install.sh` (make); `openmeq.relocate.hypodd_limits.ensure_compiled_limits` (M9.3) may recompile with larger limits, wired into `setup_hypodd.py`'s CLI in M9.5 |
 
 ## 8. Test data
 

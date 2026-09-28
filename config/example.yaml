@@ -183,8 +183,8 @@ hypodd:
     # --- M9.3 / OpenMEQ-6ld.3: only used when type: 3d ---
     origin_3d: [37.878, -122.244]       # [lat, lon] SIMUL2000 model origin
     rotation_3d_deg: 0.0                # Cartesian-frame rotation, deg, positive = anticlockwise
-    # TODO(OpenMEQ-6ld.3): re-verify this field mapping against
-    # src/hypoDD/get_vel3d.f before shipping (see Simul2000RaytraceConfig docstring).
+    # Field order confirmed against src/hypoDD/get_vel3d.f's subroutine
+    # signature (M9.3 / OpenMEQ-6ld.3; see Simul2000RaytraceConfig docstring).
     simul2000:
       iphase: 2
       ndip: 9
