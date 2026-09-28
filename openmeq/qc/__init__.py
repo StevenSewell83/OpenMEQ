@@ -134,7 +134,7 @@ def _input_fingerprint(cfg: Config) -> str:
     return fingerprint(cfg.data, cfg.stations, cfg.qc, _waveform_files(cfg), _stations_files(cfg))
 
 
-def run(cfg: Config, paths: RunPaths, *, force: bool = False) -> None:
+def run(cfg: Config, paths: RunPaths, *, force: bool = False, **_opts: object) -> None:
     """Run the whole ``openmeq qc`` step (the CLI's ``qc`` subcommand body).
 
     Parameters
