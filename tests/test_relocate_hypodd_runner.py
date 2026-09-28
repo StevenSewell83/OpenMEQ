@@ -677,41 +677,19 @@ def test_synthetic_end_to_end_relocation_improves_on_perturbed_input(
     shutil.copytree(config_path.parent, project_copy)
     cfg = load_config(project_copy / "config.yaml")
     cfg.parallel.n_workers = 1
-    # Loosen ph2dt's own filtering (defaults are tuned for a much larger
-    # dataset) so this small, sparse 20-event synthetic archive still
-    # yields a non-trivial linked-pair set -- same overrides
-    # test_relocate_xcorr.py's own synthetic smoke test already uses.
-    cfg.hypodd.ph2dt.maxdist_km = 200
-    cfg.hypodd.ph2dt.maxsep_km = 50
-    cfg.hypodd.ph2dt.minobs = 1
-    cfg.hypodd.ph2dt.maxobs = 100
-    # This tiny (20-event, 8-station) synthetic network's residuals are on
-    # a much smaller scale (noise-free analytic travel times, ~ms) than the
-    # project's own default progressive weighting/re-weighting schedule was
-    # tuned for (a much larger, real dataset, ARCHITECTURE.md §6c) -- the
-    # default schedule's residual/distance cutoffs progressively discard
-    # almost all of this network's own (already-small) residuals, leaving
-    # too little data to relocate most events by the final iteration.
-    # A single, un-tightened weighting row (every residual/distance cutoff
-    # left at hypoDD's own "-999 = inactive" sentinel) avoids that
-    # divergence -- this test needs every event relocated so the accuracy
-    # comparison isn't skewed by which few events happened to survive.
-    from openmeq.config import WeightingRow
-
-    cfg.hypodd.weighting_rows = [
-        WeightingRow(
-            niter=15,
-            wtccp=1.0,
-            wtccs=0.5,
-            wrcc=-999,
-            wdcc=-999,
-            wtctp=1.0,
-            wtcts=0.5,
-            wrct=-999,
-            wdct=-999,
-            damp=20,
-        )
-    ]
+    # OpenMEQ-16d.6: this test runs entirely on the DEFAULT config -- no
+    # ph2dt/weighting overrides. `openmeq.config`'s hypodd/ph2dt defaults
+    # are now tuned for a small-aperture (~15 km) microseismic network like
+    # this synthetic dataset's own 8-station, ~14.9 km-aperture geometry
+    # (docs/hypodd_tuning.md has the full justification for every value):
+    # ph2dt's MAXSEP/MAXDIST scale to the network's own aperture rather than
+    # the much larger regional-network values `example1` ships with, and the
+    # weighting/re-weighting schedule's WDCC/WDCT distance cutoffs bottom
+    # out at a fraction of that aperture instead of example1's 1-2 km
+    # (tuned for a network where that is already most of the cluster's own
+    # extent) -- which is what previously drove this small, spread-out
+    # 20-event catalogue's events into air-quake removal by the final
+    # iteration.
     paths = RunPaths(cfg)
     paths.ensure()
 

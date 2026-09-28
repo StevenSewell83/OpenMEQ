@@ -594,16 +594,35 @@ class XcorrConfig(_StrictModel):
 
 
 class Ph2dtConfig(_StrictModel):
-    maxsep_km: float = 1.0
+    # OpenMEQ-16d.6: scaled to a small-aperture (~10-15 km) microseismic
+    # network rather than ph2dt.inp's own bracketed-comment defaults (a
+    # regional-network convention -- MAXSEP [10 km], MAXDIST [200 km] --
+    # tuned for networks with tens-to-hundreds-of-km station apertures; see
+    # docs/hypodd_tuning.md). maxsep_km=10 keeps the user guide's own
+    # unscaled "10 km is appropriate to start with in many regions" figure
+    # rather than shrinking it further: this project's own 20-event/~15
+    # km-aperture synthetic dataset has two events whose *only* neighbour
+    # within 8 km of each other is each other (their next-nearest true
+    # neighbour is ~8.6-8.9 km away) -- below 10 km, ph2dt gives that pair no
+    # second link into the rest of the network and hypoDD's own OBSCT
+    # clustering (below) splits them into an isolated 2-event cluster that
+    # cannot be relocated (hypoDD's own "less than 2 events" cluster-size
+    # floor). maxobs=16
+    # is exactly 2 phases x 8 stations, i.e. "keep every possible pick" for a
+    # small network (user guide: for a small, tightly-linked catalogue,
+    # MAXOBS should be the number of stations, doubled here for P&S) rather
+    # than the bracket default's 20 (silently tuned to fewer than 10
+    # stations x 2 phases already, just not documented as such). minobs=1
+    # (also the user guide's own small-network recommendation) keeps every
+    # ph2dt-linked pair, even a weakly-linked one, since a small network
+    # cannot afford to discard already-scarce inter-event links.
+    maxsep_km: float = 10.0
     maxngh: int = 10
     minlnk: int = 8
-    # M9.2 / OpenMEQ-6ld.2: extends PLAN.md §3's hypodd.ph2dt block. Defaults
-    # are ph2dt.inp's own bracketed-comment defaults (confirmed against
-    # HYPODD.zip), not hypoddpy template's ad-hoc choices.
     minwght: float = 0.0
-    maxdist_km: float = 200.0
-    minobs: int = 8
-    maxobs: int = 20
+    maxdist_km: float = 25.0
+    minobs: int = 1
+    maxobs: int = 16
 
 
 class WeightingRow(_StrictModel):
@@ -629,24 +648,45 @@ class WeightingRow(_StrictModel):
 
 
 def _default_weighting_rows() -> list[WeightingRow]:
-    """The 5-row weighting scheme from examples/example1/hypoDD.inp (verbatim
-    values), per M9.1's audit recommendation against copying hypoddpy's
-    minimal 2-row default."""
+    """A 5-row progressive weighting/re-weighting scheme, modelled on
+    ``examples/example1/hypoDD.inp``'s own real scheme (loose-then-tight,
+    per the user guide's own recommended structure) but with the ``WDCC``/
+    ``WDCT`` distance cutoffs rescaled from example1's regional-network
+    values (bottoming out at 1-2 km) to a small-aperture (~10-15 km)
+    microseismic network (bottoming out at 6 km, about 40% of a ~15 km
+    aperture -- comfortably above the ~5.2 km worst-case link this
+    project's own 20-event synthetic dataset needs to keep every event
+    connected through the final iteration; see docs/hypodd_tuning.md for the
+    full derivation and how to rescale these for a different network).
+
+    example1's own final-row cutoff of 1-2 km is a large fraction of *its*
+    network's own inter-event spread, deliberately collapsing well-linked
+    event pairs down to near-duplicate "repeating earthquake" resolution.
+    Applied unscaled to a small-aperture network whose events are not
+    confined to a sub-km patch, that same 1-2 km cutoff instead disconnects
+    most pairs by the final iteration -- exactly the "most events end up as
+    air-quakes" failure mode this issue was opened to fix. WRCC/WRCT (>=1,
+    hypoDD's "multiply the current residual standard deviation" dynamic
+    mode, not an absolute-seconds cutoff) are left at example1's own values:
+    being relative to the data's own residual spread, they self-scale to
+    whatever noise level the real data has and need no network-size
+    rescaling.
+    """
     return [
         WeightingRow(
-            niter=1,
+            niter=5,
             wtccp=0.01,
             wtccs=0.005,
             wrcc=-999,
             wdcc=-999,
             wtctp=1.00,
             wtcts=0.5,
-            wrct=20,
+            wrct=-999,
             wdct=-999,
             damp=20,
         ),
         WeightingRow(
-            niter=3,
+            niter=5,
             wtccp=0.01,
             wtccs=0.005,
             wrcc=-999,
@@ -654,43 +694,43 @@ def _default_weighting_rows() -> list[WeightingRow]:
             wtctp=1.00,
             wtcts=0.5,
             wrct=10,
-            wdct=4,
+            wdct=10,
             damp=20,
         ),
         WeightingRow(
-            niter=3,
+            niter=5,
             wtccp=1,
             wtccs=0.5,
             wrcc=6,
-            wdcc=3,
+            wdcc=8,
             wtctp=1.00,
             wtcts=0.5,
-            wrct=10,
-            wdct=3,
+            wrct=8,
+            wdct=8,
             damp=20,
         ),
         WeightingRow(
-            niter=3,
+            niter=5,
             wtccp=1,
             wtccs=0.5,
             wrcc=5,
-            wdcc=2,
+            wdcc=6,
             wtctp=0.1,
             wtcts=0.05,
-            wrct=9,
-            wdct=2,
+            wrct=6,
+            wdct=6,
             damp=20,
         ),
         WeightingRow(
-            niter=3,
+            niter=5,
             wtccp=1,
             wtccs=0.5,
             wrcc=4,
-            wdcc=1,
+            wdcc=6,
             wtctp=0.01,
             wtcts=0.005,
-            wrct=8,
-            wdct=2,
+            wrct=6,
+            wdct=6,
             damp=20,
         ),
     ]
@@ -744,13 +784,18 @@ class HypoddConfig(_StrictModel):
     iaq: Literal[0, 1, 2] = 1
     # M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" data-type-selection
     # line (confirmed examples/example1/hypoDD.inp:32-33, getinp2.f's
-    # idata,iphase,maxdist read). Defaults match example1: both cross-corr
-    # and catalog data, P&S phases, 200 km per ph2dt.inp's own MAXDIST
-    # bracketed-comment default (example1 itself uses 120 for its smaller
-    # aperture network).
+    # idata,iphase,maxdist read). Both cross-corr and catalog data, P&S
+    # phases. OpenMEQ-16d.6: DIST (max cluster-centroid-to-station distance)
+    # rescaled from 200 km (a regional-network value, example1 itself already
+    # uses a smaller 120 km) to 25 km -- comfortably above this project's own
+    # ~15 km-aperture synthetic network's worst-case ~17.5 km event-station
+    # hypocentral distance, but tight enough that a station well outside the
+    # monitored volume (e.g. a shared regional network station on a
+    # multi-site deployment) is excluded rather than silently diluting the
+    # local solution. See docs/hypodd_tuning.md.
     idat: Literal[1, 2, 3] = 3
     ipha: Literal[1, 2, 3] = 3
-    max_station_dist_km: float = 200.0
+    max_station_dist_km: float = 25.0
     clustering: EventClusteringConfig = Field(default_factory=EventClusteringConfig)
     # M10.4 / OpenMEQ-16d.4: opt-in cluster-level parallelism (run each
     # ph2dt cluster as an independent hypoDD subprocess). Off by default;
