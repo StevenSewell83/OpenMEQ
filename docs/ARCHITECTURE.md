@@ -98,7 +98,9 @@ logs/<step>.log
 - **`err_h_km`/`err_z_km`** come from the final origin's own uncertainty
   objects, following the same convention §6h already establishes for
   hypoDD-sourced origins: `err_h_km = Origin.origin_uncertainty
-  .horizontal_uncertainty / 1000` and `err_z_km = Origin.depth_errors
+  .horizontal_uncertainty / 1000`, falling back to `max_horizontal_uncertainty`
+  when that is unset (NLLoc's OCT search writes `horUnc -1`; see
+  `openmeq.locate.finalize.horizontal_error_km`), and `err_z_km = Origin.depth_errors
   .uncertainty / 1000` (both metres in obspy's parsed `Origin`, per
   `obspy/io/nlloc/core.py`'s `NLLOC_HYP` reader). Either field is written as
   an empty cell if the corresponding value is unset on the origin (never
