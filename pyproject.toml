@@ -53,6 +53,8 @@ extend-exclude = [".claude", "external", "runs"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.format]
+# docs quote third-party code verbatim (e.g. the hypoddpy audit); do not reformat it
+exclude = ["docs/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
