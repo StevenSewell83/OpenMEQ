@@ -135,6 +135,7 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
 - **Component mapping:** after `apply_channel_map`, the last character of the channel code is `Z`, `N`/`E` (oriented) or `1`/`2` (unoriented). The original code is kept in `trace.stats.openmeq_original_channel` so picks can be mapped back.
 - **Station depth:** station elevation for location is `elevation_m - depth_m` (borehole sensors have `depth_m > 0`). NLLoc and hypoDD receive this effective elevation (negative depth below the datum).
 - **Station keys:** `NET.STA` everywhere; location codes are ignored when two share a site.
+- **Station codes must be unique across networks.** NLLoc obs files and ObsPy's NLLoc reader and writer match on the bare station code, and hypoDD allows at most 7 characters. `openmeq.stations` checks this at load time and fails with a clear error.
 
 ## 6a. Velocity model files
 
