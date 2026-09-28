@@ -55,13 +55,12 @@ Per ``docs/ARCHITECTURE.md`` (S2), worker processes are created with the
 that the thread-limiting environment variables below are guaranteed to be
 set *before* NumPy/SciPy/BLAS get imported in the child:
 
-- ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ``MKL_NUM_THREADS`` are set
-  to ``pcfg.threads_per_worker`` unconditionally (BLAS-based code always
-  benefits from this).
-- If TensorFlow is importable, ``tf.config.threading.
-  set_intra_op_parallelism_threads``/``set_inter_op_parallelism_threads``
-  are also set. The import is guarded with ``try/except`` so this module
-  does not hard-require TensorFlow -- only PhaseNet-running steps need it.
+- ``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ``MKL_NUM_THREADS`` and
+  ``NUMEXPR_NUM_THREADS`` are set to ``pcfg.threads_per_worker``.
+- ``TF_NUM_INTRAOP_THREADS``/``TF_NUM_INTEROP_THREADS`` are set too, and
+  TensorFlow reads them when it is imported. The worker deliberately does
+  *not* import TensorFlow: that took several seconds per worker and dominated
+  pool start-up (e.g. ~5 s for 28 workers, versus ~0.15 s without it).
 
 Why ``spawn`` matters here: with the (Linux) default ``fork`` start method,
 a worker process is a copy-on-write clone of the *parent's* address space,
@@ -119,7 +118,16 @@ from tqdm import tqdm
 T = TypeVar("T")
 R = TypeVar("R")
 
-_THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    # Honoured by TensorFlow at import; setting them avoids importing TF
+    # (several seconds) in every worker just to cap its threads.
+    "TF_NUM_INTRAOP_THREADS",
+    "TF_NUM_INTEROP_THREADS",
+)
 
 
 @runtime_checkable
@@ -153,25 +161,13 @@ def _set_thread_env(threads_per_worker: int) -> None:
 
 
 def _worker_init(threads_per_worker: int) -> None:
-    """``ProcessPoolExecutor`` initializer: cap BLAS/OpenMP (and TF) threads.
+    """``ProcessPoolExecutor`` initializer: cap BLAS/OpenMP/TF threads via env vars.
 
     Runs once per worker process, before that worker unpickles and executes
     any submitted call -- see the module docstring for why that ordering,
     combined with the ``spawn`` start method, is what makes this reliable.
     """
     _set_thread_env(threads_per_worker)
-    try:
-        import tensorflow as tf
-
-        tf.config.threading.set_intra_op_parallelism_threads(threads_per_worker)
-        tf.config.threading.set_inter_op_parallelism_threads(threads_per_worker)
-    except ImportError:
-        pass  # TensorFlow is optional; only PhaseNet-running steps need it.
-    except Exception:
-        # TF's threading knobs can only be set once, before any TF op runs;
-        # if something else in this fresh worker already touched TF (it
-        # shouldn't have, but be defensive), don't crash the worker over it.
-        pass
 
 
 def _resolve_n_workers(n_workers: int | str) -> int:
