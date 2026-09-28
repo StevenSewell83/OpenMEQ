@@ -131,19 +131,17 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
     # be reported either "ran" (with a duration) or "skipped" ("not
     # implemented"), never dropped or "error", so the report stays well-formed.
     #
-    # ``magnitude`` (M8.3 / OpenMEQ-625.3) is the one documented exception:
-    # it is implemented and has its own hard dependency check (mirroring
-    # ``detect``'s own, against qc's outputs) -- it correctly errors here
-    # because its required input, ``locate/catalog_auto.xml``, doesn't
-    # exist: `locate`'s own CLI wiring (M6.5) hasn't landed in this build
-    # yet even though locate's internals (M6.1-M6.4) have (see
-    # ``openmeq/locate/__init__.py``, still ``run``-less). Once M6.5 lands
-    # and this benchmark run reaches "ran" for locate too, magnitude will
-    # naturally follow suit with no test change needed here.
+    # ``magnitude`` (M8.3 / OpenMEQ-625.3) used to be a documented exception
+    # here: it has its own hard dependency check against
+    # ``locate/catalog_auto.xml``, and until ``locate`` itself gained a real
+    # ``run()`` (M6.5 / OpenMEQ-xdf.5) that file never existed in this
+    # benchmark run, so ``magnitude`` correctly errored. Now that ``locate``
+    # is wired up (``openmeq/locate/__init__.py``), it produces a real
+    # ``catalog_auto.xml`` here (measured: 18/20 events accepted on this
+    # dataset), so ``magnitude`` runs like every other implemented step --
+    # the special case is removed; a real regression that breaks either
+    # step now fails this test like any other "error" status would.
     for step in ("detect", "chunk", "pick", "locate", "magnitude", "relocate"):
-        if step == "magnitude" and stages[step]["status"] == "error":
-            assert "catalog" in stages[step]["note"].lower()
-            continue
         assert stages[step]["status"] in ("ran", "skipped")
         if stages[step]["status"] == "ran":
             assert stages[step]["duration_s"] is not None
@@ -152,13 +150,11 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
             assert "not implemented" in stages[step]["note"]
 
     # exit_code is 1 exactly when some stage errored (scripts/benchmark.py's
-    # own `main`) -- magnitude's expected error above (until M6.5 lands) is
-    # the only one allowed to cause that; every other stage must be clean.
-    non_magnitude_errors = [
-        s for s in report["stages"] if s["status"] == "error" and s["name"] != "magnitude"
-    ]
-    assert not non_magnitude_errors, non_magnitude_errors
-    assert exit_code == (1 if stages["magnitude"]["status"] == "error" else 0)
+    # own `main`) -- every stage above passed the "ran"/"skipped" check, so
+    # none of them may have errored.
+    errors = [s for s in report["stages"] if s["status"] == "error"]
+    assert not errors, errors
+    assert exit_code == 0
 
     # `review` actually ran (this dataset never sets `review.enabled: true`,
     # so `openmeq.review.run()` took its "nothing to do" early-return path
