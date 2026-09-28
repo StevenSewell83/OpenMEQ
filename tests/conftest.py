@@ -117,3 +117,18 @@ def synthetic_qc_tables(synthetic_project):
     monthly_df = compute_monthly_stats(daily_stats_df, cfg)
 
     return cfg, idx, availability_df, daily_stats_df, monthly_df, truth
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove the per-checkout basetemp after a fully passing run.
+
+    Synthetic datasets are ~500 MB each; with ``--basetemp`` pytest keeps every
+    session fixture's data until the next run, so clean up once everything has
+    passed (failed runs keep it for debugging).
+    """
+    if exitstatus != 0:
+        return
+    import shutil
+
+    basetemp = session.config._tmp_path_factory.getbasetemp()
+    shutil.rmtree(basetemp, ignore_errors=True)

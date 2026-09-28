@@ -54,7 +54,7 @@ openmeq = ["review/data/*.cfg"]
 [tool.ruff]
 line-length = 100
 # *.md: docs quote third-party code verbatim (e.g. the hypoddpy audit); never lint/format it.
-extend-exclude = [".claude", "external", "runs", "*.md"]
+extend-exclude = [".claude", "external", "runs", "*.md", ".pytest_tmp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -63,9 +63,13 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# synthetic datasets are ~500 MB each; keep temp dirs only for failed tests
+# Per-checkout temp dir (under /home, not the shared /tmp): parallel worktrees can't
+# prune each other's session fixtures, and each ~500 MB synthetic dataset stays
+# off the small root filesystem. pytest clears it at the start of every run.
+addopts = "--basetemp=.pytest_tmp"
+# Delete per-test tmp_path dirs of passing tests (conftest also removes the whole
+# basetemp after a fully passing run).
 tmp_path_retention_policy = "failed"
-tmp_path_retention_count = 1
 markers = [
     "requires_nlloc: needs a working NonLinLoc install in external/bin",
     "requires_hypodd: needs a working hypoDD install in external/bin",

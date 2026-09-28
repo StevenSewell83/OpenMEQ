@@ -198,7 +198,9 @@ class DetectionConfig(_StrictModel):
     day_overlap_s: float = 60.0
     # M2.2 / OpenMEQ-ujx.2: two triggers within this many seconds of each
     # other (greedy chained clustering) are merged into one detection.
-    dedup_window_s: float = 2.0
+    # Must exceed the max S-P time plus trigger length so P and S triggers of one
+    # event merge into a single detection (STA/LTA often fires on both).
+    dedup_window_s: float = 10.0
 
 
 # ---------------------------------------------------------------------------

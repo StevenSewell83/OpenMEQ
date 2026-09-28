@@ -82,7 +82,7 @@ detection:
                                          # straddling midnight isn't lost; must comfortably exceed
                                          # lta plus a trigger's typical duration
   # --- M2.2 / OpenMEQ-ujx.2 ---
-  dedup_window_s: 2.0                   # triggers within this many seconds are merged as one detection
+  dedup_window_s: 10.0                  # triggers within this many seconds are one detection. STA/LTA often fires separately on P and S; keep this above the network's max S-P time plus trigger length
 
 chunks:
   pre_s: 30                             # seconds of context before a detection kept in the raw chunk

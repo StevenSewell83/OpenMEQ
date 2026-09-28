@@ -67,7 +67,7 @@ def test_load_example_config():
     assert cfg.qc.max_clip_count == 0
     assert cfg.qc.monthly_outlier_ratio == pytest.approx(3.0)
     assert cfg.detection.day_overlap_s == pytest.approx(60.0)
-    assert cfg.detection.dedup_window_s == pytest.approx(2.0)
+    assert cfg.detection.dedup_window_s == pytest.approx(10.0)
     assert cfg.phasenet.max_gap_fill_s == pytest.approx(2.0)
     assert cfg.phasenet.pick_uncertainty_s == pytest.approx(0.1)
     assert cfg.nlloc.obspyck_pluginpath.is_absolute()
