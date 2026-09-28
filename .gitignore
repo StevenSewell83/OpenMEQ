@@ -7,3 +7,20 @@
 
 # full hypoDD bundle (site runs/models, not for publishing)
 HYPODD_full.zip
+
+# Python packaging / build environment
+.venv/
+external/
+runs/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+htmlcov/
+.coverage
+
+# scheduled task lock
+.claude/scheduled_tasks.lock

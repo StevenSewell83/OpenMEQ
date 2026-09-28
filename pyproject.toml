@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmeq"
+version = "0.1.0"
+description = "Open-source pipeline for microearthquake detection, location, and relocation."
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "click",
+    "pydantic>=2",
+    "PyYAML",
+    "obspy",
+    "numpy==1.26.4",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+]
+
+[project.scripts]
+openmeq = "openmeq.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "tomli; python_version < '3.11'"]
+
+[tool.setuptools.packages.find]
+include = ["openmeq*"]
+
+# Line length and rule sets are the repo-wide baseline (documented here so
+# later contributors don't have to guess): 100 cols matches the surrounding
+# scientific-Python ecosystem (numpy/scipy/pandas all use 88-100), and
+# E/F/I/UP/B cover pyflakes errors, import sorting, pyupgrade modernization,
+# and bugbear's common-mistake checks without being overly strict.
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_nlloc: needs a working NonLinLoc install in external/bin",
+    "requires_hypodd: needs a working hypoDD install in external/bin",
+    "requires_phasenet: needs the PhaseNet clone/model in external/",
+    "requires_gui: needs a display (e.g. for ObsPyck review) to run",
+    "slow: long-running test, skip for quick local iteration",
+]
