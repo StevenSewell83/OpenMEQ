@@ -24,3 +24,4 @@ htmlcov/
 
 # scheduled task lock
 .claude/scheduled_tasks.lock
+.claude/worktrees/

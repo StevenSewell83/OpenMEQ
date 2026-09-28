@@ -35,6 +35,7 @@ include = ["openmeq*"]
 # and bugbear's common-mistake checks without being overly strict.
 [tool.ruff]
 line-length = 100
+extend-exclude = [".claude", "external", "runs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
