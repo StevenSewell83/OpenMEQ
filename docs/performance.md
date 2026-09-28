@@ -273,3 +273,167 @@ figures. Section 5's isolated benchmark was chosen specifically to give a
 load-independent, structural explanation (per-worker efficiency collapsing
 monotonically, and regressing at 28 workers) rather than relying on
 absolute numbers at all.
+
+## 9. Isolated-impulse spike metric (OpenMEQ-5nl.9): benchmark and cost
+
+M1.9 replaced `spike_count`'s definition (global-MAD threshold on raw
+samples -> isolated-impulse residual against a short running median --
+`openmeq/qc/stats.py`'s module docstring and `docs/ARCHITECTURE.md` §3 have
+the full rationale/definition) because the old metric could not tell a
+glitch from a real seismic event on this project's own synthetic fixture:
+every channel's old `spike_count` on a day with real events was already
+1300-1850 (real quake pulses reach hundreds to low thousands of counts
+against a background noise half-range of only 5 counts), swamping the
+deliberately-spiky channel's signature (only ~600 above its own baseline, a
+~1.15x network-outlier ratio). This section re-benchmarks §3's machine
+(28 logical cores, shared with other concurrent work -- same caveats apply)
+against the new metric, since a running-median filter is fundamentally more
+expensive than a single global order-statistic.
+
+### 9.1 Alternatives benchmarked for the running median
+
+A full 17.28M-sample synthetic channel-day, `k=7` unless noted (isolated,
+single-item timings, best of 3-7 repeats):
+
+| Approach | Time |
+|---|---:|
+| `scipy.ndimage.median_filter`, float64, `mode="nearest"` | ~328 ms |
+| `scipy.ndimage.median_filter`, float32 | ~311 ms |
+| `scipy.ndimage.median_filter`, `k=5` (float32) | ~289 ms |
+| `scipy.ndimage.rank_filter` (`rank=3`, equivalent to median-of-7) | ~324 ms |
+| Hand-rolled median-of-7 sorting network (shifted-view compare/swap) | ~1053 ms |
+| Strided-window `np.partition` (`sliding_window_view` + partition), 2M-sample subset, extrapolated to 17.28M | ~812 ms |
+
+`scipy.ndimage.median_filter` won clearly -- both hand-rolled alternatives
+lost because they materialise several full-size shifted copies/windows
+(more passes over memory than the rank-order filter's single pass).
+`float32` and `k=5` each save ~5-12%, not enough on their own to change the
+choice of algorithm; the shipped default keeps `k=7` (per the issue's own
+`k~5-7` guidance, and 7 gives a slightly wider isolation margin against
+2-3-sample-wide glitches) and float64 (matching every other statistic in
+this module, avoiding a second, `float32`-only code path for a single-digit
+percent gain).
+
+### 9.2 Candidate-window / subsampled-MAD optimisation: considered and rejected
+
+The issue suggested computing the residual only in candidate windows where
+`|x - median|` is already large, to avoid running the filter over the
+*entire* day. This was seriously considered: a coarse global-MAD prescreen
+could cheaply narrow the array down to a small candidate set, and the
+residual/local-median computation is genuinely only needed at those
+candidates -- but `MAD(r)`, the classifier's own scale estimate, needs a
+*representative* population of "typical" residuals, which the candidate
+set (by construction, already-extreme deviations) cannot supply. The only
+way to get a global `MAD(r)` estimate cheaply is to compute it from a
+*subsample* of ordinary points instead of the full array -- which makes
+`spike_count` a function of a random subsample, not a deterministic
+function of the input. That fails this project's own "identical, or within
+documented float tolerance" correctness bar (`docs/performance.md` §3's
+same rationale for rejecting a sampled median there) and would make the
+optimised/reference regression test
+(`tests/test_qc_stats.py::test_optimised_output_matches_reference_implementation`)
+inherently unable to assert exact equality. Rejected in favour of running
+`median_filter` over the full array, which is still fast enough in
+absolute terms (below) without approximation.
+
+### 9.3 Per-channel-day cost: before vs. after (interleaved, real data)
+
+Same interleaved-single-item methodology as §3 (both implementations
+imported side by side in the same process, timed alternately), on one
+ordinary full 200 Hz synthetic channel-day (`XX.STA01.00.HHZ`,
+2025-01-01, no gap), 7 repeats:
+
+```
+OLD (5nl.8, global-MAD spike_count):        mean=548.9ms  median=541.5ms  min=488.7ms
+NEW (5nl.9, isolated-impulse spike_count):   mean=830.5ms  median=828.2ms  min=757.0ms
+slowdown (mean):   1.51x
+slowdown (median): 1.53x
+```
+
+**This is an expected, documented regression, not an oversight**: a
+running-median filter over 17.28M samples is inherently more expensive
+than a single global order-statistic pass, and §9.2 explains why the
+cheaper candidate-window alternative was rejected on correctness grounds.
+The new metric still stays within the same order of magnitude as 5nl.8's
+own *pre-optimisation* baseline (§3: ~929 ms/item before 5nl.8, ~831 ms/item
+here) -- i.e. this real correctness fix "costs back" roughly what 5nl.8
+saved on the spike/MAD portion specifically, while every *other* 5nl.8
+optimisation (run-length encoding, `np.dot`, per-worker caching, Stream.split
+skip, batching) is unaffected and still fully in effect.
+
+### 9.4 Test-suite throughput: before vs. after (real `synthetic_project` data)
+
+Full `tests/test_qc_stats.py` + `tests/test_qc_monthly_flags.py`,
+`n_workers=1` (both modules' own config default):
+
+```
+before (5nl.8, two independent module-scoped fixtures, each computing all
+        48 channel-days): ~39s + ~39s of daily-stats computation alone
+        (docs/performance.md §8's own note that each module fixture
+        recomputes independently), full pair ~140s combined with the rest
+        of the repo's suite per the M1.9 issue's own numbers.
+after  (5nl.9, shared session-scoped `synthetic_qc_tables` fixture in
+        tests/conftest.py, isolated-impulse spike metric):
+        48 channel-days in 39.90s (1.2 channel-days/s) -- computed ONCE,
+        not twice; both modules' 38 tests combined: 47.89s total wall time.
+```
+
+The daily-stats computation itself is slower per item (§9.3), but
+computing it once instead of twice more than offsets that, so the *two
+modules' combined* runtime dropped even though the underlying computation
+got more expensive per channel-day.
+
+### 9.5 Parallel scaling (real data, `synthetic_project`, 48 channel-days x N repeats where noted)
+
+```
+n_workers=1: 48 channel-days in ~41s   (~1.2 channel-days/s)
+n_workers=4: 48 channel-days in 14.62s (3.28 channel-days/s, 2.7x)
+n_workers=8: 48 channel-days in 11.11s (4.32 channel-days/s, 3.6x)
+```
+
+Scaling to 4-8 workers looks comparatively better than §4's post-5nl.8
+table (which plateaued at ~1.9-2.0x by 8 workers) -- consistent with §5's
+diagnosis that the old bottleneck was memory bandwidth, not compute: the
+new metric shifts more of the per-item cost onto `scipy.ndimage.median_filter`
+(a compute-bound rank-order filter, not a bandwidth-bound reduction), which
+parallelises comparatively better across independent worker processes on
+this 28-core machine. This is a small, single-machine data point (48
+channel-days, some measurement noise per the shared-machine caveats below),
+not a re-run of §4's full 1/4/8/16-worker repeated-channel-day study; a
+follow-up could redo that fuller study for the new metric specifically
+(flagged, no issue filed per the "don't run bd write commands" worker
+rule).
+
+### 9.6 Verified synthetic_project flagging numbers (default config)
+
+Computed directly against `tests/data/make_synthetic.py`'s fixture with the
+shipped `config/example.yaml` defaults (`spike_threshold_mad=10`,
+`spike_median_window=7`, `max_spike_fraction=0.000012`,
+`max_flat_run_s=60`, `max_flat_fraction=0.5`, `min_availability_pct=80`,
+`monthly_outlier_ratio=3.0`):
+
+- **Spikes**: `XX.STA06.00.HHE` 2025-01-02 (the known spiky channel/day)
+  measures `spike_count=388`, `npts=17280000` (fraction ~2.245e-5) --
+  crosses `max_spike_fraction`. Its own 2025-01-01 baseline (no anomaly)
+  measures 80. The next-highest *ordinary* channel/day network-wide that
+  same day (`XX.STA04.00.HHZ`) measures 119 (fraction ~6.89e-6) -- well
+  below the threshold. The monthly cross-station `spike_count` ratio for
+  the spiky channel is 2.66x the network median, below
+  `monthly_outlier_ratio`'s default (3.0), so it flags via `"spikes"`
+  directly, not `"network_outlier"`.
+- **Flat**: `XX.STA03.00.HHN` 2025-01-01 (the known flat-lined channel/day)
+  measures `longest_flat_run_s≈3600` (the whole 1-hour injected window) --
+  crosses `max_flat_run_s` (60s) by a wide margin, while its
+  `flat_count/npts` (~4.17%) still does *not* cross `max_flat_fraction`
+  (50%) -- confirming the new duration criterion, not a retuned fraction,
+  is what makes this flag. Every ordinary channel/day's `longest_flat_run_s`
+  is under 1 second (background noise essentially never repeats an exact
+  raw sample value that many times in a row).
+- **Gap**: `XX.STA05.00.HHZ` 2025-01-01 (10-minute gap) measures
+  `coverage_pct≈99.3%`, above `min_availability_pct`'s default (80%) -- not
+  flagged, per the documented gap policy (`docs/ARCHITECTURE.md` §4.2).
+- **Zero false positives**: running `compute_channel_flags` against every
+  one of the 48 real synthetic channel-days with these defaults flags
+  *exactly* the two channel-days above (`["flat"]` and `["spikes"]`
+  respectively) and nothing else -- verified directly (also asserted in
+  `tests/test_qc_monthly_flags.py::test_e2e_zero_false_positives_on_ordinary_channel_days`).

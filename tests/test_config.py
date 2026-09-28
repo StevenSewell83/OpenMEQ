@@ -55,8 +55,15 @@ def test_load_example_config():
     # Keys added ahead of later milestones (see report / commit message).
     assert cfg.qc.flat_run_min_samples == 50
     assert cfg.qc.clip_run_min_samples == 3
-    assert cfg.qc.max_spike_fraction == pytest.approx(0.01)
+    # M1.9 / OpenMEQ-5nl.9 retuned max_spike_fraction (and added
+    # spike_median_window/max_flat_run_s) for the isolated-impulse
+    # spike_count definition -- see docs/performance.md for the measured
+    # synthetic_project numbers these defaults are chosen against.
+    assert cfg.qc.spike_threshold_mad == pytest.approx(10.0)
+    assert cfg.qc.spike_median_window == 7
+    assert cfg.qc.max_spike_fraction == pytest.approx(0.000012)
     assert cfg.qc.max_flat_fraction == pytest.approx(0.5)
+    assert cfg.qc.max_flat_run_s == pytest.approx(60.0)
     assert cfg.qc.max_clip_count == 0
     assert cfg.qc.monthly_outlier_ratio == pytest.approx(3.0)
     assert cfg.detection.day_overlap_s == pytest.approx(60.0)

@@ -24,9 +24,7 @@ import json
 import pandas as pd
 import pytest
 
-from openmeq.config import QcConfig, load_config
-from openmeq.index import build_index
-from openmeq.qc.availability import compute_availability, date_range_inclusive
+from openmeq.config import QcConfig
 from openmeq.qc.flags import (
     MONTHLY_STATS_COLUMNS,
     compute_channel_flags,
@@ -34,7 +32,6 @@ from openmeq.qc.flags import (
     write_channel_flags,
     write_monthly_stats_csv,
 )
-from openmeq.qc.stats import compute_daily_stats
 
 
 class _FakeCfg:
@@ -69,6 +66,7 @@ def _daily_stats_row(
     spike_count: int = 0,
     kurtosis: float = 0.0,
     flat_count: int = 0,
+    longest_flat_run_s: float = 0.0,
     clip_count: int = 0,
     npts: int = 1000,
 ) -> dict:
@@ -80,6 +78,7 @@ def _daily_stats_row(
         "spike_count": spike_count,
         "kurtosis": kurtosis,
         "flat_count": flat_count,
+        "longest_flat_run_s": longest_flat_run_s,
         "clip_count": clip_count,
         "npts": npts,
     }
@@ -256,6 +255,56 @@ def test_flags_flat_reason():
     assert "flat" in entry["reasons"]
 
 
+def test_flags_flat_reason_via_max_flat_run_s():
+    """M1.9: a long single flat run flags "flat" via qc.max_flat_run_s even
+    when flat_count/npts is nowhere near max_flat_fraction (e.g. a dead
+    sensor for an hour out of a long day) -- a small total fraction of a
+    long recording is still a real fault worth flagging on duration alone.
+    """
+    cfg = _cfg()  # default max_flat_run_s=60.0, max_flat_fraction=0.5
+    availability = pd.DataFrame([_availability_row("XX.A.00.HHZ", "2025-01-01", 100.0)])
+    daily = pd.DataFrame(
+        [
+            _daily_stats_row(
+                "XX.A.00.HHZ",
+                "2025-01-01",
+                flat_count=3600,
+                longest_flat_run_s=3600.0,  # 1 hour -- far past max_flat_run_s
+                npts=17_280_000,  # flat_count/npts ~= 2e-4, nowhere near max_flat_fraction
+            )
+        ]
+    )
+
+    flags = compute_channel_flags(availability, daily, EMPTY_MONTHLY, cfg)
+
+    entry = flags["XX.A.00.HHZ"]["2025-01-01"]
+    assert entry["ok"] is False
+    assert "flat" in entry["reasons"]
+
+
+def test_flags_flat_reason_not_raised_by_short_run_below_both_criteria():
+    """Neither criterion crossed -> no "flat" reason (guards against an
+    accidental always-true condition)."""
+    cfg = _cfg()  # default max_flat_fraction=0.5, max_flat_run_s=60.0
+    availability = pd.DataFrame([_availability_row("XX.A.00.HHZ", "2025-01-01", 100.0)])
+    daily = pd.DataFrame(
+        [
+            _daily_stats_row(
+                "XX.A.00.HHZ",
+                "2025-01-01",
+                flat_count=5,
+                longest_flat_run_s=0.05,
+                npts=1000,
+            )
+        ]
+    )
+
+    flags = compute_channel_flags(availability, daily, EMPTY_MONTHLY, cfg)
+
+    entry = flags["XX.A.00.HHZ"]["2025-01-01"]
+    assert "flat" not in entry["reasons"]
+
+
 def test_flags_clipped_reason():
     cfg = _cfg()  # default max_clip_count=0
     availability = pd.DataFrame([_availability_row("XX.A.00.HHZ", "2025-01-01", 100.0)])
@@ -425,20 +474,16 @@ def test_json_schema(tmp_path):
 
 
 @pytest.fixture(scope="module")
-def qc_world(synthetic_project):
+def qc_world(synthetic_qc_tables):
     """``(cfg, availability_df, daily_stats_df, monthly_df, truth)`` for the
-    shared synthetic project, computed once per test module (read-only
-    against the session fixture, same pattern as ``tests/test_qc_stats.py``)."""
-    config_path, truth = synthetic_project
-    cfg = load_config(config_path)
-    idx = build_index(cfg)
-    seed_ids = idx.seed_ids()
-    dates = date_range_inclusive(cfg.data.start, cfg.data.end)
+    shared synthetic project.
 
-    availability_df = compute_availability(idx, seed_ids, dates, cfg)
-    daily_stats_df = compute_daily_stats(idx, seed_ids, dates, cfg)
-    monthly_df = compute_monthly_stats(daily_stats_df, cfg)
-
+    OpenMEQ-5nl.9: no longer computes anything itself -- just repackages
+    the session-scoped ``synthetic_qc_tables`` fixture (shared with
+    ``tests/test_qc_stats.py``, see ``tests/conftest.py``) into the tuple
+    shape every test in this module already expects.
+    """
+    cfg, _idx, availability_df, daily_stats_df, monthly_df, truth = synthetic_qc_tables
     return cfg, availability_df, daily_stats_df, monthly_df, truth
 
 
@@ -496,15 +541,22 @@ def test_e2e_gap_day_flagged_not_ok(qc_world):
     assert any(r.startswith("availability<") for r in entry["reasons"])
 
 
-def test_e2e_spiky_day_flagged_not_ok(qc_world):
-    """The known spiky channel/day is flagged not-ok with a "spikes" reason.
+def test_e2e_spiky_day_flagged_not_ok_default_cfg(qc_world):
+    """M1.9: the known spiky channel/day is flagged not-ok with a "spikes"
+    reason **under the shipped default config, with no threshold tuning**
+    -- this is the acceptance criterion this issue exists to satisfy (the
+    M1.5-era version of this test had to tighten ``max_spike_fraction``
+    below the actual measured fraction because the old spike metric
+    couldn't tell a glitch from an earthquake; see ``openmeq/qc/stats.py``'s
+    module docstring and ``docs/performance.md`` for the isolated-impulse
+    metric that fixes this).
 
-    **Verified fact**: real synthetic seismic events already push every
-    channel's spike_count to a comparable order of magnitude (M1.4's
-    handoff note), so this fixture's spike fraction (spike_count/npts,
-    ~1.07e-4) does *not* cross ``qc.max_spike_fraction``'s default (0.01).
-    Tightened below the actual measured fraction to exercise the "spikes"
-    reason path end-to-end against real numbers.
+    **Verified numbers** (isolated-impulse ``spike_count``, default
+    ``spike_threshold_mad=10``): ``XX.STA06.00.HHE`` 2025-01-02 measures
+    spike_count=388/npts=17280000 (fraction ~2.245e-5), comfortably above
+    ``qc.max_spike_fraction``'s default (1.2e-5); the next-highest
+    *ordinary* channel/day that same day measures only 119
+    (fraction ~6.89e-6), comfortably below it.
     """
     cfg, availability_df, daily_stats_df, monthly_df, truth = qc_world
     issue = _issue(truth, "spikes")
@@ -512,25 +564,27 @@ def test_e2e_spiky_day_flagged_not_ok(qc_world):
 
     stats_row = _one_row(daily_stats_df, issue["seed_id"], date_str)
     spike_fraction = float(stats_row["spike_count"]) / float(stats_row["npts"])
-    assert spike_fraction > 0.0
-    assert spike_fraction <= cfg.qc.max_spike_fraction  # doesn't cross the default
+    assert spike_fraction > cfg.qc.max_spike_fraction  # crosses the *default* threshold
 
-    tuned_cfg = cfg.model_copy(deep=True)
-    tuned_cfg.qc.max_spike_fraction = spike_fraction * 0.9
-
-    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, tuned_cfg)
+    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
     entry = flags[issue["seed_id"]][date_str]
     assert entry["ok"] is False
     assert "spikes" in entry["reasons"]
 
 
-def test_e2e_flat_day_flagged_not_ok(qc_world):
-    """The known flat-lined channel/day is flagged not-ok with a "flat" reason.
+def test_e2e_flat_day_flagged_not_ok_default_cfg(qc_world):
+    """M1.9: the known flat-lined channel/day is flagged not-ok with a
+    "flat" reason **under the shipped default config, with no threshold
+    tuning** -- via the new ``longest_flat_run_s`` / ``qc.max_flat_run_s``
+    duration criterion, not ``max_flat_fraction`` (the injected flat run is
+    only ~4.17% of the day, still well below ``max_flat_fraction``'s
+    default of 50%, exactly as it was before M1.9 -- the fix is the new
+    *duration* criterion, not a retuned fraction).
 
-    **Verified fact**: the injected flat run is 1 hour out of a 2-day-window
-    channel-day (flat_count/npts ~= 4.17%), below ``qc.max_flat_fraction``'s
-    default (50%). Tightened below the actual measured fraction to exercise
-    the "flat" reason path end-to-end against real numbers.
+    **Verified numbers**: ``XX.STA03.00.HHN`` 2025-01-01's
+    ``longest_flat_run_s`` measures ~3600s (the whole 1-hour injected
+    window), comfortably above ``qc.max_flat_run_s``'s default (60s); every
+    ordinary channel/day's longest run is under 1 second.
     """
     cfg, availability_df, daily_stats_df, monthly_df, truth = qc_world
     issue = _issue(truth, "flat")
@@ -538,13 +592,11 @@ def test_e2e_flat_day_flagged_not_ok(qc_world):
 
     stats_row = _one_row(daily_stats_df, issue["seed_id"], date_str)
     flat_fraction = float(stats_row["flat_count"]) / float(stats_row["npts"])
-    assert flat_fraction > 0.0
-    assert flat_fraction <= cfg.qc.max_flat_fraction  # doesn't cross the default
+    assert flat_fraction <= cfg.qc.max_flat_fraction  # still doesn't cross the fraction criterion
+    # crosses the duration criterion instead
+    assert float(stats_row["longest_flat_run_s"]) > cfg.qc.max_flat_run_s
 
-    tuned_cfg = cfg.model_copy(deep=True)
-    tuned_cfg.qc.max_flat_fraction = flat_fraction * 0.5
-
-    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, tuned_cfg)
+    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
     entry = flags[issue["seed_id"]][date_str]
     assert entry["ok"] is False
     assert "flat" in entry["reasons"]
@@ -560,4 +612,35 @@ def test_e2e_default_cfg_runs_clean_channel_ok(qc_world):
     flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
     entry = flags[ordinary_seed_id]["2025-01-01"]
     assert entry["ok"] is True
+
+
+def test_e2e_zero_false_positives_on_ordinary_channel_days(qc_world):
+    """M1.9 acceptance criterion: under the shipped default config, every
+    channel/day *other than* the known spiky and flat ones is ``ok`` (the
+    known gap channel/day is exempted too -- per this issue's documented
+    gap policy, a 10-minute gap out of a day is acceptable and, by design,
+    does not flag; it must merely appear in the availability output, which
+    ``test_e2e_gap_day_flagged_not_ok`` above's own coverage_pct assertion
+    already confirms it does)."""
+    cfg, availability_df, daily_stats_df, monthly_df, truth = qc_world
+
+    flagged_seed_id_dates = {
+        (issue["seed_id"], issue["start"].date.isoformat())
+        for issue in truth["known_issues"]
+        if issue["kind"] in ("spikes", "flat")
+    }
+    gap_issue = _issue(truth, "gap")
+    exempt = flagged_seed_id_dates | {(gap_issue["seed_id"], gap_issue["start"].date.isoformat())}
+
+    flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
+
+    false_positives = []
+    for seed_id, days in flags.items():
+        for date_str, entry in days.items():
+            if (seed_id, date_str) in exempt:
+                continue
+            if not entry["ok"]:
+                false_positives.append((seed_id, date_str, entry["reasons"]))
+
+    assert false_positives == []
     assert entry["reasons"] == []

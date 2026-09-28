@@ -43,15 +43,25 @@ stations:
 
 qc:
   daily_stats: [rms, mean_abs, spike_count, kurtosis]
-  spike_threshold_mad: 10               # a sample is a spike if |x - median| > this * MAD
+  # --- M1.9 / OpenMEQ-5nl.9: isolated-impulse spike metric ---
+  # spike_count now counts isolated impulses: r = x - running_median(x, spike_median_window),
+  # a sample is a spike if |r| > spike_threshold_mad * MAD(r). Earthquakes are smooth over
+  # several samples and leave little residual; glitches don't -- see openmeq/qc/stats.py
+  # and ARCHITECTURE.md §3 for the full definition and docs/performance.md for the benchmark.
+  spike_threshold_mad: 10               # a sample is a spike if |r| > this * MAD(r)
+  spike_median_window: 7                # running-median window (samples, odd) the residual is taken against
   min_availability_pct: 80              # a channel/day below this coverage is flagged not-ok
   exclude_channels: []                  # seed_ids to always flag not-ok, e.g. ["XX.STA01..HHZ"]
   # --- M1.4 / OpenMEQ-5nl.4: daily noise-statistics run-length thresholds ---
   flat_run_min_samples: 50              # >= this many identical consecutive samples counts as "flat"
   clip_run_min_samples: 3               # >= this many consecutive saturation-value samples counts as "clipped"
   # --- M1.5 / OpenMEQ-5nl.5: monthly cross-station comparison pass/fail thresholds ---
-  max_spike_fraction: 0.01              # flag "spikes" if spike_count/npts exceeds this
+  # M1.9 retuned max_spike_fraction for the isolated-impulse spike_count definition --
+  # on synthetic_project the known spiky channel/day measures ~2.25e-5, every ordinary
+  # channel/day <= ~7.3e-6 (docs/performance.md).
+  max_spike_fraction: 0.000012          # flag "spikes" if spike_count/npts exceeds this
   max_flat_fraction: 0.5                # flag "flat" if flat_count/npts exceeds this
+  max_flat_run_s: 60                    # flag "flat" if the single longest flat run exceeds this many seconds (M1.9)
   max_clip_count: 0                     # flag "clipped" if clip_count exceeds this
   monthly_outlier_ratio: 3.0            # flag "network_outlier" if a station's monthly stat ratio
                                          # to the network median exceeds this (or is below its reciprocal)

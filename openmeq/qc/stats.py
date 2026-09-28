@@ -1,9 +1,58 @@
-"""Daily noise statistics per channel-day (M1.4, ``OpenMEQ-5nl.4``).
+"""Daily noise statistics per channel-day (M1.4, ``OpenMEQ-5nl.4``; spike
+metric and longest-flat-run column revised in M1.9, ``OpenMEQ-5nl.9``).
 
 PLAN.md §6 Step 1's "Daily noise statistics per channel" (RMS, mean absolute
 amplitude, MAD-based spikiness, kurtosis, flat-lined and clipped sample
 counts), written to ``qc/daily_stats.csv`` (ARCHITECTURE.md §3):
-``seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,clip_count,npts``.
+``seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,longest_flat_run_s,
+clip_count,npts``.
+
+Isolated-impulse spike metric (M1.9)
+-------------------------------------
+M1.5's real-data findings (``docs/performance.md``/the M1.9 issue) showed
+that the original "large samples vs. the day's global MAD" definition of
+``spike_count`` cannot tell a glitch from an earthquake: a real seismic
+event pushes thousands of samples past a global MAD threshold too (the
+whole point of an event is that it's a large deviation from background),
+so every channel's ``spike_count`` on a day with real events was already
+1300-1850, swamping the ~600-above-baseline signature of the deliberately
+spiky synthetic channel.
+
+``spike_count`` is now an **isolated-impulse** count: earthquakes are smooth
+over several consecutive samples (a real seismic pulse has most of its
+energy below the Nyquist-adjacent band and rides on top of, not instead of,
+its neighbours), so a short running median tracks straight through an
+event's samples with very little per-sample deviation. An electronic
+glitch/spike, by construction, differs sharply from its immediate
+neighbours, so it leaves a large residual against that same running
+median. Concretely (the running median in
+:func:`compute_channel_day_stats`, the threshold/count in
+:func:`_spike_count_from_residual`):
+
+    med_i = running_median(x, k=cfg.qc.spike_median_window)[i]   # k~5-7, odd
+    r_i   = x_i - med_i
+    spike_count = count(|r_i| > cfg.qc.spike_threshold_mad * MAD(r))
+
+``MAD(r)`` here is ``median(|r|)`` (not re-centered on ``median(r)``): the
+residual is already centered near zero by construction (subtracting a
+local running median removes any local trend/DC level), so re-centering
+would cost a second full-array ``np.median`` pass (~100 ms on a full
+17.28M-sample day) for a correction that is negligible in practice --
+documented approximation, not a silent one (see
+:func:`_spike_count_from_residual`'s docstring).
+
+The running median itself is :func:`scipy.ndimage.median_filter`
+(``size=cfg.qc.spike_median_window``, ``mode="nearest"`` so the day's first/
+last ``k//2`` samples reuse the edge value rather than wrapping or
+reflecting past the day boundary) -- see ``docs/performance.md`` §9 for the
+benchmark this choice is based on (scipy's rank-order filter beat both a
+hand-rolled sorting-network-of-7 and a strided-window ``np.partition``
+approach by a wide margin) and for why the candidate-window/subsampled-MAD
+optimisation suggested by the issue was benchmarked but not shipped as the
+default (it trades the "identical, or within documented float tolerance"
+correctness bar this module holds itself to -- see OpenMEQ-5nl.8's own
+"considered and rejected" precedent -- for a speedup that the full-array
+``median_filter`` approach turned out not to need to stay fast enough).
 
 Parallelism
 -----------
@@ -30,8 +79,9 @@ internally bridges to the path-based worker contract.
 ``cfg_path`` design note
 -------------------------
 :func:`stats_for_channel_day` only ever needs ``cfg.qc.spike_threshold_mad``,
-``cfg.qc.flat_run_min_samples`` and ``cfg.qc.clip_run_min_samples`` -- not
-the rest of the (much larger) project :class:`~openmeq.config.Config`
+``cfg.qc.spike_median_window``, ``cfg.qc.flat_run_min_samples`` and
+``cfg.qc.clip_run_min_samples`` -- not the rest of the (much larger) project
+:class:`~openmeq.config.Config`
 (NLLoc grids, hypoDD weighting tables, ...), and those unrelated sections
 don't all round-trip cleanly through a bare YAML dump (e.g. the
 ``station_corrections: dict | Path`` union). So ``cfg_path`` here is a
@@ -58,14 +108,22 @@ Per-segment results are then pooled:
   end. This is arithmetically identical to concatenating first (it's just
   computed via partial sums), so it agrees with a direct NumPy calculation
   on ungapped data to floating-point tolerance.
-- ``median``/MAD/spike count/kurtosis: **not** additive across segments (a
-  median of medians is not the true median). These are computed once on the
-  concatenation of every segment's valid samples for the day -- acceptable
-  at this dataset's scale (a documented memory caveat for very
-  high-rate/long-duration production channels, out of scope to optimise
-  here; a streaming/approximate two-pass alternative would be needed then).
-- flat-run / clip-run counts: **must** stay per-segment (a run cannot
-  legitimately span a real time gap), computed with a vectorised run-length
+- kurtosis: **not** additive across segments (a moment of moments is not
+  the true moment). Computed once on the concatenation of every segment's
+  valid samples for the day -- acceptable at this dataset's scale (a
+  documented memory caveat for very high-rate/long-duration production
+  channels, out of scope to optimise here; a streaming/approximate
+  two-pass alternative would be needed then).
+- isolated-impulse ``spike_count`` (M1.9): the *residual* ``r = x -
+  running_median(x, k)`` is computed **per segment** (a running-median
+  window must never be allowed to span a real time gap -- see
+  :func:`compute_channel_day_stats`), but the residuals are then pooled
+  (concatenated) before the single MAD/threshold/count pass, since a count
+  over a concatenation of independently-computed residuals is additive
+  even though a median itself is not.
+- flat-run / clip-run / longest-flat-run counts: **must** stay per-segment
+  (a run cannot legitimately span a real time gap), computed with a
+  vectorised run-length
   encoding (no per-sample Python loop).
 
 Clip detection order
@@ -99,6 +157,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from obspy import UTCDateTime
+from scipy.ndimage import median_filter
 
 from openmeq.config import Config, QcConfig
 from openmeq.index import DataIndex
@@ -117,6 +176,7 @@ DAILY_STATS_COLUMNS = [
     "spike_count",
     "kurtosis",
     "flat_count",
+    "longest_flat_run_s",
     "clip_count",
     "npts",
 ]
@@ -145,8 +205,22 @@ def _segment_run_counts(
     clip_run_min_samples: int,
     is_int: bool,
     float_saturation_value: float | None,
-) -> tuple[int, int]:
-    """``(flat_count, clip_count)`` for one contiguous segment's raw samples.
+) -> tuple[int, int, int]:
+    """``(flat_count, clip_count, longest_run_samples)`` for one contiguous
+    segment's raw samples.
+
+    ``longest_run_samples`` (M1.9, ``OpenMEQ-5nl.9``) is the length of the
+    single longest run of an identical consecutive value in this segment --
+    the same equality-based run definition ``flat_count`` uses, but the
+    *maximum* run length rather than the total sample count across every
+    run that clears ``flat_run_min_samples``. It backs the
+    ``longest_flat_run_s`` column (a real fault -- e.g. a dead sensor for an
+    hour -- should flag on its own *duration*, not only once it accumulates
+    enough total flat samples to cross ``max_flat_fraction`` of the whole
+    day). Background noise essentially never repeats the same raw sample
+    value even ``flat_run_min_samples`` times in a row, so an ordinary
+    channel/day's ``longest_run_samples`` is typically 1-3, regardless of
+    ``flat_run_min_samples``.
 
     ``x`` is the segment's *original* dtype array (int32 in the normal
     miniSEED case) -- equality-based run detection, so no float cast is
@@ -170,7 +244,7 @@ def _segment_run_counts(
     """
     n = x.size
     if n == 0:
-        return 0, 0
+        return 0, 0, 0
 
     is_run_start = np.empty(n, dtype=bool)
     is_run_start[0] = True
@@ -186,6 +260,7 @@ def _segment_run_counts(
     run_lengths[-1] = n - run_starts[-1]
 
     flat_count = int(run_lengths[run_lengths >= flat_run_min_samples].sum())
+    longest_run_samples = int(run_lengths.max())
 
     run_values = x[run_starts]
     if is_int:
@@ -197,39 +272,56 @@ def _segment_run_counts(
 
     clip_mask = (run_lengths >= clip_run_min_samples) & is_saturation_value
     clip_count = int(run_lengths[clip_mask].sum())
-    return flat_count, clip_count
+    return flat_count, clip_count, longest_run_samples
 
 
-def _median_mad_spike_count(
-    x_all: np.ndarray, spike_threshold_mad: float
-) -> tuple[float, float, int]:
-    """``(median, mad, spike_count)`` for one channel-day's concatenated valid samples.
+def _clamped_odd_window(window: int, n: int) -> int:
+    """``window`` clamped to ``[1, n]`` and forced odd (a running-median
+    filter needs an odd, centered footprint). Only matters for a very
+    short trailing/leading segment right next to a gap -- the overwhelming
+    majority of segments are a full day's worth of samples, far longer
+    than ``spike_median_window`` (default 7)."""
+    w = min(window, n)
+    if w % 2 == 0:
+        w -= 1
+    return max(w, 1)
 
-    Same two order-statistics computations as the original implementation
-    (a median is not additive across segments -- see the module
-    docstring), but with two changes that only affect *speed*, not the
-    result:
 
-    - ``overwrite_input=True`` on both :func:`numpy.median` calls. Per
-      ``numpy.median``'s own source, this skips an internal defensive
-      copy (``np.partition`` otherwise copies the whole array before
-      partitioning in place) and instead partitions ``x_all``/``dev`` in
-      place -- safe here because neither array's *order* is read again
-      afterwards (the caller only wants the median/MAD *values*, and
-      :func:`_fast_kurtosis`, called separately on the still-unsorted-but-
-      value-preserved ``x_all``, is order-independent). On a full
-      17.28M-sample channel-day this removes two full-array copies
-      (OpenMEQ-5nl.8 profiling).
-    - ``dev = abs(x_all - median)`` is computed once and reused for both
-      the MAD and the spike threshold comparison, instead of being
-      recomputed from scratch for the spike count (the original
-      implementation called ``np.abs(x_all - median)`` twice).
+def _spike_count_from_residual(r_all: np.ndarray, spike_threshold_mad: float) -> int:
+    """Isolated-impulse ``spike_count`` (M1.9, ``OpenMEQ-5nl.9``) from a
+    channel-day's already-computed residual ``r = x - running_median(x, k)``
+    (see the module docstring's "Isolated-impulse spike metric" section for
+    the rationale, and :func:`compute_channel_day_stats` for where ``r`` is
+    computed *per segment*, then pooled, before this is called).
+
+        mad = median(abs(r))            # see "MAD(r) convention" below
+        spike_count = count(abs(r) > spike_threshold_mad * mad)
+
+    ``MAD(r)`` convention -- deliberately *not* re-centered
+    -------------------------------------------------------
+    Unlike the day's raw-sample MAD (the metric this replaces computed
+    ``median(abs(x - median(x)))``, i.e. centered on ``x``'s own median),
+    this uses ``median(abs(r))`` directly, with no ``r - median(r)``
+    re-centering step. ``r`` is already centered near zero *by
+    construction*: subtracting a local running median removes any local
+    trend or DC offset a raw sample array might have. Re-centering would
+    need a second full-array :func:`numpy.median` call (~100 ms on a full
+    17.28M-sample day, comparable to the running-median filter itself --
+    see ``docs/performance.md``), for a correction that every benchmark
+    channel/day in this fixture's real synthetic data changes by a
+    negligible amount (``median(r)`` is within noise of zero in practice).
+    Documented approximation, not a silent one -- if a future noise model
+    ever gives residuals a real non-zero bias, this would need revisiting.
     """
-    median = float(np.median(x_all, overwrite_input=True))
-    dev = np.abs(x_all - median)
+    if r_all.size == 0:
+        return 0
+    dev = np.abs(r_all)
+    # ``overwrite_input=True`` is safe here for the same reason as the old
+    # raw-sample MAD computation: ``dev``'s *order* is never read again --
+    # only the returned median *value*, and the final ``count_nonzero``
+    # comparison below is order-independent (a pure count).
     mad = float(np.median(dev, overwrite_input=True))
-    spike_count = int(np.count_nonzero(dev > spike_threshold_mad * mad))
-    return median, mad, spike_count
+    return int(np.count_nonzero(dev > spike_threshold_mad * mad))
 
 
 def _fast_kurtosis(x: np.ndarray) -> float:
@@ -287,6 +379,7 @@ def _empty_stats(seed_id: str, day: date) -> dict:
         "spike_count": 0,
         "kurtosis": float("nan"),
         "flat_count": 0,
+        "longest_flat_run_s": 0.0,
         "clip_count": 0,
         "npts": 0,
     }
@@ -322,6 +415,12 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
     # ``DataIndex.read``), so skip it entirely unless at least one trace
     # is actually masked (OpenMEQ-5nl.8 profiling: ~10 ms/channel-day on a
     # full 200 Hz day, pure overhead in the common no-gap case).
+    # Captured before ``segments`` is overwritten with bare ``.data`` arrays
+    # below -- needed to convert ``longest_flat_run_samples`` into
+    # ``longest_flat_run_s``. A channel/day is one seed id at one fixed
+    # sampling rate, so any trace's own rate applies to the whole day.
+    sampling_rate = float(stream[0].stats.sampling_rate) if len(stream) > 0 else None
+
     if len(stream) > 0 and any(np.ma.is_masked(tr.data) for tr in stream):
         segments = [tr.data for tr in stream.split()]
     else:
@@ -344,13 +443,15 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
     sum_abs = 0.0
     flat_count = 0
     clip_count = 0
+    longest_flat_run_samples = 0
     float_segments: list[np.ndarray] = []
+    residual_segments: list[np.ndarray] = []
 
     for seg in segments:
         n = seg.size
         total_npts += n
 
-        seg_flat, seg_clip = _segment_run_counts(
+        seg_flat, seg_clip, seg_longest = _segment_run_counts(
             seg,
             flat_run_min_samples=qc_cfg.flat_run_min_samples,
             clip_run_min_samples=qc_cfg.clip_run_min_samples,
@@ -359,6 +460,10 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
         )
         flat_count += seg_flat
         clip_count += seg_clip
+        # A flat run cannot legitimately span a real time gap (module
+        # docstring), so the day's longest run is the max across segments,
+        # never a sum.
+        longest_flat_run_samples = max(longest_flat_run_samples, seg_longest)
 
         # NOTE: ``mean_abs`` is deliberately *not* accumulated off a
         # narrower (e.g. int32) view of the raw samples: ``np.abs`` on
@@ -384,12 +489,29 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
         sum_sq += float(np.dot(seg_f, seg_f))
         float_segments.append(seg_f)
 
+        # Isolated-impulse residual (M1.9): computed *per segment*, not on
+        # the cross-segment concatenation, so a real time gap never lets
+        # the running-median window span two physically-discontinuous
+        # segments (which would manufacture a handful of spurious
+        # large-residual samples right at the join). The residuals are
+        # pooled below for a single MAD/threshold/count over the whole day
+        # -- additive, unlike a median itself, since it's ultimately a
+        # count over the concatenation of independently-computed residuals.
+        window = _clamped_odd_window(qc_cfg.spike_median_window, seg_f.size)
+        med_local = median_filter(seg_f, size=window, mode="nearest")
+        residual_segments.append(seg_f - med_local)
+
     rms = float(np.sqrt(sum_sq / total_npts))
     mean_abs = float(sum_abs / total_npts)
 
     x_all = float_segments[0] if len(float_segments) == 1 else np.concatenate(float_segments)
-    median, mad, spike_count = _median_mad_spike_count(x_all, qc_cfg.spike_threshold_mad)
+    r_all = (
+        residual_segments[0] if len(residual_segments) == 1 else np.concatenate(residual_segments)
+    )
+    spike_count = _spike_count_from_residual(r_all, qc_cfg.spike_threshold_mad)
     kurt = _fast_kurtosis(x_all)
+
+    longest_flat_run_s = longest_flat_run_samples / sampling_rate if sampling_rate else 0.0
 
     return {
         "seed_id": seed_id,
@@ -399,6 +521,7 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
         "spike_count": spike_count,
         "kurtosis": kurt,
         "flat_count": flat_count,
+        "longest_flat_run_s": longest_flat_run_s,
         "clip_count": clip_count,
         "npts": total_npts,
     }
@@ -505,12 +628,31 @@ def _stats_batch(item: tuple[str, list[str], str, str]) -> list[dict]:
 
 
 def _write_qc_worker_cfg(qc_cfg: QcConfig) -> Path:
-    """Write ``qc_cfg`` to a small standalone temp YAML file for worker IPC."""
+    """Write ``qc_cfg`` to a small standalone temp YAML file for worker IPC.
+
+    M1.5 found orphaned ``/tmp/openmeq_qc_stats_cfg_*.yaml`` files left
+    behind on this shared machine. :func:`compute_daily_stats`'s own
+    ``try``/``finally`` around :func:`~openmeq.parallel.pmap` already
+    unlinks the file it gets back from this function on every normal exit
+    path (including a worker-raised exception, since that propagates
+    through ``pmap`` into the ``try`` block) -- but *this* function itself
+    had no such guard: ``tempfile.mkstemp`` creates the file on disk before
+    a single byte is written to it, and if ``qc_cfg.model_dump`` or
+    ``yaml.safe_dump`` ever raised (e.g. a future non-YAML-safe field), the
+    exception would propagate out of this function with the empty temp
+    file never unlinked -- no caller has a path to it yet to clean up. The
+    ``try``/``except`` below closes that gap: on any failure to populate
+    the file, it is removed before the exception re-raises.
+    """
     fd, tmp_name = tempfile.mkstemp(prefix="openmeq_qc_stats_cfg_", suffix=".yaml")
     os.close(fd)
     tmp_path = Path(tmp_name)
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump({"qc": qc_cfg.model_dump(mode="json")}, f)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump({"qc": qc_cfg.model_dump(mode="json")}, f)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return tmp_path
 
 
