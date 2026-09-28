@@ -91,6 +91,41 @@ relocate/catalog_dd.xml
 logs/<step>.log
 ```
 
+**`locate/summary.csv`/`locate/removal_log.csv` semantics (M6.4, `OpenMEQ-xdf.4`):**
+
+- **`err_h_km`/`err_z_km`** come from the final origin's own uncertainty
+  objects, following the same convention §6h already establishes for
+  hypoDD-sourced origins: `err_h_km = Origin.origin_uncertainty
+  .horizontal_uncertainty / 1000` and `err_z_km = Origin.depth_errors
+  .uncertainty / 1000` (both metres in obspy's parsed `Origin`, per
+  `obspy/io/nlloc/core.py`'s `NLLOC_HYP` reader). Either field is written as
+  an empty cell if the corresponding value is unset on the origin (never
+  treated as `0`, which would silently pass an error threshold check it
+  should not).
+- **`status`** is `"accepted"` or `"rejected"`; `"rejected"` always agrees
+  with that event's `catalog_auto.xml` preferred-origin
+  `evaluation_status` (`"rejected"`, §5) -- both are set together by
+  `openmeq.locate.finalize.finalize_event`.
+- **`reason`** is empty for an accepted event; for a rejected one it is
+  either the failing `cfg.nlloc.filter.events` attribute name
+  (`"max_rms_s"`, `"min_phases"`, `"min_p_phases"`, `"min_s_phases"`,
+  `"max_gap_deg"`, `"max_err_h_km"`, `"max_err_z_km"` -- checked in that
+  fixed order, first failure wins, `openmeq.locate.finalize`'s module
+  docstring has the full rationale) or an `f"nlloc_failed:{message}"` string
+  if the event never produced any usable origin at all.
+- **A rejected event whose location never converged** (pass A's own
+  `min_p_phases` shortfall with no successful relocation, or a total pass-B
+  NLLoc failure) still gets a `summary.csv` row and a flagged
+  `catalog_auto.xml` origin -- via an empty placeholder `Origin` when
+  neither pass ever produced one -- so every `pick/catalog_picks.xml`
+  event_id appears in `summary.csv` exactly once (ARCHITECTURE.md's own
+  "never dropped" rule, §5) with every numeric field left null rather than
+  the row being omitted.
+- **`removal_log.csv`'s `residual_s`** is always populated, including for
+  pass B's S-prediction-screening removals (`iteration=0`): its value there
+  is the signed `pick.time - predicted_arrival_time` difference (there is
+  no NLLoc arrival residual yet at that point), not left blank.
+
 **`qc/daily_stats.csv` column semantics (M1.9, `OpenMEQ-5nl.9`):**
 
 - **`spike_count`** counts *isolated impulses*, not merely large samples:
@@ -268,6 +303,14 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
     so `openmeq.locate.nlloc_runner.locate_event` converts it to km via `obspy.geodetics.
     degrees2kilometers` before returning the `Origin`, per §1's km convention for the location step),
     `azimuth` and `time_weight`.
+  - `Origin.quality.minimum_distance`/`maximum_distance`/`median_distance` are also converted to
+    **km** (M6.4 / OpenMEQ-xdf.4, `openmeq.locate.finalize`, applied to the final origin written into
+    `catalog_auto.xml`): obspy's `NLLOC_HYP` reader leaves these three `OriginQuality` fields in
+    degrees even though M6.1 already converts every `Arrival.distance` on the same `Origin` to km --
+    left unconverted, one `Origin` would mix km (arrivals) and degrees (origin quality) for what is
+    conceptually the same unit. There is no `summary.csv` column for these three fields (that file's
+    column list, below, is unchanged); this only affects `OriginQuality` as written into the QuakeML
+    catalogue.
   - `event.preferred_origin_id` points to the latest origin -- for a hypoDD-relocated event (§6h)
     this is the new `smi:openmeq/hypodd` origin; for an event hypoDD didn't relocate, it stays
     whatever it was before (§6h's "not linked" case).
