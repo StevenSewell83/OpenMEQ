@@ -196,26 +196,30 @@ def test_obspyck_link_creates_expected_files(synthetic_project, tmp_path):
 def test_end_to_end_recovers_truth_event(synthetic_project, tmp_path):
     """Full loop: the grids ``build_1d_grid``/``run_grid2time`` produce are
     fed to a real NLLoc run against one truth event's own arrivals (used as
-    noise-free picks), and the recovered hypocentre is within ~1 km of the
-    truth origin (M0.8's synthetic-vs-NLLoc tolerance note: travel times are
-    straight-ray, a few % / tens of ms off NLLoc's own grids).
+    noise-free picks), and the recovered hypocentre is within a small margin
+    of the truth origin.
+
+    OpenMEQ-m1f.5: the synthetic generator now computes exact 1D layered
+    first-arrival travel times (direct ray + head waves), validated against
+    this same ``Grid2Time`` grid to <5 ms P / <10 ms S
+    (``tests/locate/test_synthetic_traveltime_validation.py``), so the old
+    straight-ray modelling-mismatch floor (which forced a ~1 km tolerance
+    here, per ARCHITECTURE.md §8's old "few hundred m to ~1 km" guidance) is
+    gone -- this event now measures ~24 m, and 0.1 km keeps a comfortable
+    margin over that.
 
     Uses ``truth["events"][1]``, not ``[0]``: exploratory runs against every
     one of the 20 synthetic events (against these same grids) showed that a
     handful of the shallowest events (depth comparable to, or above, the
     layer model's first velocity discontinuity at 1 km) have a genuine
     depth/origin-time trade-off -- an alternate, shallower-or-negative-depth
-    solution actually fits the straight-ray-approximated arrival times
-    *better* (lower RMS) than the true depth does, confirmed by forcing
-    NLLoc's search to stay within the true depth's neighbourhood and finding
-    a strictly worse RMS there. This is a property of this specific
-    network's azimuthal coverage (large gap, few close-in stations) and the
-    straight-ray-vs-refracted-ray mismatch for near-surface sources
-    (ARCHITECTURE.md §8's own caveat), not a defect in ``build_1d_grid``/
-    ``run_grid2time`` -- events with more ordinary (few-km) depth recover
-    well within tolerance (event 1: ~0.46 km; event 3: ~0.91 km), matching
-    ARCHITECTURE.md §8's expected "few hundred m to ~1 km" tolerance
-    exactly.
+    solution can fit the arrival times *better* (lower RMS) than the true
+    depth does, confirmed by forcing NLLoc's search to stay within the true
+    depth's neighbourhood and finding a strictly worse RMS there. This is a
+    property of this specific network's azimuthal coverage (large gap, few
+    close-in stations) for near-surface sources, not a defect in
+    ``build_1d_grid``/``run_grid2time``; event 1 has an ordinary (few-km)
+    depth and is unaffected.
     """
     _require_nlloc_tools()
     cfg, truth = _load_project_copy(synthetic_project, tmp_path)
@@ -312,7 +316,7 @@ def test_end_to_end_recovers_truth_event(synthetic_project, tmp_path):
     depth_diff_km = abs(origin.depth / 1000.0 - true_depth_km)
     total_dist_km = (horiz_dist_km**2 + depth_diff_km**2) ** 0.5
 
-    assert total_dist_km < 1.0, (
+    assert total_dist_km < 0.1, (
         f"recovered location {total_dist_km:.3f} km from true hypocenter "
         f"(horiz {horiz_dist_km:.3f} km, depth diff {depth_diff_km:.3f} km)"
     )

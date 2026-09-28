@@ -108,7 +108,14 @@ def test_locate_event_recovers_true_hypocenter_clean_picks(nlloc_grids):
     origin = locate_event(event, picks, paths, cfg, "passA", 1)
 
     total_km, horiz_km, depth_km = _total_error_km(origin, ev["origin"])
-    assert total_km < 3.0, (
+    # OpenMEQ-m1f.5: with the synthetic generator's exact 1D layered travel
+    # times (direct ray + head waves, validated against this same Grid2Time
+    # grid to <5 ms P / <10 ms S -- tests/locate/test_synthetic_traveltime_
+    # validation.py), the old straight-ray modelling-mismatch floor (which
+    # forced a 3.0 km tolerance, ARCHITECTURE.md §8's old "few hundred m to
+    # ~1 km" guidance) is gone: this event now recovers to ~24 m. 0.1 km
+    # keeps a comfortable ~4x margin over that measured value.
+    assert total_km < 0.1, (
         f"recovered location {total_km:.3f} km from truth "
         f"(horiz {horiz_km:.3f} km, depth diff {depth_km:.3f} km)"
     )
@@ -205,10 +212,16 @@ def test_batch_locate_events_recovery_and_throughput(nlloc_grids):
         for origin, ev in zip(origins, truth["events"], strict=True)
     ]
     median_err = statistics.median(total_errors)
-    # Generous, statistical bound (ARCHITECTURE.md §8: expect a few hundred
-    # m to ~1 km typical, with some shallow events trading depth for origin
-    # time) -- not a per-event assertion.
-    assert median_err < 3.0, (
+    # OpenMEQ-m1f.5: with the synthetic generator's exact 1D layered travel
+    # times (validated to <5 ms P / <10 ms S against this same Grid2Time
+    # grid), recovery across the full 20-event catalogue measures a median
+    # of ~23 m and a worst case of ~102 m (all 20 events, this same clean
+    # pick set) -- the straight-ray modelling-mismatch floor that used to
+    # force ARCHITECTURE.md §8's "few hundred m to ~1 km" guidance is gone.
+    # Still a statistical bound, not a per-event assertion (a shallow event
+    # can still trade depth for origin time), but at a scale ~30-40x tighter
+    # than the old 3.0/10.0 km bounds.
+    assert median_err < 0.1, (
         f"median total location error {median_err:.3f} km across {len(items)} events"
     )
-    assert max(total_errors) < 10.0, f"worst-case total location error {max(total_errors):.3f} km"
+    assert max(total_errors) < 0.25, f"worst-case total location error {max(total_errors):.3f} km"

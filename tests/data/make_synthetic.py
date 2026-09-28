@@ -39,45 +39,61 @@ origin comment): ``lat = LAT0 + y_km / KM_PER_DEG_LAT``,
 fine approximation at the ~20 km scale of this network and is not meant to
 be geodesy-grade.
 
-Travel-time method (straight-ray secant through the 1D layered model)
-----------------------------------------------------------------------
+Travel-time method (exact 1D layered first arrival: direct ray + head waves)
+-----------------------------------------------------------------------------
 For a source at depth ``z_src`` (km, positive down from sea level per
 ARCHITECTURE.md §6a) and a receiver at *effective* depth ``z_rcv`` (see
-below) separated by horizontal distance ``x`` (km), the straight-line
-(chord) path length is ``D = sqrt(x**2 + (z_rcv - z_src)**2)`` and its
-constant angle from vertical satisfies ``cos(theta) = |z_rcv - z_src| / D``.
-Because the ray is a straight line (not bent at layer interfaces -- no
-Snell's law refraction), ``cos(theta)`` is the same in every layer it
-crosses, so the path length within layer ``i`` is ``dz_i / cos(theta)``,
-where ``dz_i`` is the vertical extent of that layer between ``z_src`` and
-``z_rcv``. Travel time is the sum, over every layer the chord crosses, of
-(layer path length) / (layer velocity for the requested phase):
+below) separated by epicentral (horizontal) distance ``x`` (km), the first
+arrival is the minimum of two families of ray, computed exactly (constant-
+velocity layers, proper Snell's-law bending at each interface -- **not** a
+straight chord) rather than approximated:
 
-    t = (1 / cos(theta)) * sum_i(dz_i / v_i)
+- **Direct ray** (:func:`_direct_wave_time`): the ray parameter (horizontal
+  slowness) ``p`` is constant along the whole path (Snell's law for a stack
+  of horizontal constant-velocity layers). For every layer ``i`` between
+  ``z_src`` and ``z_rcv`` (thickness ``h_i``, velocity ``v_i`` for the
+  requested phase), the ray's horizontal offset within that layer is
+  ``h_i * p * v_i / sqrt(1 - p**2 * v_i**2)``; ``p`` (``0 <= p < 1/v_max``,
+  ``v_max`` the fastest layer traversed) is found by bisection so the sum of
+  these offsets equals ``x`` exactly (:func:`_bisect_ray_parameter`). Travel
+  time is then ``sum_i(h_i / (v_i * sqrt(1 - p**2 * v_i**2)))``. A source and
+  receiver at the same depth (no vertical separation to bisect over) fall
+  back to the exact ``x / v`` at that shared depth.
+- **Head (refracted) waves** (:func:`_head_wave_time`): for every interface
+  at or below both ``z_src`` and ``z_rcv`` where velocity increases with
+  depth, the ray travels down from the source (and up to the receiver) at
+  the critical ray parameter ``p = 1 / v_refractor``, then along the
+  interface at ``v_refractor``. This is only a real arrival once the
+  epicentral distance exceeds the critical distance (the down-going and
+  up-going legs' own horizontal offsets, computed the same way as the direct
+  ray's, must not exceed ``x``) -- closer offsets have no head wave on that
+  interface and are excluded from the minimum.
 
-A receiver above the shallowest tabulated layer top (e.g. a mountaintop
-surface station) or a source below the deepest tabulated layer top both use
-the nearest layer's velocity, extending it indefinitely, per ARCHITECTURE.md
-§6a ("the first layer applies from the top of the model to the next
-depth" -- read here as also extending upward past the first entry, and the
-last layer extending downward past its entry). A source and receiver at the
-same depth (``cos(theta)`` undefined) fall back to ``D / v`` at that shared
-depth.
+The first arrival is ``min(direct, min-over-interfaces(head))``. A receiver
+above the shallowest tabulated layer top (e.g. a mountaintop surface
+station) or a source below the deepest tabulated layer top both use the
+nearest layer's velocity, extending it indefinitely, per ARCHITECTURE.md §6a
+("the first layer applies from the top of the model to the next depth" --
+read here as also extending upward past the first entry, and the last layer
+extending downward past its entry). A borehole receiver (effective elevation
+below sea level, i.e. positive ``z_rcv``, per "Station effective depth"
+below) is handled exactly like a surface one: the ray path (direct or head)
+only runs between ``z_src`` and ``z_rcv`` -- it is never assumed to start or
+end at the surface.
 
-**Accuracy**: a true ray-tracer (e.g. NLLoc's ``Grid2Time``, which bends the
-ray at each interface to find the *fastest* first-arrival path per Fermat's
-principle) always finds a travel time less than or equal to this straight
-chord's. For this network's geometry (offsets and depths both a few km, a
-three-layer model with modest velocity contrasts, 3.5/4.5/5.8 km/s P and
-2.0/2.6/3.35 km/s S), the straight-ray overestimate is typically a few
-percent of the total travel time -- on the order of a few tens of
-milliseconds at these distances -- growing for long, shallow-incidence
-raypaths that cross a layer boundary far from vertical. Downstream location
-recovery tests (e.g. comparing NLLoc-derived origins against
-``truth["events"][i]["origin"]``) should budget residual/error tolerances
-of this order (documented starting point: 20-50 ms per P/S residual, a few
-hundred m to ~1 km horizontal/depth location error) rather than expecting
-bit-for-bit agreement with this generator's own travel times.
+**Accuracy**: this reproduces the same physics NLLoc's ``Grid2Time``
+(Podvin & Lecomte finite-difference eikonal solver) and hypoDD's 1D ray
+tracer solve for, so validated agreement is at the millisecond level, not
+the tens-of-milliseconds-to-percent level a straight-ray chord would give
+(see ``tests/locate/test_synthetic_traveltime_validation.py``, a
+``requires_nlloc`` test that compares these arrivals directly against
+``Grid2Time`` output built via ``openmeq.nlloc_setup``, and reports the
+remaining difference -- almost entirely Grid2Time's own finite-difference
+grid-spacing error -- as a function of grid spacing). Downstream location/
+relocation tests can therefore budget much tighter residual and recovery
+tolerances than the old straight-ray generator allowed; see
+ARCHITECTURE.md §8 and each test module's own tolerance comments for the
+current numbers.
 
 **Station "effective depth"**: per ARCHITECTURE.md §6, a station's
 elevation for location purposes is ``elevation_m - depth_m`` (boreholes have
@@ -422,34 +438,142 @@ def _velocity_at_depth(layers: pd.DataFrame, depth_km: float, phase: str) -> flo
     return float(layers[col].iloc[idx])
 
 
-def travel_time(
-    depth_src_km: float, depth_rcv_km: float, horiz_km: float, layers: pd.DataFrame, phase: str
-) -> float:
-    """Straight-ray travel time through the 1D layered model (see module docstring)."""
-    z1, z2 = sorted([depth_src_km, depth_rcv_km])
-    dz_total = z2 - z1
-    dist = math.hypot(horiz_km, dz_total)
-    if dist < 1e-9:
-        return 0.0
-    if dz_total < 1e-6:
-        v = _velocity_at_depth(layers, z1, phase)
-        return dist / v
-
-    cos_theta = dz_total / dist
+def _layer_bounds_vels(layers: pd.DataFrame, phase: str) -> tuple[list[float], list[float]]:
+    """``(bounds, vels)`` for the requested phase: ``bounds`` has
+    ``len(vels) + 1`` entries, with ``[bounds[i], bounds[i+1])`` layer ``i``'s
+    vertical extent -- the first layer's top extended to ``-inf`` and the
+    last layer's bottom extended to ``+inf``, per the module docstring's
+    "extends indefinitely" reading of ARCHITECTURE.md §6a.
+    """
     col = "vp" if phase == "P" else "vs"
     tops = layers["depth_km"].tolist()
     vels = layers[col].tolist()
-    # Extend the first layer upward (-inf) and the last downward (+inf),
-    # per the module docstring's "extends indefinitely" reading of §6a.
     bounds = [-math.inf, *tops[1:], math.inf]
+    return bounds, vels
 
-    total_time = 0.0
-    for i in range(len(tops)):
+
+def _segments(
+    z1: float, z2: float, bounds: list[float], vels: list[float]
+) -> list[tuple[float, float]]:
+    """Non-empty ``(thickness_km, velocity_km_s)`` pairs for every layer
+    overlapping ``[z1, z2]`` (``z1 <= z2``), in depth order."""
+    segs = []
+    for i, v in enumerate(vels):
         lo = max(bounds[i], z1)
         hi = min(bounds[i + 1], z2)
         if hi > lo:
-            total_time += (hi - lo) / cos_theta / vels[i]
-    return total_time
+            segs.append((hi - lo, v))
+    return segs
+
+
+def _bisect_ray_parameter(x_km: float, segs: list[tuple[float, float]]) -> float:
+    """Ray parameter ``p`` (s/km), ``0 <= p < 1/v_max``, such that
+    ``sum(h_i * p * v_i / sqrt(1 - p**2 * v_i**2) for h_i, v_i in segs) ==
+    x_km`` (the direct-wave shooting equation -- see "Travel-time method" in
+    the module docstring). The offset is monotonically increasing in ``p``
+    (0 at ``p=0``, diverging as ``p -> 1/v_max``), so bisection always
+    converges to the unique root for any finite ``x_km >= 0``.
+    """
+    v_max = max(v for _h, v in segs)
+    lo, hi = 0.0, (1.0 / v_max) * (1.0 - 1e-12)
+
+    def offset(p: float) -> float:
+        return sum(h * p * v / math.sqrt(1.0 - (p * v) ** 2) for h, v in segs)
+
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        if offset(mid) < x_km:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _direct_wave_time(
+    z_src: float, z_rcv: float, x_km: float, bounds: list[float], vels: list[float]
+) -> float:
+    """Direct-ray travel time between depths ``z_src``/``z_rcv`` separated by
+    epicentral distance ``x_km``: ray-parameter shooting (bisection on
+    ``p``) through every layer between the two depths. Returns ``inf`` for
+    the degenerate same-depth case (see :func:`travel_time`'s caller, which
+    handles it separately)."""
+    z1, z2 = sorted([z_src, z_rcv])
+    if z2 - z1 < 1e-6:
+        return math.inf
+    segs = _segments(z1, z2, bounds, vels)
+    if not segs:
+        return math.inf
+    if x_km < 1e-9:
+        return sum(h / v for h, v in segs)
+    p = _bisect_ray_parameter(x_km, segs)
+    return sum(h / (v * math.sqrt(1.0 - (p * v) ** 2)) for h, v in segs)
+
+
+def _head_wave_time(
+    z_src: float, z_rcv: float, x_km: float, bounds: list[float], vels: list[float]
+) -> float:
+    """Minimum refracted (head-wave) travel time over every interface at or
+    below both ``z_src`` and ``z_rcv`` where velocity increases (see
+    "Travel-time method" in the module docstring). Returns ``inf`` if no
+    interface yields a valid (post-critical-distance) head wave.
+    """
+    best = math.inf
+    z_deep = max(z_src, z_rcv)
+    for j in range(1, len(vels)):
+        d = bounds[j]  # interior interface depth (finite: j in [1, n-1])
+        if d < z_deep - 1e-9:
+            continue  # interface is above the source or receiver
+        v_ref = vels[j]
+        segs = _segments(z_src, d, bounds, vels) + _segments(z_rcv, d, bounds, vels)
+        if any(v_i >= v_ref - 1e-12 for _h, v_i in segs):
+            continue  # refractor not faster than every overlying layer traversed
+        if not segs:
+            # Source and receiver both sit exactly at the interface: the
+            # head wave degenerates to travelling along it the whole way.
+            best = min(best, x_km / v_ref)
+            continue
+        p = 1.0 / v_ref
+        # Delay-time method (e.g. Sheriff & Geldart): T = x/v_ref + delay,
+        # delay = sum(h_i * sqrt(1/v_i**2 - 1/v_ref**2)) over the layers
+        # traversed on *both* legs (down from the source, up to the
+        # receiver) -- algebraically ``h_i * sqrt(1 - (p*v_i)**2) / v_i``
+        # here, since ``p = 1/v_ref``. This is **not** the down/up legs'
+        # own travel time (that would double-count each leg's own offset,
+        # already accounted for by dividing the *full* x_km by v_ref) --
+        # only the *excess* time each leg needs beyond travelling that same
+        # leg's own offset at v_ref.
+        delay = sum(h * math.sqrt(1.0 - (p * v) ** 2) / v for h, v in segs)
+        offset = sum(h * p * v / math.sqrt(1.0 - (p * v) ** 2) for h, v in segs)
+        remaining = x_km - offset
+        if remaining < 0:
+            continue  # closer than the critical distance: no head wave here
+        best = min(best, x_km / v_ref + delay)
+    return best
+
+
+def travel_time(
+    depth_src_km: float, depth_rcv_km: float, horiz_km: float, layers: pd.DataFrame, phase: str
+) -> float:
+    """Exact 1D layered first-arrival travel time (see "Travel-time method"
+    in the module docstring): the minimum of the direct ray
+    (:func:`_direct_wave_time`) and every candidate head/refracted wave
+    (:func:`_head_wave_time`).
+    """
+    z1, z2 = sorted([depth_src_km, depth_rcv_km])
+    dist = math.hypot(horiz_km, z2 - z1)
+    if dist < 1e-9:
+        return 0.0
+
+    bounds, vels = _layer_bounds_vels(layers, phase)
+
+    if z2 - z1 < 1e-6:
+        v = _velocity_at_depth(layers, z1, phase)
+        direct = horiz_km / v
+    else:
+        direct = _direct_wave_time(depth_src_km, depth_rcv_km, horiz_km, bounds, vels)
+
+    head = _head_wave_time(depth_src_km, depth_rcv_km, horiz_km, bounds, vels)
+    return min(direct, head)
 
 
 # ---------------------------------------------------------------------------

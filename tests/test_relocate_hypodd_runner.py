@@ -579,35 +579,35 @@ def _dist_3d_km(
     return math.sqrt((horiz_m / 1000.0) ** 2 + dz_km**2)
 
 
-#: Combined ~2.2-2.4 km 3D perturbation: a fixed 2.2 km horizontal offset in
-#: a random azimuth, plus up to +-1.0 km of independent vertical noise, per
-#: event -- deliberately *independent per event* (not a uniform shift of the
-#: whole catalogue): hypoDD's double-difference method only recovers
-#: *relative* geometry from purely differential data, so a shared/uniform
-#: translation of every event would be entirely unobservable and never
-#: corrected; independent per-event scatter is exactly what
-#: double-difference relocation is designed to collapse back toward a
-#: tight, internally-consistent (and, since the perturbation is zero-mean
-#: across events, close to *absolutely* correct) cluster.
+#: Combined ~0.5-0.6 km 3D perturbation (the issue's own spec, OpenMEQ-m1f.5
+#: acceptance criterion): a fixed 0.5 km horizontal offset in a random
+#: azimuth, plus up to +-0.3 km of independent vertical noise, per event --
+#: deliberately *independent per event* (not a uniform shift of the whole
+#: catalogue): hypoDD's double-difference method only recovers *relative*
+#: geometry from purely differential data, so a shared/uniform translation
+#: of every event would be entirely unobservable and never corrected;
+#: independent per-event scatter is exactly what double-difference
+#: relocation is designed to collapse back toward a tight,
+#: internally-consistent (and, since the perturbation is zero-mean across
+#: events, close to *absolutely* correct) cluster.
 #:
-#: **Deviation from the issue's own "perturb the input by ~0.5 km"**:
-#: confirmed empirically (this task's own development) that a ~0.5 km
-#: perturbation is swallowed by this shared synthetic fixture's own
-#: documented location-accuracy floor (``tests/data/make_synthetic.py``'s
-#: module docstring / ARCHITECTURE.md §8: synthetic arrivals are computed
-#: via a straight-ray approximation, while hypoDD's own 1D forward model
-#: ray-traces properly through the same layered model -- a real, if small,
-#: velocity-model mismatch, independent of and in addition to whatever this
-#: test perturbs). At ~0.5 km, that mismatch alone dominated the result (a
-#: 0.5 km perturbation relocated to a *worse* mean error than it started at,
-#: 14 events tested, only 2 improved) -- not a relocation-correctness bug,
-#: but this fixture's inherent ~1-1.5 km modeling floor swamping a
-#: perturbation of the same order. A larger, still entirely reasonable
-#: perturbation (a few km, well above that floor) is needed for "closer to
-#: truth" to be a reliable, non-flaky claim; at these values, all 14/14
-#: relocated events improved, roughly halving the mean 3D error.
-_HORIZ_OFFSET_KM = 2.2
-_VERT_OFFSET_KM = 1.0
+#: **History (M10.4 / OpenMEQ-16d.4, superseded here)**: with the old
+#: straight-ray synthetic travel times, a ~0.5 km perturbation was swallowed
+#: by this shared synthetic fixture's own location-accuracy floor (a real,
+#: if small, velocity-model mismatch between the generator's straight rays
+#: and hypoDD's own proper 1D ray tracing through the same layered model,
+#: independent of and in addition to whatever this test perturbs) -- at
+#: ~0.5 km, that mismatch alone dominated the result (14 events tested,
+#: only 2 improved), forcing a larger ~2.2-2.4 km perturbation instead.
+#: OpenMEQ-m1f.5 replaced those straight rays with exact 1D layered
+#: first-arrival times (direct ray + head waves), validated to <5 ms P /
+#: <10 ms S against NLLoc's own Grid2Time
+#: (``tests/locate/test_synthetic_traveltime_validation.py``) -- removing
+#: that floor. At this original 0.5/0.3 km spec, all 20/20 events now
+#: improve, with mean relocated error ~0.058 km (down from ~0.532 km
+#: perturbed).
+_HORIZ_OFFSET_KM = 0.5
+_VERT_OFFSET_KM = 0.3
 
 
 def _catalog_from_truth_perturbed(
@@ -806,3 +806,14 @@ def test_synthetic_end_to_end_relocation_improves_on_perturbed_input(
         )
 
     assert mean_relocated < mean_perturbed
+    # OpenMEQ-m1f.5: with the synthetic generator's exact 1D layered travel
+    # times, this measures mean_relocated ~0.058 km and 20/20 events
+    # improved at this (now issue-spec, 0.5 km) perturbation -- add the
+    # absolute/count bounds the issue's own acceptance criterion implies,
+    # with a comfortable margin over that measurement (a real hypoDD/ph2dt
+    # binary run, not mocked, so some run-to-run slack is kept rather than
+    # asserting the exact measured values).
+    assert mean_relocated < 0.15, f"mean relocated error {mean_relocated:.3f} km"
+    assert n_improved >= len(perturbed_errors) - 1, (
+        f"only {n_improved}/{len(perturbed_errors)} events improved"
+    )

@@ -122,7 +122,12 @@ def test_pass_a_removes_bad_pick_and_relocates(nlloc_grids):
         assert p.evaluation_status != "rejected"
 
     assert result.origin is not None
-    assert _total_error_km(result.origin, ev["origin"]) < 3.0
+    # OpenMEQ-m1f.5: with exact synthetic travel times, this relocates to
+    # ~21 m using the 7 surviving (good) picks (one station's P removed) --
+    # 0.15 km keeps a comfortable margin over that while allowing a bit more
+    # slack than the full-station-set tests (fewer, and iteratively
+    # filtered, picks).
+    assert _total_error_km(result.origin, ev["origin"]) < 0.15
 
 
 def test_pass_a_min_p_phases_rejection(nlloc_grids):
