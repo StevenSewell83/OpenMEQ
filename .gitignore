@@ -24,3 +24,6 @@ htmlcov/
 
 # scheduled task lock
 .claude/scheduled_tasks.lock
+
+# install.sh log
+/install.log
