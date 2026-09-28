@@ -30,6 +30,7 @@ from openmeq.paths import RunPaths
 from openmeq.qc.stats import (
     DAILY_STATS_COLUMNS,
     _day_window,
+    _fast_kurtosis,
     _write_qc_worker_cfg,
     compute_channel_day_stats,
     compute_daily_stats,
@@ -375,3 +376,202 @@ def test_day_window_excludes_next_day_first_sample():
 def test_dates_helper_two_days():
     # sanity: DAY1/DAY2 really are one calendar day apart (used throughout)
     assert DAY2 - DAY1 == timedelta(days=1)
+
+
+# ---------------------------------------------------------------------------
+# OpenMEQ-5nl.8 (throughput/parallel-scaling optimisation): regression test
+# against a from-scratch, deliberately naive reference implementation, so the
+# optimised code in openmeq/qc/stats.py can keep changing without this test
+# ever importing (or trusting) the same fast helpers it's meant to check.
+# ---------------------------------------------------------------------------
+
+
+def _reference_channel_day_stats(seed_id: str, day, stream, qc_cfg: QcConfig) -> dict:
+    """Deliberately naive reference implementation.
+
+    Independent of ``openmeq.qc.stats``'s optimised helpers (does not call
+    ``_median_mad_spike_count``, ``_fast_kurtosis`` or the boundary-based
+    ``_segment_run_counts``): plain ``scipy.stats.kurtosis``, ``np.median``
+    with no ``overwrite_input``, ``np.abs(x - median)`` recomputed from
+    scratch for the spike comparison, ``np.sum(x**2)`` (not ``np.dot``),
+    and a textbook per-sample run-length encoding (cumulative-sum run ids,
+    ``np.bincount``, then a full per-sample gather) for flat/clip runs.
+    Slower, by design -- this is the "obviously correct by inspection"
+    baseline OpenMEQ-5nl.8 optimised the real implementation against.
+    """
+    from scipy.stats import kurtosis as scipy_kurtosis
+
+    segments = [tr.data for tr in stream.split()] if len(stream) > 0 else []
+    segments = [seg for seg in segments if seg.size > 0]
+    if not segments:
+        return {
+            "seed_id": seed_id,
+            "date": day.isoformat(),
+            "rms": 0.0,
+            "mean_abs": 0.0,
+            "spike_count": 0,
+            "kurtosis": float("nan"),
+            "flat_count": 0,
+            "clip_count": 0,
+            "npts": 0,
+        }
+
+    is_int = segments[0].dtype.kind == "i"
+    int32_max = 2**31 - 1
+    int32_min = -(2**31)
+
+    float_saturation_value = None
+    if not is_int:
+        concat_raw = np.concatenate(segments)
+        if concat_raw.size > 0:
+            float_saturation_value = float(concat_raw[np.argmax(np.abs(concat_raw))])
+
+    def run_lengths_per_sample(x):
+        n = x.size
+        if n == 0:
+            return np.zeros(0, dtype=np.int64)
+        is_new_run = np.empty(n, dtype=bool)
+        is_new_run[0] = True
+        is_new_run[1:] = x[1:] != x[:-1]
+        run_id = np.cumsum(is_new_run) - 1
+        run_len = np.bincount(run_id)
+        return run_len[run_id]
+
+    total_npts = 0
+    sum_sq = 0.0
+    sum_abs = 0.0
+    flat_count = 0
+    clip_count = 0
+    float_segments = []
+
+    for seg in segments:
+        total_npts += seg.size
+
+        run_len = run_lengths_per_sample(seg)
+        flat_count += int(np.count_nonzero(run_len >= qc_cfg.flat_run_min_samples))
+        if is_int:
+            is_sat = (seg == int32_max) | (seg == int32_min)
+        elif float_saturation_value is not None:
+            is_sat = seg == float_saturation_value
+        else:
+            is_sat = np.zeros_like(seg, dtype=bool)
+        clip_count += int(np.count_nonzero((run_len >= qc_cfg.clip_run_min_samples) & is_sat))
+
+        seg_f = seg.astype(np.float64)
+        sum_sq += float(np.sum(seg_f**2))
+        sum_abs += float(np.sum(np.abs(seg_f)))
+        float_segments.append(seg_f)
+
+    rms = float(np.sqrt(sum_sq / total_npts))
+    mean_abs = float(sum_abs / total_npts)
+
+    x_all = np.concatenate(float_segments)
+    median = np.median(x_all)
+    mad = np.median(np.abs(x_all - median))
+    spike_count = int(np.count_nonzero(np.abs(x_all - median) > qc_cfg.spike_threshold_mad * mad))
+    kurt = float(scipy_kurtosis(x_all, fisher=True))
+
+    return {
+        "seed_id": seed_id,
+        "date": day.isoformat(),
+        "rms": rms,
+        "mean_abs": mean_abs,
+        "spike_count": spike_count,
+        "kurtosis": kurt,
+        "flat_count": flat_count,
+        "clip_count": clip_count,
+        "npts": total_npts,
+    }
+
+
+def _build_sample_channel_day_trace(rng) -> Trace:
+    """One synthetic channel-day-shaped trace exercising every statistic at
+    once: background noise, a cluster of spikes, a flat-lined run, and a
+    saturated (clipped) run -- 2 hours at 200 Hz (1.44M samples), not a
+    full 17.28M-sample day, so this regression test stays fast."""
+    n = 200 * 3600 * 2
+    data = rng.normal(scale=8.0, size=n)
+
+    spike_idx = rng.choice(n, size=100, replace=False)
+    data[spike_idx] += rng.choice([-1.0, 1.0], size=100) * rng.uniform(150.0, 400.0, size=100)
+
+    flat_start = n // 4
+    flat_len = 80
+    data[flat_start : flat_start + flat_len] = 17.0
+
+    clip_start = 3 * n // 4
+    clip_len = 6
+    data = np.round(data).astype(np.int32)
+    data[clip_start : clip_start + clip_len] = 2**31 - 1
+
+    tr = Trace(data=data)
+    tr.stats.sampling_rate = 200.0
+    tr.stats.starttime = UTCDateTime(2025, 1, 1)
+    return tr
+
+
+def test_optimised_output_matches_reference_implementation():
+    """The optimised ``compute_channel_day_stats`` matches the from-scratch
+    naive reference on a sample channel-day exercising rms, mean_abs,
+    spike_count, kurtosis, flat_count and clip_count together.
+
+    Tolerances (documented, per OpenMEQ-5nl.8's "identical, or within
+    documented float tolerance" requirement):
+
+    - ``rms``/``mean_abs``: both implementations do the same pooled
+      summation *except* ``sum_sq`` uses ``np.dot`` instead of
+      ``np.sum(x**2)`` -- a different summation order for the same
+      mathematical sum, so these agree to ``rel=1e-9`` (comfortably above
+      float64 rounding noise for a ~1.4M-term reduction, comfortably below
+      anything that would matter for a noise statistic).
+    - ``spike_count``/``flat_count``/``clip_count``: integer counts from
+      exact-equality/threshold comparisons on the *same* underlying
+      float64 values either way (only ``kurtosis`` runs in float32) --
+      required to match **exactly**.
+    - ``kurtosis``: the optimised path computes this in float32 (see
+      :func:`openmeq.qc.stats._fast_kurtosis`); ``rel=1e-3`` comfortably
+      covers that precision difference while still catching any real
+      algorithmic regression.
+    """
+    rng = np.random.default_rng(20260928)
+    tr = _build_sample_channel_day_trace(rng)
+    stream = Stream([tr])
+    qc_cfg = QcConfig()
+
+    optimised = compute_channel_day_stats("XX.SAMPLE.00.HHZ", DAY1, stream, qc_cfg)
+    reference = _reference_channel_day_stats("XX.SAMPLE.00.HHZ", DAY1, stream, qc_cfg)
+
+    assert optimised["npts"] == reference["npts"]
+    assert optimised["rms"] == pytest.approx(reference["rms"], rel=1e-9)
+    assert optimised["mean_abs"] == pytest.approx(reference["mean_abs"], rel=1e-9)
+    assert optimised["spike_count"] == reference["spike_count"]
+    assert optimised["flat_count"] == reference["flat_count"]
+    assert optimised["clip_count"] == reference["clip_count"]
+    assert optimised["kurtosis"] == pytest.approx(reference["kurtosis"], rel=1e-3)
+
+    # Sanity: the sample really does exercise every anomaly type (a
+    # regression that zeroed out a whole code path would still "match" a
+    # reference computed the same wrong way if the sample didn't).
+    assert reference["spike_count"] > 50
+    assert reference["flat_count"] >= 80
+    assert reference["clip_count"] == 6
+    assert reference["kurtosis"] > 5.0
+
+
+def test_fast_kurtosis_matches_scipy_reference():
+    """``_fast_kurtosis`` (float32, custom demean-once implementation)
+    matches ``scipy.stats.kurtosis(x, fisher=True)`` (float64) within the
+    same documented ``rel=1e-3`` tolerance used above, on both a plain
+    noise sample and a heavy-tailed (spiky) one."""
+    from scipy.stats import kurtosis as scipy_kurtosis
+
+    rng = np.random.default_rng(7)
+
+    plain = rng.normal(scale=5.0, size=500_000)
+    plain_ref = scipy_kurtosis(plain, fisher=True)
+    assert _fast_kurtosis(plain) == pytest.approx(plain_ref, rel=1e-3, abs=1e-2)
+
+    spiky = plain.copy()
+    idx = rng.choice(plain.size, size=500, replace=False)
+    spiky[idx] += rng.uniform(100.0, 500.0, size=500)
+    assert _fast_kurtosis(spiky) == pytest.approx(scipy_kurtosis(spiky, fisher=True), rel=1e-3)
