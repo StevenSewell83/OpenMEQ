@@ -757,3 +757,14 @@ different (tiny) dataset.
    in `ParallelConfig`, if a future profiling pass finds another step with
    a meaningfully different optimal worker count than the pipeline-wide
    default.
+
+## Test-suite runtime (OpenMEQ-m1f.6)
+
+A clean run on an idle machine (28 logical / 20 physical cores) after the shared `full_pipeline_run` session fixture:
+
+| Suite | Before | After |
+|---|---|---|
+| `pytest -q -m "not slow"` | 7 min 44 s | 2 min 21 s |
+| `pytest -q` (full, 660 tests) | ~15–17 min | 13 min 20 s |
+
+The full suite stays above the 6-minute target because several tests legitimately need their own real pipeline runs: the skip-unchanged, `--force` and `--from`/`--to` checks in `tests/test_run_all.py`, the benchmark-script tests, and the pick and locate recovery reruns. Use `-m "not slow"` for day-to-day development, and run the full suite before merging.
