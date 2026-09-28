@@ -86,3 +86,30 @@ def test_run_logs_and_raises_on_nonzero_exit(caplog):
 def test_run_timeout_raises_external_tool_error():
     with pytest.raises(ExternalToolError):
         run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.1)
+
+
+def test_run_env_overrides_one_var_without_dropping_the_rest(monkeypatch):
+    # M4.3 / OpenMEQ-1m7.3: `env` is merged over the parent's os.environ, so
+    # a caller can force a single variable (e.g. CUDA_VISIBLE_DEVICES="")
+    # without losing PATH or anything else the subprocess needs.
+    monkeypatch.setenv("OPENMEQ_TEST_UNRELATED_VAR", "still-here")
+    proc = run(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('OPENMEQ_TEST_FORCED_VAR', '<unset>')); "
+            "print(os.environ.get('OPENMEQ_TEST_UNRELATED_VAR', '<unset>'))",
+        ],
+        env={"OPENMEQ_TEST_FORCED_VAR": "forced-value"},
+    )
+    lines = proc.stdout.splitlines()
+    assert lines[0] == "forced-value"
+    assert lines[1] == "still-here"
+
+
+def test_run_env_none_inherits_parent_environment_unchanged(monkeypatch):
+    monkeypatch.setenv("OPENMEQ_TEST_UNRELATED_VAR", "inherited")
+    proc = run(
+        [sys.executable, "-c", "import os; print(os.environ.get('OPENMEQ_TEST_UNRELATED_VAR'))"],
+    )
+    assert proc.stdout.strip() == "inherited"

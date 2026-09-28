@@ -209,6 +209,16 @@ class PhasenetConfig(_StrictModel):
     highpass_hz: float = 1.0
     min_p_prob: float = 0.3
     min_s_prob: float = 0.3
+    # M4.3 / OpenMEQ-1m7.3: currently unused/aspirational -- the batch
+    # runner (openmeq.pick.run_phasenet) always invokes predict.py with
+    # --batch_size=1 regardless of this value. predict.py's own batching
+    # requires every chunk in one call to share both time length AND
+    # station count; this project's chunks_pn/ files generally have
+    # different station counts event to event, so batch_size>1 would fail
+    # on the first mismatched pair (docs/phasenet_interface.md §7), and
+    # there's no measured CPU speedup from it either way (§6). Kept as a
+    # contract note for whoever revisits GPU support/per-station-count
+    # batching.
     batch_size: int = 20
     # M4.2 / OpenMEQ-1m7.2: gaps longer than this are zero-filled rather than
     # interpolated during chunk preprocessing.
