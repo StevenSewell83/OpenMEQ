@@ -549,10 +549,16 @@ class XcorrFilterConfig(_StrictModel):
     cache (M10.1 / OpenMEQ-16d.1); PLAN.md §3's sketch does not show an
     explicit xcorr filter band.
 
-    TODO(OpenMEQ-16d.1): confirm these corners suit the project's actual
-    cross-correlation frequency band (hypoddpy's template used
-    cc_filter_min_freq/cc_filter_max_freq, exposed properly here instead of
-    hardcoded).
+    Resolved by M10.3 / OpenMEQ-16d.3 (``openmeq.relocate.xcorr`` module
+    docstring, "The xcorr filter band"): kept at 2-20 Hz rather than the
+    5-40 Hz alternative suggested for microseismic events, since an
+    empirical Monte-Carlo comparison against this project's own synthetic
+    P/S pulse spectra (``tests/data/make_synthetic.py``, P dominant 10 Hz, S
+    dominant 6 Hz) found no lag-recovery accuracy benefit from the narrower
+    5-40 Hz band, while its low corner sits close enough to the synthetic S
+    energy's 6 Hz peak to risk attenuating real S arrivals with a similarly
+    low corner frequency. Still fully project-overridable for a deployment
+    with a genuinely higher-frequency source spectrum.
     """
 
     freqmin: float = 2.0

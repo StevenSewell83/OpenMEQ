@@ -222,9 +222,12 @@ hypodd:
     min_cc: 0.7
     maxlag_s: 0.05
     components: {P: [Z], S: ["1", "2", N, E]}
-    # --- M10.1 / OpenMEQ-16d.1 ---
-    # TODO(OpenMEQ-16d.1): confirm these corners suit the project's actual
-    # cross-correlation frequency band.
+    # --- M10.1 / OpenMEQ-16d.1, resolved by M10.3 / OpenMEQ-16d.3 ---
+    # Kept at 2-20 Hz rather than a 5-40 Hz alternative: an empirical check
+    # against this project's own synthetic P/S pulse spectra found no
+    # accuracy benefit from the narrower band, and 5-40 Hz would risk
+    # attenuating a real S arrival with a similarly low corner frequency.
+    # See openmeq.relocate.xcorr's module docstring for the full analysis.
     filter: {freqmin: 2.0, freqmax: 20.0}
     # Common target sampling rate (Hz) for the pre-filtered xcorr waveform
     # cache (relocate/cache/<event_id>.npz) -- every cached window is

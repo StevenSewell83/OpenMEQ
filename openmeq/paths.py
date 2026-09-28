@@ -267,6 +267,16 @@ class RunPaths:
         return self.relocate_work_dir / "dt.cc"
 
     @property
+    def xcorr_results_jsonl(self) -> Path:
+        """``relocate/work/xcorr_results.jsonl`` (M10.3 / OpenMEQ-16d.3): the
+        ``openmeq.parallel.pmap_incremental`` resumable results file
+        ``openmeq.relocate.xcorr.run_xcorr`` assembles ``dt.cc`` from -- one
+        JSON-lines record per cross-correlated pair, so a killed/interrupted
+        run resumes without recomputing already-written pairs.
+        """
+        return self.relocate_work_dir / "xcorr_results.jsonl"
+
+    @property
     def catalog_dd_xml(self) -> Path:
         return self.root / "relocate" / "catalog_dd.xml"
 
