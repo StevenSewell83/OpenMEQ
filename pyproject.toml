@@ -35,7 +35,7 @@ dependencies = [
 openmeq = "openmeq.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "tomli; python_version < '3.11'"]
+dev = ["pytest", "pytest-cov", "ruff==0.16.9", "tomli; python_version < '3.11'"]
 
 [tool.setuptools.packages.find]
 include = ["openmeq*"]
@@ -47,23 +47,13 @@ include = ["openmeq*"]
 # and bugbear's common-mistake checks without being overly strict.
 [tool.ruff]
 line-length = 100
-# Ruff also (as of the ruff version resolved by this project's unpinned
-# `dev` extra, M0.9 / OpenMEQ-qlg.9) formats/lints fenced ```python blocks
-# inside Markdown by default. Excluded repo-wide: docs/hypoddpy_audit.md
-# (M9.1) deliberately quotes the *original*, unrewritten hypoddpy template
-# source verbatim (including its Python-2-only syntax) for audit purposes,
-# so ruff reformatting -- or flagging -- those quotes would be wrong, not
-# helpful; ARCHITECTURE.md §1's ruff code-style rule was always meant to
-# cover this project's own Python source, not quoted/example snippets in
-# prose docs.
+# *.md: docs quote third-party code verbatim (e.g. the hypoddpy audit); never lint/format it.
 extend-exclude = [".claude", "external", "runs", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.format]
-# docs quote third-party code verbatim (e.g. the hypoddpy audit); do not reformat it
-exclude = ["docs/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
