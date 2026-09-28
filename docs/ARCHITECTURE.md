@@ -306,9 +306,23 @@ writers above — a distinct concern, not a competing writer):
   count vs. `min(MAXSTA, MSTA)`; total observation count (catalog phases,
   rejected picks excluded, plus an optional `xcorr_obs_count` once M10.1's
   `dt.cc` exists) vs. `MAXDATA`; largest per-event phase count vs. `MOBS`
-  (ph2dt only); and, if a `Vel3DGrid` is given, each grid axis vs.
-  `vel3d.inc`'s `maxnx`/`maxny`/`maxnz`. `LimitCheckResult` holds a list of
-  `LimitCheck(name, current, limit, exceeded)`.
+  (ph2dt only); and, if a `Vel3DGrid` is given, each grid axis's node count
+  vs. `vel3d.inc`'s `maxnx`/`maxny`/`maxnz`, **and** (M9.5 / OpenMEQ-6ld.5)
+  each axis's physical map span, in `bld` units, vs. `vel3d.inc`'s
+  `ixkms`/`iykms`/`izkms` — a distinct compiled limit from `maxnx`/`maxny`/
+  `maxnz` (node count vs. physical span of the `bldmap`-built node-lookup
+  arrays, `get_vel3d.f`'s `bldmap` subroutine, which stops fatally if
+  exceeded), checked instead of relying on
+  `openmeq.relocate.nlloc_to_simul`'s own hardcoded stand-in value for this
+  same limit. `LimitCheckResult` holds a list of `LimitCheck(name, current,
+  limit, exceeded)`, with names `event_count`/`station_count`/
+  `observation_count`/`phases_per_event`/`grid_nx`/`grid_ny`/`grid_nz`/
+  `grid_span_x`/`grid_span_y`/`grid_span_z`.
+- `compiled_vel3d_node_limits(include_dir=None) -> (maxnx, maxny, maxnz)`
+  (M9.5 / OpenMEQ-6ld.5): the currently compiled node-count limits alone,
+  for a caller about to build a `vel3D.dat`
+  (`nlloc_to_simul.nlloc_grid_to_vel3d`) that wants the real current values
+  rather than that function's own shipped-default fallbacks.
 - `recompile_hypodd(new_limits, external_hypodd_dir, external_bin_dir,
   log)` rewrites just the changed `.inc` files' numeric values via a
   regex substitution that preserves Fortran continuation lines and
@@ -331,7 +345,7 @@ writers above — a distinct concern, not a competing writer):
   rather than mocking the compiler.
 - `scripts/setup_hypodd.py`'s CLI wiring around `ensure_compiled_limits`
   (reading the real catalogue/station table, deciding when to call it in
-  the pipeline) is M9.5, out of scope here.
+  the pipeline) is `openmeq.relocate.setup.setup_hypodd`, M9.5 — see below.
 
 **3D (IMOD=9) model coverage/registration check**, built in M9.6 /
 OpenMEQ-6ld.6 (`openmeq.relocate.hypodd_limits.check_vel3d_coverage`, same
@@ -370,10 +384,55 @@ successfully once the 3D model is correctly registered and sized. See
   silent clamp for any `IMOD` other than `5` (which includes `IMOD=9`), so
   the check validates the coordinate hypoDD will *actually* query the
   model at.
-- Not yet wired into any CLI (`scripts/setup_hypodd.py` is M9.5, out of
-  scope here, same as `ensure_compiled_limits` above) — a follow-up should
-  call `check_vel3d_coverage` immediately after `check_compiled_limits`
-  whenever `cfg.hypodd.velocity_model.type == "3d"`.
+- Wired into `openmeq.relocate.setup.setup_hypodd` (M9.5, below): called for
+  every 3D run, immediately after `ensure_compiled_limits`, using whatever
+  catalogue is currently available (even an empty one pre-detection —
+  station-only coverage is still checked from day one).
+
+## 6c-2. `scripts/setup_hypodd.py` / `openmeq.relocate.setup` (M9.5 / OpenMEQ-6ld.5)
+
+The importable orchestration this section's writers/checkers above (M9.2,
+M9.3, M9.4, M9.6) are wired together by, matching M5.2's
+`openmeq.nlloc_setup.setup_nlloc` pattern:
+`openmeq.relocate.setup.setup_hypodd(cfg, paths, *, force=False,
+nlloc_to_simul=False) -> bool`, with `scripts/setup_hypodd.py` a thin Click
+CLI (`-c/--config`, `--nlloc-to-simul`, `--force`) around it — so M10.2/
+M10.4 can `import openmeq.relocate.setup` and call the same function
+directly rather than shelling out to the script (PLAN.md §7/§9: M9 must be
+usable independently of, and before, the rest of the pipeline).
+
+Sequence: **(a)** if `nlloc_to_simul`, resolve `<cfg.nlloc.velocity_model.
+file>.{P,S}.mod.hdr` (S optional — required only if `cfg.hypodd.
+velocity_model.simul2000.iphase != 1`, else a `ConfigError`) and call
+`nlloc_to_simul.nlloc_grid_to_vel3d`, writing `cfg.hypodd.velocity_model.
+file` (the `vel3D.dat`), passing `hypodd_limits.compiled_vel3d_node_limits()`
+for `max_nx`/`max_ny`/`max_nz` rather than that function's own shipped
+defaults; **(b)** refresh `relocate/work/event_id_map.csv`/
+`station_label_map.csv` (`build_event_id_map`/`build_station_label_map`,
+§6c) from whatever catalogue is currently available (an empty one if
+`paths.catalog_mag_xml` doesn't exist yet); **(c)** `write_station_dat`;
+**(d)** `write_ph2dt_inp`; **(e)** `write_hypodd_inp_1d` (reads
+`cfg.hypodd.velocity_model.file` via `openmeq.velocity.read_layers`) or
+`write_hypodd_inp_3d` (requires `cfg.hypodd.velocity_model.file`, the
+`vel3D.dat`, to already exist on disk — from step (a) or user-supplied —
+checked explicitly since the writer itself doesn't touch the filesystem);
+**(f)** if the catalogue is available, `ensure_compiled_limits` (passing a
+`Vel3DGrid` from `read_vel3d_header` for a 3D run — folds in step (g)'s
+recompile-if-needed), else log a `WARNING` and skip the check entirely
+(never a hard failure — PLAN.md §9: this script must run on day one, before
+any events exist); **(g)** for a 3D run, `check_vel3d_coverage` (§6c,
+above) immediately after, regardless of catalogue availability.
+
+Idempotent via `openmeq.manifest.StepManifest(paths, "relocate")`, key
+`"hypodd_setup"` (a distinct key from M10.2/M10.4's own `"relocate"`-step
+manifest entries, sharing the same `relocate/manifest.json` file — the
+manifest contract is per-`key`, not per-file) — fingerprinted on
+`cfg.hypodd`, `cfg.stations`, the station table's contents, the velocity
+model input file(s)' mtime/size (the layer file for 1D; the NLLoc `.{P,S}.
+mod.{hdr,buf}` files for `nlloc_to_simul`, or the `vel3D.dat` itself
+otherwise), the `nlloc_to_simul` flag, and `paths.catalog_mag_xml`'s mtime/
+size (so a newly-appeared or changed catalogue always re-triggers the limit
+check even if nothing else changed).
 
 ## 6d. NLLoc 1D/3D grids and the location-grid-bounds convention
 

@@ -225,7 +225,10 @@ hypodd:
     - {niter: 3, wtccp: 1,    wtccs: 0.5,   wrcc: 4,    wdcc: 1,    wtctp: 0.01, wtcts: 0.005, wrct: 8, wdct: 2,   damp: 20}
   istart: 2                             # 1 = from single source; 2 = from network sources
   isolv: 2                              # 1 = SVD; 2 = LSQR (scales to much larger datasets)
-  iaq: 1                                # remove airquakes: 0 = no; 1 = yes
+  # IAQ: 1 = remove air-quakes (default); 2 = keep air-quakes, reset depths;
+  # 0 = legacy/undocumented "don't remove at all" (hypoDD.f:803, still
+  # functional; docs/hypoddpy_audit.md defect #4).
+  iaq: 1
   # --- M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" line and event-
   # clustering block. hypoddpy's template hardcodes OBSCC=OBSCT=0, disabling
   # clustering entirely (docs/hypoddpy_audit.md defect #14) -- exposed here

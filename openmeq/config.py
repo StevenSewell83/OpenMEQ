@@ -651,10 +651,21 @@ class HypoddConfig(_StrictModel):
     # larger datasets and is this project's documented choice), IAQ=1
     # (remove airquakes), matching the M9 epic design note's recommendation
     # over hypoddpy's unexplained defaults.
+    #
+    # M9.5 / OpenMEQ-6ld.5 (docs/hypoddpy_audit.md defect #4): the currently
+    # documented IAQ values (hypoDD2_UserGuide.pdf §B.3.1) are 1 = remove
+    # air-quakes / 2 = keep air-quakes (reset depths, continue) -- M9.2's
+    # original `Literal[0, 1]` predates that audit finding and only allowed
+    # the wrong pair. `0` is kept too: it remains a functional, if
+    # undocumented, legacy value in the compiled source (`hypoDD.f:803`,
+    # `iaq.eq.0` --> don't remove air-quakes at all) that a synthetic/test
+    # dataset may legitimately want (a small network's brief mid-iteration
+    # negative-depth excursions can otherwise shrink a cluster below
+    # hypoDD's own "less than 2 events" cutoff).
     weighting_rows: list[WeightingRow] = Field(default_factory=_default_weighting_rows)
     istart: Literal[1, 2] = 2
     isolv: Literal[1, 2] = 2
-    iaq: Literal[0, 1] = 1
+    iaq: Literal[0, 1, 2] = 1
     # M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" data-type-selection
     # line (confirmed examples/example1/hypoDD.inp:32-33, getinp2.f's
     # idata,iphase,maxdist read). Defaults match example1: both cross-corr
