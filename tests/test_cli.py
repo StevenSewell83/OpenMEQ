@@ -71,7 +71,16 @@ def test_nonexistent_config_file_errors(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
-@pytest.mark.parametrize("step", STEP_COMMANDS)
+#: ``qc`` (M1.7, ``OpenMEQ-5nl.7``) is no longer a stub -- it is exercised
+#: end to end against the synthetic project in tests/test_qc_command.py
+#: instead, since config/example.yaml's paths (``./data/mseed``,
+#: ``./meta/stations.xml``, ...) are illustrative only and don't exist on
+#: disk, so running the real qc pipeline against it would fail for reasons
+#: unrelated to CLI wiring.
+STUB_STEP_COMMANDS = [step for step in STEP_COMMANDS if step != "qc"]
+
+
+@pytest.mark.parametrize("step", STUB_STEP_COMMANDS)
 def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: str) -> None:
     config_path, output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
@@ -125,18 +134,23 @@ def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
 
 def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None:
     """Regression check for the "no duplicate/stale handler" logging pitfall
-    when several subcommands run in one process (as CliRunner does here)."""
+    when several subcommands run in one process (as CliRunner does here).
+
+    Uses two still-stub steps (``chunk``/``detect``) rather than ``qc``
+    (M1.7, ``OpenMEQ-5nl.7``): ``qc`` is now a real pipeline and
+    config/example.yaml's paths don't exist on disk, so invoking it here
+    would fail for reasons unrelated to this test's own logging concern."""
     config_path, output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
 
-    result_qc = runner.invoke(main, ["qc", "-c", str(config_path)])
+    result_chunk = runner.invoke(main, ["chunk", "-c", str(config_path)])
     result_detect = runner.invoke(main, ["detect", "-c", str(config_path)])
 
-    assert result_qc.exit_code == 0, result_qc.output
+    assert result_chunk.exit_code == 0, result_chunk.output
     assert result_detect.exit_code == 0, result_detect.output
 
-    qc_log = (output_dir / "logs" / "qc.log").read_text()
+    chunk_log = (output_dir / "logs" / "chunk.log").read_text()
     detect_log = (output_dir / "logs" / "detect.log").read_text()
-    assert "openmeq qc" in qc_log
+    assert "openmeq chunk" in chunk_log
     assert "openmeq detect" in detect_log
-    assert "openmeq detect" not in qc_log
+    assert "openmeq detect" not in chunk_log
