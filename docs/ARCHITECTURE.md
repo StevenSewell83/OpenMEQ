@@ -294,6 +294,7 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
   - `time_errors.uncertainty` is in seconds.
   - PhaseNet probability goes in `extra` (below), key `probability`.
   - **Channel for PhaseNet picks:** PhaseNet picks per station (instrument), not per channel. P picks go on the station's Z channel; S picks go on the first horizontal present, in the order N, E, 1, 2. The original channel code is used.
+  - **Deduplication (M4.4 / `OpenMEQ-1m7.4`):** PhaseNet's `picks.csv` can carry several P or several S rows for one station in one event (a real, confirmed behaviour -- e.g. a spurious extra P double-fired near a strong S onset, `docs/phasenet_interface.md` §5). `openmeq.pick.to_quakeml.build_catalog` keeps at most one `Pick` per `(event, station, phase_hint)`: the row with the highest `phase_score` (ties broken by earliest `phase_time`, then input row order). This was the one genuine gap left in this section (the channel-attribution rule above was already fully specified); recorded here in the same commit that implements it.
 - **Origins:**
   - `method_id` is `smi:openmeq/nlloc/passA` or `.../passB`, or `smi:openmeq/hypodd` (§6h has the
     full hypoDD-origin contract: field mapping, the `EX`/`EY`/`EZ` -> `origin_uncertainty`/
