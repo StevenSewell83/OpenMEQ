@@ -182,9 +182,16 @@ def pick(config_path: str, force: bool) -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def locate(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Rerun even if cfg.nlloc and pick/catalog_picks.xml are unchanged since the last run.",
+)
+def locate(config_path: str, force: bool) -> None:
     """Two-pass NonLinLoc location and residual filtering."""
-    _dispatch("locate", config_path)
+    _dispatch("locate", config_path, force=force)
 
 
 @main.command()
