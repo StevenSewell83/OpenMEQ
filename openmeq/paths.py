@@ -157,6 +157,36 @@ class RunPaths:
     def catalog_picks_xml(self) -> Path:
         return self.root / "pick" / "catalog_picks.xml"
 
+    # -- nlloc setup (M5.2, ``scripts/setup_nlloc.py`` / ``openmeq.nlloc_setup``) ----
+    # Not one of the registered pipeline steps in ``openmeq/cli.py`` (it is a
+    # one-off utility script per PLAN.md §7), so these are not part of
+    # ``ensure()``/``_STEP_OUTPUT_DIRS``; ``openmeq.nlloc_setup`` creates its
+    # own directories as needed.
+
+    @property
+    def nlloc_dir(self) -> Path:
+        """Top-level NLLoc setup output directory (``nlloc/``)."""
+        return self.root / "nlloc"
+
+    @property
+    def nlloc_velocity_models_dir(self) -> Path:
+        """This run's NLLoc model root -- what ``link_obspyck_model`` symlinks
+        as ObsPyck's own ``pluginpath/VELOCITY_MODELS`` (docs/obspyck_notes.md §5)."""
+        return self.nlloc_dir / "VELOCITY_MODELS"
+
+    @property
+    def nlloc_grid_root(self) -> Path:
+        """Shared ``VGOUT``/``GTFILES`` file-root basename (no extension).
+
+        Both the Vel2Grid velocity grid (``<root>.{P,S}.mod.{hdr,buf}``) and
+        every station's Grid2Time travel-time grid
+        (``<root>.{P,S}.<STA>.time.{hdr,buf}``) live side by side under
+        ``nlloc_velocity_models_dir/layer_time/``, matching the layout
+        ObsPyck's own generated control file expects
+        (docs/obspyck_notes.md §5).
+        """
+        return self.nlloc_velocity_models_dir / "layer_time" / "layer"
+
     # -- locate (Step 5 / M6) -------------------------------------------------------
 
     @property

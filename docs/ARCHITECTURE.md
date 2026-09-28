@@ -33,6 +33,7 @@ This document is the **contract between modules**. Every task in the build (see 
 | `openmeq.index` | `DataIndex.load(path)`; `.files(seed_id, t1, t2) -> list[Path]`; `.seed_ids(pattern="*")`; `.read(seed_ids, t1, t2, pad=0) -> Stream`, which reads only the needed files with `starttime`/`endtime` slicing and merges them. |
 | `openmeq.stations` | `load_inventory(cfg.stations) -> obspy.Inventory` (StationXML file/folder + CSV merge); `station_table(cfg.stations) -> pandas.DataFrame` with columns `network,station,location,latitude,longitude,elevation_m,depth_m`; `apply_channel_map(stream, cfg.stations) -> obspy.Stream`; `write_merged_inventory(inv, paths, cfg.stations=None)` writes `inventory/stations.xml`/`.csv`; `check_coverage(seed_ids: Iterable[str], inv) -> dict` (takes a plain iterable of seed ids, e.g. `DataIndex.seed_ids()` — does not import `openmeq.index`) plus `write_metadata_report(report, paths)` for `inventory/metadata_report.json` (M1.2). |
 | `openmeq.plotting` | `setup_style()`, `save_fig(fig, path)`, `plot_map_sections(df, stations, path, ...)`, `plot_hist(...)`, `plot_heatmap(...)`, `plot_timeseries(...)`, `plot_boxplot(...)`. |
+| `openmeq.nlloc_setup` (M5.2) | 1D NLLoc setup, backing `scripts/setup_nlloc.py` (PLAN.md §7). `write_control_common(cfg, paths) -> str` (shared `CONTROL`/`TRANS` boilerplate every Vel2Grid/Grid2Time/NLLoc control file in the project uses, including M6.1's). `write_station_list(station_table) -> list[str]` (one `GTSRCE` line per unique `NET.STA`, raises `ConfigError` on a bare-station-code clash). `location_grid_bounds(cfg, station_table) -> LocationGridBounds` (the convention for the eventual `LOCGRID` bounds -- §6d). `build_1d_grid(cfg, paths, station_table)` (runs `Vel2Grid`). `run_grid2time(cfg, paths, station_table)` (runs `Grid2Time` per (station, phase) via `openmeq.parallel.pmap`). `link_obspyck_model(cfg, paths, station_table)` (refreshes ObsPyck's model link, docs/obspyck_notes.md). `setup_nlloc(cfg, paths, force=False) -> bool` (top-level orchestration with `openmeq.manifest.StepManifest` skip-unchanged). |
 
 ## 3. Run directory layout (`cfg.project.output_dir`)
 
@@ -54,6 +55,9 @@ chunks_pn/<event_id>/<event_id>.mseed   # PhaseNet-ready: 100 Hz, 3-comp per sta
 chunks_pn/data_list.csv         # PhaseNet input list
 pick/phasenet_raw/              # PhaseNet native output
 pick/catalog_picks.xml          # events with automatic picks, no origins
+nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.mod.{hdr,buf}        # Vel2Grid 1D velocity grid (M5.2)
+nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.<STA>.time.{hdr,buf} # Grid2Time per-station travel-time grids (M5.2)
+nlloc/manifest.json             # setup_nlloc.py skip-unchanged (M5.2)
 locate/passA/<event_id>/        # NLLoc work per iteration
 locate/passB/<event_id>/
 locate/catalog_auto.xml
@@ -327,6 +331,38 @@ writers above — a distinct concern, not a competing writer):
 - `scripts/setup_hypodd.py`'s CLI wiring around `ensure_compiled_limits`
   (reading the real catalogue/station table, deciding when to call it in
   the pipeline) is M9.5, out of scope here.
+
+## 6d. NLLoc 1D grids and the location-grid-bounds convention
+
+Built in M5.2 (`openmeq/nlloc_setup.py`), verified against
+`docs/nlloc_interface.md` (the M5.1 spike). `docs/nlloc_interface.md`'s
+`LOCGRID` note: NLLoc silently locates 0 events (exit code 0, no error) if
+the location search grid's z-range (or, in `GRID3D` mode, x/y range)
+exceeds the travel-time grid's own coverage. Since M6.1's own `LOCGRID`
+statement is built from the same `cfg.nlloc.grid` M5.2 already has,
+`openmeq.nlloc_setup.location_grid_bounds(cfg, station_table)` is the single
+place that computes the eventual location grid's bounds, so both M5.2
+(sizing the shared Vel2Grid/Grid2Time grid generously around it) and M6.1
+(writing a matching `LOCGRID` statement) agree:
+
+- **Horizontal** (x, y): centered on `cfg.nlloc.grid.origin`, spanning
+  `+-size_km[0]/2` and `+-size_km[1]/2`.
+- **Vertical** (z, NLLoc's positive-down convention): from
+  `-Z_MARGIN_ABOVE_SEA_LEVEL_KM` (2.0 km above sea level, comfortably
+  covering every station's negative effective elevation, §6) down to
+  `size_km[2]`; widened further if any station's own effective elevation
+  would otherwise fall outside that range (a deep borehole).
+
+M6.1's per-event NLLoc runner must call `location_grid_bounds` (not
+recompute this itself) to build its own `LOCGRID xNum yNum zNum xOrig yOrig
+zOrig dx dy dz gridType saveFlag` statement, so the grid it searches is
+always the one M5.2's travel-time grids were actually sized to cover.
+
+`openmeq.nlloc_setup.write_control_common(cfg, paths)` is the one place
+that renders `CONTROL`/`TRANS` (`TRANS SIMPLE latOrig lonOrig 0.0`, centered
+on `cfg.nlloc.grid.origin`) -- every control file for one project must use
+byte-identical `TRANS`/`MAPLINE` statements (`docs/nlloc_interface.md` §4),
+so M6.1 must call this function too rather than re-deriving the line.
 
 ## 7. External tools
 
