@@ -161,10 +161,20 @@ def test_requires_detect_first(synthetic_project, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_chunk_command_runs_end_to_end(synthetic_project, tmp_path):
     """``openmeq qc`` -> ``openmeq detect`` -> ``openmeq chunk`` via
     ``CliRunner`` on the synthetic fixture. About one chunk per truth
     event (~20 total), plus completeness/diagnostics/manifest/log outputs.
+
+    OpenMEQ-m1f.6: this drives its own real qc->detect->chunk chain rather
+    than reading ``tests/conftest.py``'s shared ``full_pipeline_run``
+    fixture, per that issue's own rule -- a test exercising the manually-
+    chained real CLI commands themselves (as opposed to reading one
+    already-computed upstream result) keeps its own isolated run. Marked
+    ``slow`` (~80s on this machine) so it doesn't count against the
+    ``-m "not slow"`` budget; every other test in this module already uses
+    the cheaper ``synthetic_qc_tables``-backed fixtures below.
     """
     config_path, truth = synthetic_project
 

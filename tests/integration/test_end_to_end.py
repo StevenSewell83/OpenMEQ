@@ -101,7 +101,6 @@ for the up-to-date measured table)
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -112,9 +111,7 @@ from obspy import UTCDateTime
 from obspy.geodetics import gps2dist_azimuth
 
 from openmeq.catalog import event_id, get_extra, read_catalog
-from openmeq.cli import STEP_ORDER, run_all
-from openmeq.config import load_config
-from openmeq.paths import RunPaths
+from openmeq.cli import STEP_ORDER
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXTERNAL_DIR = Path(os.environ.get("OPENMEQ_EXTERNAL_DIR", str(REPO_ROOT / "external")))
@@ -185,37 +182,14 @@ def _match_truth_to_times(
     return pairs
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _set_external_dir():
-    """Module-scoped equivalent of ``monkeypatch.setenv`` (``monkeypatch`` is
-    function-scoped only) -- mirrors ``tests/test_run_all.py``'s identical
-    fixture."""
-    old = os.environ.get("OPENMEQ_EXTERNAL_DIR")
-    os.environ["OPENMEQ_EXTERNAL_DIR"] = str(EXTERNAL_DIR)
-    yield
-    if old is None:
-        os.environ.pop("OPENMEQ_EXTERNAL_DIR", None)
-    else:
-        os.environ["OPENMEQ_EXTERNAL_DIR"] = old
-
-
 @pytest.fixture(scope="module")
-def e2e_result(synthetic_project, tmp_path_factory) -> SimpleNamespace:
-    """Runs ``openmeq.cli.run_all`` **once** against a private copy of the
-    shared ``synthetic_project`` fixture, with output under ``tmp_path``
-    (``tests/conftest.py``'s own "mutating steps must use a private copy"
-    usage note) -- every test below only reads the result of this one real
-    chain (real qc/detect/chunk/PhaseNet/NLLoc/hypoDD)."""
-    config_path, truth = synthetic_project
-    project_dir = tmp_path_factory.mktemp("e2e") / "project"
-    shutil.copytree(config_path.parent, project_dir)
-    project_config_path = project_dir / "config.yaml"
-
-    cfg = load_config(project_config_path)
-    paths = RunPaths(cfg)
-    paths.ensure()
-
-    result = run_all(cfg, paths, config_path=str(project_config_path))
+def e2e_result(full_pipeline_run) -> SimpleNamespace:
+    """Truth-matching view over the shared ``full_pipeline_run`` fixture
+    (``tests/conftest.py``, OpenMEQ-m1f.6) -- every test below only reads
+    the result of that one real chain (real qc/detect/chunk/PhaseNet/NLLoc/
+    hypoDD); this module no longer drives its own independent
+    ``openmeq.cli.run_all`` chain."""
+    cfg, paths, truth, result = full_pipeline_run
     assert result.ok, (
         f"openmeq run failed at step {result.failed_step!r}: "
         f"{[(o.step, o.status, o.detail) for o in result.outcomes]}"
