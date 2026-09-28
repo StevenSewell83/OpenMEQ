@@ -97,6 +97,14 @@ def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: st
         # this fails clearly rather than "not implemented".
         assert result.exit_code != 0, result.output
         assert "openmeq qc" in result.output
+    elif step == "magnitude":
+        # `magnitude` (M8.3 / OpenMEQ-625.3) is implemented -- like `detect`,
+        # it has its own hard-dependency check: a fresh config/example.yaml
+        # run directory has no locate/catalog_auto.xml (`locate` is still a
+        # stub here) and no review/catalog_final.xml either, so catalogue
+        # selection fails clearly rather than "not implemented".
+        assert result.exit_code != 0, result.output
+        assert "catalog" in result.output
     else:
         assert result.exit_code == 0, result.output
 
@@ -133,9 +141,17 @@ def test_review_compile_flag_runs(tmp_path: Path) -> None:
 
 
 def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
+    """``magnitude`` (M8.3 / OpenMEQ-625.3) is implemented, so ``--catalog``
+    must point at a real (if empty) QuakeML catalogue -- an empty catalogue
+    is a valid, if trivial, input (zero accepted events, every output file
+    still written with "no data" placeholders)."""
+    from obspy import Catalog
+
+    from openmeq.catalog import write_catalog
+
     config_path, output_dir = _patched_example_config(tmp_path)
     catalog_path = tmp_path / "external_catalog.xml"
-    catalog_path.write_text("<q:quakeml xmlns:q='dummy'/>")
+    write_catalog(Catalog(), catalog_path)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -144,6 +160,8 @@ def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert (output_dir / "logs" / "magnitude.log").is_file()
+    assert (output_dir / "magnitude" / "catalog_mag.xml").is_file()
+    assert (output_dir / "magnitude" / "station_magnitudes.csv").is_file()
 
 
 def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None:
