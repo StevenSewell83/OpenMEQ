@@ -15,8 +15,13 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from obspy import Catalog, UTCDateTime
+from obspy.core.event import Origin
 
+from openmeq.catalog import make_event, write_catalog
 from openmeq.cli import main
+from openmeq.config import load_config
+from openmeq.paths import RunPaths
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "example.yaml"
@@ -122,14 +127,48 @@ def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: st
         assert (output_dir / rel).is_dir(), f"{rel} was not created under {output_dir}"
 
 
-def test_review_compile_flag_runs(tmp_path: Path) -> None:
-    config_path, output_dir = _patched_example_config(tmp_path)
+def test_review_compile_flag_without_catalog_auto_fails_clearly(tmp_path: Path) -> None:
+    """`review --compile` (M7.4 / OpenMEQ-c3l.4) is implemented -- unlike
+    `review` on its own (still `enabled: false` in `config/example.yaml`,
+    see the loop test above), it always tries to merge
+    `locate/catalog_auto.xml`, which doesn't exist yet in a fresh
+    `example.yaml`-based run directory (`locate` itself is still a stub in
+    this test file's own scope). This is the same deliberate, CLI-level
+    hard-dependency-check pattern `detect` uses (see the loop test above),
+    not an incidental `FileNotFoundError`."""
+    config_path, _output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
 
     result = runner.invoke(main, ["review", "-c", str(config_path), "--compile"])
 
+    assert result.exit_code != 0, result.output
+    assert "openmeq locate" in result.output
+    assert "catalog_auto.xml" in result.output
+
+
+def test_review_compile_flag_runs(tmp_path: Path) -> None:
+    """With a real (if minimal) `locate/catalog_auto.xml` already in place,
+    `review --compile` merges it (no reviewed events, no `state.json`) into
+    `review/catalog_final.xml`."""
+    config_path, output_dir = _patched_example_config(tmp_path)
+    cfg = load_config(config_path)
+    paths = RunPaths(cfg)
+    paths.ensure()
+
+    event = make_event("ev20260101T000000_000")
+    origin = Origin(
+        time=UTCDateTime("2026-01-01T00:00:00"), longitude=176.0, latitude=-38.0, depth=4000.0
+    )
+    event.origins = [origin]
+    event.preferred_origin_id = origin.resource_id
+    write_catalog(Catalog(events=[event]), paths.catalog_auto_xml)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["review", "-c", str(config_path), "--compile"])
+
     assert result.exit_code == 0, result.output
     assert (output_dir / "logs" / "review.log").is_file()
+    assert (output_dir / "review" / "catalog_final.xml").is_file()
 
 
 def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
