@@ -31,6 +31,7 @@ from __future__ import annotations
 # Import order matters: ``_style`` selects the Agg backend as its first
 # action, before any other submodule (or anything else in this process) can
 # import ``matplotlib.pyplot``.
+from ._bar import plot_bar
 from ._boxplot import plot_boxplot
 from ._heatmap import plot_heatmap
 from ._hist import plot_hist
@@ -47,4 +48,5 @@ __all__ = [
     "plot_heatmap",
     "plot_timeseries",
     "plot_boxplot",
+    "plot_bar",
 ]
