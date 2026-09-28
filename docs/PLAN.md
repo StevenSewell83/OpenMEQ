@@ -150,6 +150,10 @@ nlloc:
       max_gap_deg: 270
       max_err_h_km: 1.0
       max_err_z_km: 2.0
+  # M5.2 / OpenMEQ-mev.2: the directory ObsPyck's setup_external_programs
+  # expects as config["base"]["pluginpath"] (docs/obspyck_notes.md), so its
+  # own NLLoc model link can be created/refreshed there.
+  obspyck_pluginpath: ./external/obspyck_plugin
 
 review:
   enabled: false
