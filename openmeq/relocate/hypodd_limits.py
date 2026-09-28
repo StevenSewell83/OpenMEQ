@@ -33,6 +33,63 @@ to a scratch directory, patch the copy's include files, build there, and
 install to a scratch bin directory. `recompile_hypodd` itself is
 directory-agnostic (it takes both directories as arguments); enforcing the
 "never touch the main tree in tests" rule is the caller's job.
+
+**3D (IMOD=9) coverage/registration check** (`check_vel3d_coverage`, M9.6 /
+OpenMEQ-6ld.6): a *different* failure mode from the compiled-array-limit
+checks above -- a genuine memory-safety bug in the bundled hypoDD 2.1
+Fortran, not a size limit. Root-caused with a debug build (``gfortran -g
+-fcheck=all -fbacktrace``, never done to the main checkout's
+``external/HYPODD`` -- see this task's report for the scratch-build
+procedure) against a small-aperture (~15 km, borehole+surface) network:
+
+- ``src/hypoDD/ray_3d.f``'s ``intmap`` subroutine (called from ``vel3``,
+  itself called from every point along every trial ray path the ``IMOD=9``
+  simulps ray tracer builds) computes a node-grid lookup index directly
+  from a query point's raw Cartesian coordinate --
+  ``ip=int((x+xl)/bld); ip=ixloc(ip)`` (``ray_3d.f:585-586``, similarly for
+  ``jp``/``iyloc`` and ``kp``/``izloc``) -- with **no bounds check** before
+  indexing the ``ixloc``/``iyloc``/``izloc`` lookup arrays
+  (``vel3d.inc``'s ``ixkms``/``iykms``/``izkms``, each sized 10000). Any
+  query point (an event or station, projected into the 3D model's own
+  Cartesian frame) that falls outside the ``vel3D.dat``'s node domain
+  produces an out-of-range index: caught as a clean
+  ``Fortran runtime error: Index ... below lower bound of 1`` by a
+  ``-fcheck=all`` debug build, but undefined behaviour -- in practice a
+  ``SIGSEGV`` -- in the production build (``install.sh``'s plain ``-O``,
+  no bounds checking).
+- Confirmed by reproduction: a small-aperture network's events/stations,
+  correctly registered against a ``vel3D.dat`` that covers them (matching
+  ``LAT_3D``/``LON_3D``/``ROT_3D`` and adequate node-grid extent, e.g. via
+  `openmeq.relocate.nlloc_to_simul.nlloc_grid_to_vel3d`), relocates
+  successfully with no crash. The *same* network with a **mismatched**
+  ``origin_3d`` (simulating a ``vel3D.dat`` copied from a different
+  survey/frame, or any other registration mistake) reproduces the exact
+  crash above with a full backtrace through ``vel3_``/``intmap_`` --
+  confirming the M9 epic design note's leading hypothesis over the M9.4
+  worker's "pre-existing Fortran fragility" guess. See
+  ``docs/hypodd_3d_notes.md`` for the full backtrace and reproduction
+  recipe.
+- **Fix**: since this is an input problem (nothing in the pipeline
+  previously checked that a supplied ``vel3D.dat``'s node domain, under
+  hypoDD.inp's declared ``LAT_3D``/``LON_3D``/``ROT_3D``, actually covers
+  the real event/station geometry -- `nlloc_to_simul`'s own
+  ``_check_coordinate_frame`` only validates this for the one path that
+  builds a ``vel3D.dat`` *from* an NLLoc grid, not for a user-supplied
+  file), `check_vel3d_coverage` projects every accepted event's and every
+  station's location into the model's own frame (a direct port of hypoDD's
+  own runtime projection, ``setorg.f``/``dist.f`` -- **not**
+  ``setorg_3d.f``/``disto.f``, which are unused dead code: ``hypoDD.f``'s
+  ``IMOD.eq.9`` branch, lines ~550-563, sets ``sdc0_lat/lon=lat_3d/lon_3d``
+  and calls the ordinary ``setorg``/``SDC2`` machinery with ``rot_3d`` as
+  the rotation) and raises `openmeq.config.ConfigError`, naming every
+  offending station/event and which axis it falls outside of, before
+  hypoDD ever runs. Patching the Fortran itself (adding a bounds check in
+  ``intmap``) was considered and rejected for this task: the compiled
+  binaries are shared build artifacts (``external/bin``, built once by
+  ``install.sh``), a source patch would need to flow through that install
+  path for every environment, and a clean *input* validation catches the
+  same failure earlier, with a far more actionable message, without ever
+  touching the vendored Fortran.
 """
 
 from __future__ import annotations
@@ -46,13 +103,13 @@ from pathlib import Path
 import pandas as pd
 from obspy import Catalog
 
-from openmeq.catalog import accepted
+from openmeq.catalog import accepted, event_id
 from openmeq.config import Config
 from openmeq.config import ConfigError as _ConfigError
 from openmeq.external import external_dir
 from openmeq.external import run as _run_external
 from openmeq.log import get_logger
-from openmeq.relocate.hypodd_files import Vel3DGrid
+from openmeq.relocate.hypodd_files import Vel3DGrid, depth_m_to_km
 
 logger = get_logger("relocate.hypodd_limits")
 
@@ -590,3 +647,214 @@ def ensure_compiled_limits(
 
     recompile_hypodd(new_limits, external_hypodd_dir, external_bin_dir, log=log)
     return result
+
+
+# ---------------------------------------------------------------------------
+# 3D (IMOD=9) model coverage / registration check (M9.6 / OpenMEQ-6ld.6)
+# ---------------------------------------------------------------------------
+
+#: WGS72 ellipsoid constants ``setorg.f``/``dist.f`` use for their short
+#: distance conversion (SDC) -- ``REARTH``/``ELLIP`` in ``setorg.f:47-48``.
+_SDC_REARTH_KM = 6378.135
+_SDC_ELLIP = 298.26
+
+
+def _hypodd_sdc_xy_km(
+    lat_deg: float, lon_deg: float, orlat_deg: float, orlon_deg: float, rot_deg: float
+) -> tuple[float, float]:
+    """A direct Python port of ``src/hypoDD/setorg.f`` + ``dist.f``'s short
+    distance conversion (SDC) -- the *exact* projection hypoDD's own runtime
+    uses to turn an event's/station's lat/lon into the local Cartesian
+    ``(x east-km, y north-km)`` frame the ``IMOD=9`` ray tracer
+    (``ray_3d.f``/``get_vel3d.f``) queries the 3D model in.
+
+    Ground truth (confirmed directly against source, not re-derived from
+    generic geodesy, per this project's own convention): for ``IMOD=9``,
+    ``hypoDD.f``'s ``imod.eq.9`` branch (~line 550-563) sets
+    ``sdc0_lat=lat_3d, sdc0_lon=lon_3d`` and calls
+    ``setorg(sdc0_lat, sdc0_lon, rot_3d, 0)``, then every event's/station's
+    Cartesian position is `` call SDC2(x, y, lat, lon, -1)`` (`partials_3d.f`
+    /``hypoDD.f``), which dispatches to ``dist.f`` for direction ``-1``.
+    **Not** ``setorg_3d.f``/``disto.f`` -- despite the ``_3d`` name, those
+    two subroutines are unused dead code in this hypoDD build (confirmed by
+    grepping every call site in ``src/hypoDD/*.f``: `get_vel3d.f`'s own
+    ``call setorg_3d(...)`` is commented out, and ``setorg_3d``/``disto``
+    are never called from anywhere else).
+
+    Empirically verified (not just transcribed) against a real debug
+    hypoDD run's ``hypoDD.loc`` output (its ``x``/``y`` columns, metres,
+    match this function's ``x_km``/``y_km`` * 1000 to within about 1 m at a
+    6 km offset -- the small residual is single- vs. double-precision
+    rounding in hypoDD's own ``real`` arithmetic, not a formula
+    discrepancy) -- see ``docs/hypodd_3d_notes.md``.
+
+    Parameters
+    ----------
+    lat_deg, lon_deg : float
+        The point to project (degrees, standard signed longitude,
+        negative west).
+    orlat_deg, orlon_deg : float
+        The projection origin -- hypoDD.inp's ``LAT_3D``/``LON_3D``
+        (`openmeq.config.HypoddVelocityModelConfig.origin_3d`).
+    rot_deg : float
+        hypoDD.inp's ``ROT_3D`` (anticlockwise-positive degrees,
+        `openmeq.config.HypoddVelocityModelConfig.rotation_3d_deg`).
+
+    Returns
+    -------
+    (float, float)
+        ``(x_km, y_km)`` in the 3D model's own rotated Cartesian frame --
+        directly comparable to a `Vel3DGrid`'s ``xn``/``yn`` node
+        coordinates.
+    """
+    rad = math.radians(1.0)
+    olat = orlat_deg * 60.0
+    olon = orlon_deg * 60.0
+
+    phi = math.radians(orlat_deg)
+    beta = phi - math.sin(2.0 * phi) / _SDC_ELLIP
+    rlatc = 1.0 if phi == 0.0 else math.tan(beta) / math.tan(phi)
+
+    lat1_o = math.atan(rlatc * math.tan(olat * rad / 60.0))
+    lat2_o = math.atan(rlatc * math.tan((olat + 1.0) * rad / 60.0))
+    dela = lat2_o - lat1_o
+    r = _SDC_REARTH_KM * (1.0 - math.sin(lat1_o) ** 2 / _SDC_ELLIP)
+    aa = r * dela
+    delb = math.acos(math.sin(lat1_o) ** 2 + math.cos(rad / 60.0) * math.cos(lat1_o) ** 2)
+    bc = r * delb
+    bb = bc / math.cos(lat1_o)
+
+    rotate = math.radians(rot_deg)
+    sint = math.sin(rotate)
+    cost = math.cos(rotate)
+
+    q = 60.0 * lat_deg - olat
+    yp = q + olat
+    lat1 = math.atan(rlatc * math.tan(rad * yp / 60.0))
+    lat2 = math.atan(rlatc * math.tan(rad * olat / 60.0))
+    lat3 = (lat1 + lat2) / 2.0
+    xx = 60.0 * lon_deg - olon
+    q = q * aa
+    xx = xx * bb * math.cos(lat3)
+    if rotate != 0.0:
+        yp2 = cost * q + sint * xx
+        xx = cost * xx - sint * q
+        q = yp2
+
+    return xx, q
+
+
+def _preferred_origin_lat_lon_depth_km(event) -> tuple[float, float, float]:
+    origin = event.preferred_origin()
+    if origin is None:
+        if not event.origins:
+            raise ValueError(f"Event {event.resource_id} has no origins")
+        origin = event.origins[0]
+    depth_km = depth_m_to_km(origin.depth) if origin.depth is not None else 0.0
+    return origin.latitude, origin.longitude, depth_km
+
+
+def check_vel3d_coverage(
+    vel3d_grid: Vel3DGrid,
+    lat_3d: float,
+    lon_3d: float,
+    rot_3d: float,
+    catalog: Catalog,
+    station_table: pd.DataFrame,
+) -> None:
+    """Verify every accepted event's and every station's location, projected
+    into the 3D model's own Cartesian frame exactly as hypoDD's own runtime
+    would (`_hypodd_sdc_xy_km`, driven by hypoDD.inp's ``LAT_3D``/
+    ``LON_3D``/``ROT_3D``), falls within `vel3d_grid`'s own node domain
+    (``xn[0]..xn[-1]``, ``yn[0]..yn[-1]``, ``zn[0]..zn[-1]``).
+
+    This is a memory-safety check, not a cosmetic one: any query point
+    outside this domain sends ``ray_3d.f``'s ``intmap`` subroutine an
+    out-of-bounds index into the ``ixloc``/``iyloc``/``izloc`` compiled
+    lookup arrays (this module's own docstring has the full citation
+    trail), which segfaults hypoDD's production build (or aborts cleanly
+    only under a ``-fcheck=all`` debug build). Call this **before** running
+    ``hypoDD`` with ``IMOD=9`` -- there is currently no other place in the
+    pipeline this is checked (`openmeq.relocate.nlloc_to_simul`'s own
+    ``_check_coordinate_frame`` only validates the *building* of a
+    ``vel3D.dat`` from an NLLoc grid, not a user-supplied file, and does not
+    check individual event/station coverage at all).
+
+    A station's z-coordinate is its ARCHITECTURE.md §6 *effective*
+    elevation (``elevation_m - depth_m``, km, negative for a downhole
+    borehole sensor) -- but clamped to ``0.0`` whenever that would be
+    negative, mirroring ``getdata.f:275-278``'s own silent clamp for any
+    ``IMOD`` other than ``5`` (which includes ``IMOD=9``): this check
+    validates the coordinate hypoDD will *actually* query the model at, not
+    the pre-clamp value (`openmeq.relocate.hypodd_files.write_station_dat`
+    logs the pre-clamp negative-elevation warning separately).
+
+    Parameters
+    ----------
+    vel3d_grid : Vel3DGrid
+        From `openmeq.relocate.hypodd_files.read_vel3d_header`.
+    lat_3d, lon_3d, rot_3d : float
+        The values that will be written to hypoDD.inp's ``LAT_3D LON_3D
+        ROT_3D`` line (`openmeq.relocate.hypodd_files.write_hypodd_inp_3d`,
+        `openmeq.config.HypoddVelocityModelConfig`).
+    catalog : obspy.Catalog
+        The full catalogue; rejected events are excluded via
+        `openmeq.catalog.accepted`.
+    station_table : pandas.DataFrame
+        `openmeq.stations.station_table`'s contract.
+
+    Raises
+    ------
+    openmeq.config.ConfigError
+        Naming every offending station/event, which axis (x/y/z) it falls
+        outside of, by how much, and the domain it was checked against --
+        if any accepted event or any station falls outside `vel3d_grid`'s
+        node domain.
+    """
+    x_lo, x_hi = min(vel3d_grid.xn), max(vel3d_grid.xn)
+    y_lo, y_hi = min(vel3d_grid.yn), max(vel3d_grid.yn)
+    z_lo, z_hi = min(vel3d_grid.zn), max(vel3d_grid.zn)
+
+    def _axis_problems(x: float, y: float, z: float) -> list[str]:
+        out = []
+        if not (x_lo <= x <= x_hi):
+            out.append(f"x={x:.3f} km outside [{x_lo:.3f}, {x_hi:.3f}]")
+        if not (y_lo <= y <= y_hi):
+            out.append(f"y={y:.3f} km outside [{y_lo:.3f}, {y_hi:.3f}]")
+        if not (z_lo <= z <= z_hi):
+            out.append(f"z={z:.3f} km outside [{z_lo:.3f}, {z_hi:.3f}]")
+        return out
+
+    problems: list[str] = []
+
+    for _, row in station_table.iterrows():
+        net_sta = f"{row['network']}.{row['station']}"
+        elevation_km = (float(row["elevation_m"]) - float(row["depth_m"])) / 1000.0
+        z = 0.0 if elevation_km < 0 else elevation_km
+        x, y = _hypodd_sdc_xy_km(
+            float(row["latitude"]), float(row["longitude"]), lat_3d, lon_3d, rot_3d
+        )
+        axis_problems = _axis_problems(x, y, z)
+        if axis_problems:
+            problems.append(f"station {net_sta}: " + "; ".join(axis_problems))
+
+    for event in accepted(catalog):
+        eid = event_id(event)
+        lat, lon, depth_km = _preferred_origin_lat_lon_depth_km(event)
+        x, y = _hypodd_sdc_xy_km(lat, lon, lat_3d, lon_3d, rot_3d)
+        axis_problems = _axis_problems(x, y, depth_km)
+        if axis_problems:
+            problems.append(f"event {eid}: " + "; ".join(axis_problems))
+
+    if problems:
+        raise _ConfigError(
+            "3D model (vel3D.dat) coverage check failed: the following stations/events "
+            "project (under the given LAT_3D/LON_3D/ROT_3D) outside the vel3D.dat node "
+            "domain -- running hypoDD's IMOD=9 ray tracer with this input segfaults "
+            "(ray_3d.f's intmap subroutine indexes its ixloc/iyloc/izloc lookup arrays "
+            "with no bounds check, per this module's own docstring). Either fix "
+            "LAT_3D/LON_3D/ROT_3D (cfg.hypodd.velocity_model.origin_3d/rotation_3d_deg) so "
+            "they match the vel3D.dat's own registration, or rebuild the 3D model so its "
+            "node grid actually covers this network "
+            "(openmeq.relocate.nlloc_to_simul.nlloc_grid_to_vel3d): " + " | ".join(problems)
+        )

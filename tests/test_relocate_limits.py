@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -34,10 +35,17 @@ from obspy.core.event import (
 )
 
 from openmeq.catalog import event_id, event_id_from_time, make_event
-from openmeq.config import ConfigError, load_config
+from openmeq.config import (
+    ConfigError,
+    HypoddVelocityModelConfig,
+    Simul2000RaytraceConfig,
+    WeightingRow,
+    load_config,
+)
 from openmeq.external import run
 from openmeq.relocate.hypodd_files import (
     Vel3DGrid,
+    build_event_id_map,
     build_station_label_map,
     read_vel3d_header,
     write_event_dat,
@@ -47,11 +55,18 @@ from openmeq.relocate.hypodd_files import (
     write_station_dat,
 )
 from openmeq.relocate.hypodd_limits import (
+    _hypodd_sdc_xy_km,
     _substitute_inc_params,
     check_compiled_limits,
+    check_vel3d_coverage,
     ensure_compiled_limits,
     recompile_hypodd,
 )
+from openmeq.relocate.nlloc_to_simul import nlloc_grid_to_vel3d, read_nlloc_grid
+
+sys.path.insert(0, str(Path(__file__).parent / "data"))
+import make_synthetic  # noqa: E402
+from helpers_nlloc3d import build_small_3d_velocity_grid  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "example.yaml"
@@ -144,10 +159,16 @@ def _write_fake_inc_tree(
 # ---------------------------------------------------------------------------
 
 
-def _make_event(time: UTCDateTime, n_picks: int = 2) -> Event:
+def _make_event(
+    time: UTCDateTime,
+    n_picks: int = 2,
+    latitude: float = 37.9,
+    longitude: float = -122.2,
+    depth: float = 8000.0,
+) -> Event:
     eid = event_id_from_time(time)
     ev = make_event(eid)
-    origin = Origin(time=time, latitude=37.9, longitude=-122.2, depth=8000.0)
+    origin = Origin(time=time, latitude=latitude, longitude=longitude, depth=depth)
     origin.origin_uncertainty = OriginUncertainty(horizontal_uncertainty=150.0)
     origin.depth_errors = QuantityError(uncertainty=500.0)
     origin.quality = OriginQuality(standard_error=0.02)
@@ -678,5 +699,354 @@ def test_recompile_end_to_end(tmp_path, monkeypatch):
     # hypoDD.log is Fortran-written and occasionally carries a non-UTF-8 byte
     # (e.g. a Latin-1 degree sign in a residual-statistics line); read as
     # bytes rather than assuming an encoding.
+    log_bytes = (tmp_path / "hypoDD.log").read_bytes()
+    assert b"fatal" not in log_bytes.lower()
+
+
+# ---------------------------------------------------------------------------
+# check_vel3d_coverage (M9.6 / OpenMEQ-6ld.6)
+# ---------------------------------------------------------------------------
+
+#: A small-aperture 3D model domain: interior network footprint out to
+#: about +/-12 km horizontally, -2..10 km vertically (covering both surface
+#: stations, above z=0, and event depths up to a few km) -- roughly what
+#: `tests/helpers_nlloc3d.build_small_3d_velocity_grid` -> `nlloc_grid_to_vel3d`
+#: would produce for a ~15 km network, with the "infinity" boundary nodes
+#: (docs/hypodd_3d_notes.md) pushed far out so this fixture doesn't need to
+#: match any particular spacing.
+_SMALL_VEL3D_GRID = Vel3DGrid(
+    bld=0.1,
+    nx=2,
+    ny=2,
+    nz=2,
+    xn=[-80.0, 80.0],
+    yn=[-80.0, 80.0],
+    zn=[-2.0, 10.0],
+)
+
+_LAT0, _LON0 = 37.80, -122.20
+
+
+def _row(net_sta: str, lat: float, lon: float, elevation_m: float = 0.0, depth_m: float = 0.0):
+    net, sta = net_sta.split(".", 1)
+    return {
+        "network": net,
+        "station": sta,
+        "location": "",
+        "latitude": lat,
+        "longitude": lon,
+        "elevation_m": elevation_m,
+        "depth_m": depth_m,
+    }
+
+
+def test_hypodd_sdc_xy_km_matches_real_hypodd_output():
+    """`_hypodd_sdc_xy_km` is a port of setorg.f/dist.f, not an
+    approximation -- this pins it against a real debug hypoDD run's
+    hypoDD.loc x/y columns for one event (see docs/hypodd_3d_notes.md's
+    reproduction), confirmed to agree to within about 1 m at a 6 km offset
+    (single- vs. double-precision rounding, not a formula discrepancy).
+    """
+    x_km, y_km = _hypodd_sdc_xy_km(37.755001, -122.268303, _LAT0, _LON0, 0.0)
+    assert x_km == pytest.approx(-6.0173, abs=2e-3)
+    assert y_km == pytest.approx(-4.9946, abs=2e-3)
+
+
+def test_check_vel3d_coverage_passes_for_covered_small_aperture_network():
+    station_table = pd.DataFrame(
+        [
+            _row("XX.STA01", 37.773, -122.274, elevation_m=615.0),
+            _row("XX.BH01", 37.789, -122.220, elevation_m=555.0, depth_m=300.0),
+        ]
+    )
+    cat = Catalog(
+        events=[
+            _make_event(UTCDateTime(2025, 1, 1), latitude=37.80, longitude=-122.20, depth=3000.0)
+        ]
+    )
+    # Should not raise.
+    check_vel3d_coverage(_SMALL_VEL3D_GRID, _LAT0, _LON0, 0.0, cat, station_table)
+
+
+def test_check_vel3d_coverage_raises_for_event_outside_domain():
+    """The exact failure mode this task root-caused: an event whose
+    location, projected under the given LAT_3D/LON_3D, falls well outside
+    the vel3D.dat's node domain -- e.g. a registration mismatch (a
+    vel3D.dat built for a different network/origin) or a genuinely bad
+    ``origin_3d``. Confirmed (docs/hypodd_3d_notes.md) that this exact
+    scenario segfaults (or, under a -fcheck=all debug build, cleanly
+    aborts with a Fortran runtime error) hypoDD's real IMOD=9 ray tracer.
+    """
+    station_table = pd.DataFrame([_row("XX.STA01", 37.773, -122.274, elevation_m=615.0)])
+    cat = Catalog(
+        events=[
+            _make_event(
+                UTCDateTime(2025, 1, 1),
+                # ~500 km away from (LAT0, LON0) -- well outside the +/-80 km grid.
+                latitude=_LAT0 + 5.0,
+                longitude=_LON0 + 5.0,
+                depth=3000.0,
+            )
+        ]
+    )
+    with pytest.raises(ConfigError, match="coverage check failed"):
+        check_vel3d_coverage(_SMALL_VEL3D_GRID, _LAT0, _LON0, 0.0, cat, station_table)
+
+
+def test_check_vel3d_coverage_raises_for_station_outside_domain():
+    station_table = pd.DataFrame(
+        [
+            _row("XX.STA01", 37.773, -122.274, elevation_m=615.0),
+            _row("XX.FAR01", _LAT0 + 5.0, _LON0 + 5.0, elevation_m=600.0),
+        ]
+    )
+    cat = Catalog(
+        events=[
+            _make_event(UTCDateTime(2025, 1, 1), latitude=37.80, longitude=-122.20, depth=3000.0)
+        ]
+    )
+    with pytest.raises(ConfigError, match="XX.FAR01"):
+        check_vel3d_coverage(_SMALL_VEL3D_GRID, _LAT0, _LON0, 0.0, cat, station_table)
+
+
+def test_check_vel3d_coverage_clamps_negative_station_elevation_like_getdata():
+    """A borehole with a negative *effective* elevation (elevation_m -
+    depth_m < 0) is silently clamped to 0.0 by hypoDD itself for any IMOD
+    other than 5 (getdata.f:275-278, ARCHITECTURE.md §6c) -- including
+    IMOD=9. This check must validate the coordinate hypoDD will *actually*
+    query the model at (z=0), not the pre-clamp negative value, or it would
+    reject configurations that are actually fine at runtime.
+    """
+    grid = Vel3DGrid(bld=0.1, nx=2, ny=2, nz=2, xn=[-80.0, 80.0], yn=[-80.0, 80.0], zn=[0.0, 10.0])
+    station_table = pd.DataFrame(
+        [_row("XX.BH01", 37.789, -122.220, elevation_m=100.0, depth_m=300.0)]
+    )
+    cat = Catalog(
+        events=[
+            _make_event(UTCDateTime(2025, 1, 1), latitude=37.80, longitude=-122.20, depth=3000.0)
+        ]
+    )
+    # effective elevation = (100 - 300)/1000 = -0.2 km, outside [0.0, 10.0] --
+    # but clamped to 0.0 by hypoDD, which *is* inside the domain, so this
+    # must not raise.
+    check_vel3d_coverage(grid, _LAT0, _LON0, 0.0, cat, station_table)
+
+
+# ---------------------------------------------------------------------------
+# requires_hypodd: IMOD=9 relocates a small-aperture (~15 km, borehole plus
+# surface) network (M9.6 / OpenMEQ-6ld.6 acceptance criterion)
+# ---------------------------------------------------------------------------
+
+
+def _small_aperture_station_table() -> pd.DataFrame:
+    """`tests/data/make_synthetic.py`'s own 8-station, ~14.9 km-aperture
+    network (6 surface + 2 borehole stations) -- reused directly rather
+    than pulling in the full (session-scoped, ~500 MB) ``synthetic_project``
+    fixture, since this test needs only the station geometry, not waveform
+    data (matching this task's "or a similar ~15 km network with borehole
+    stations" instruction).
+    """
+    rows = []
+    for sta_code, _kind, x_km, y_km, elev_m, depth_m, _channels in make_synthetic.STATIONS:
+        lat, lon = make_synthetic._to_latlon(x_km, y_km)
+        rows.append(_row(f"XX.{sta_code}", lat, lon, elevation_m=elev_m, depth_m=depth_m))
+    return pd.DataFrame(rows)
+
+
+def _small_aperture_catalog(station_table: pd.DataFrame) -> Catalog:
+    """A handful of well-separated synthetic events spanning the same
+    network's footprint (offsets/depths of the same order as
+    `make_synthetic.EVENT_OFFSET_KM_RANGE`/`EVENT_DEPTH_KM_RANGE`), each
+    with a straight-ray P pick at every station -- enough for ph2dt/hypoDD
+    to form dt.ct pairs and exercise the real IMOD=9 ray tracer per
+    event-station pair, without needing this task's full accuracy
+    (straight-ray travel times, a flat 4.0 km/s P model).
+    """
+    vp0 = 4.0
+    event_specs = [
+        (-6.0, -5.0, 1.0),
+        (6.0, -5.0, 2.0),
+        (-6.0, 6.0, 3.0),
+        (6.0, 6.0, 4.0),
+        (0.0, 0.0, 5.0),
+        (0.0, 4.0, 0.5),
+    ]
+    t0 = UTCDateTime(2025, 6, 1)
+    cat = Catalog()
+    for i, (x_km, y_km, z_km) in enumerate(event_specs):
+        time = t0 + i * 300.0
+        lat, lon = make_synthetic._to_latlon(x_km, y_km)
+        ev = _make_event(time, n_picks=0, latitude=lat, longitude=lon, depth=z_km * 1000.0)
+        origin = ev.origins[0]
+        for _, row in station_table.iterrows():
+            net_sta = f"{row['network']}.{row['station']}"
+            z_rcv_km = -(row["elevation_m"] - row["depth_m"]) / 1000.0
+            dist = (
+                (x_km - _station_xy_km(row)[0]) ** 2
+                + (y_km - _station_xy_km(row)[1]) ** 2
+                + (z_km - z_rcv_km) ** 2
+            ) ** 0.5
+            tt_p = dist / vp0
+            net, sta = net_sta.split(".", 1)
+            pick = Pick(
+                time=time + tt_p,
+                phase_hint="P",
+                waveform_id=WaveformStreamID(network_code=net, station_code=sta),
+            )
+            ev.picks.append(pick)
+            arrival = Arrival(pick_id=pick.resource_id, phase="P", time_weight=1.0)
+            origin.arrivals.append(arrival)
+        cat.append(ev)
+    return cat
+
+
+def _station_xy_km(row) -> tuple[float, float]:
+    """Approximate local (east-km, north-km) offset of a station row from
+    `make_synthetic.LAT0`/`LON0` -- the same flat-Earth approximation
+    `tests/data/make_synthetic.py` itself uses to place stations, used here
+    only to compute plausible straight-ray travel times (not for the
+    coverage check itself, which uses the exact `_hypodd_sdc_xy_km` port).
+    """
+    lat0, lon0 = make_synthetic.LAT0, make_synthetic.LON0
+    y_km = (row["latitude"] - lat0) * make_synthetic.KM_PER_DEG_LAT
+    x_km = (row["longitude"] - lon0) * make_synthetic._km_per_deg_lon()
+    return x_km, y_km
+
+
+HYPODD_3D_MISSING = not (
+    (EXTERNAL_DIR / "bin" / "ph2dt").exists() and (EXTERNAL_DIR / "bin" / "hypoDD").exists()
+)
+
+
+@pytest.mark.requires_hypodd
+@pytest.mark.slow
+@pytest.mark.skipif(HYPODD_3D_MISSING, reason="external/bin (ph2dt/hypoDD) not available")
+def test_imod9_relocates_small_aperture_borehole_network(tmp_path, monkeypatch):
+    """Root-cause regression test for OpenMEQ-6ld.6: a small-aperture
+    (~15 km, 6 surface + 2 borehole stations) network, given a SIMUL2000
+    3D model that correctly covers it (built via
+    `openmeq.relocate.nlloc_to_simul.nlloc_grid_to_vel3d` from a small
+    NLLoc grid, registered to the *same* frame as ``LAT_3D``/``LON_3D``),
+    relocates successfully with hypoDD's real ``IMOD=9`` ray tracer -- no
+    crash. This is the exact geometry class (small-aperture, borehole plus
+    surface) the M9.4 worker reported segfaulting; docs/hypodd_3d_notes.md
+    documents that the segfault was in fact caused by a *mismatched*
+    LAT_3D/LON_3D (an unguarded array index in ``ray_3d.f``'s ``intmap``,
+    triggered whenever a query point falls outside the model's node
+    domain), not anything inherent to small apertures -- this test proves
+    the "or" half of that finding (correct registration -> it just works),
+    while `test_check_vel3d_coverage_raises_for_event_outside_domain` above
+    proves `check_vel3d_coverage` would have caught the mismatched case
+    before ever invoking hypoDD.
+    """
+    monkeypatch.setenv("OPENMEQ_EXTERNAL_DIR", str(EXTERNAL_DIR))
+
+    lat0, lon0 = make_synthetic.LAT0, make_synthetic.LON0
+    station_table = _small_aperture_station_table()
+    cat = _small_aperture_catalog(station_table)
+    n_events = len(cat.events)
+
+    event_id_map = build_event_id_map(cat, tmp_path / "event_id_map.csv")
+    label_map = build_station_label_map(station_table, tmp_path / "station_label_map.csv")
+
+    # --- a small 3D velocity grid covering the network + margin ---
+    grid_root = str(tmp_path / "model3d")
+    build_small_3d_velocity_grid(
+        grid_root,
+        lat0=lat0,
+        lon0=lon0,
+        x_range_km=(-12.0, 12.0),
+        y_range_km=(-12.0, 12.0),
+        z_range_km=(-1.0, 10.0),
+        spacing_km=2.0,
+        vp0_km_s=4.0,
+        vs0_km_s=2.3,
+        vp_gradient_z_per_km=0.3,
+        vp_gradient_x_per_km=0.0,
+    )
+    nlloc_grid = read_nlloc_grid(str(tmp_path / "model3d.P.mod.hdr"))
+    nlloc_grid_to_vel3d(
+        nlloc_grid,
+        tmp_path / "vel3D.dat",
+        lat_3d=lat0,
+        lon_3d=lon0,
+        rot_3d=0.0,
+        vp_vs_ratio=4.0 / 2.3,
+        bld=0.1,
+        node_spacing_km=2.0,
+    )
+    vel3d_grid = read_vel3d_header(tmp_path / "vel3D.dat")
+
+    # --- config ---
+    cfg = load_config(EXAMPLE_CONFIG)
+    cfg.hypodd.velocity_model = HypoddVelocityModelConfig(
+        type="3d",
+        file=Path("vel3D.dat"),
+        origin_3d=(lat0, lon0),
+        rotation_3d_deg=0.0,
+        simul2000=Simul2000RaytraceConfig(),
+    )
+    cfg.hypodd.idat = 2  # catalog data only -- no cross-correlation (dt.cc) built here
+    cfg.hypodd.ph2dt.minobs = 1
+    cfg.hypodd.ph2dt.maxobs = 20
+    cfg.hypodd.ph2dt.maxdist_km = 50
+    cfg.hypodd.ph2dt.maxsep_km = 10
+    # This test's straight-ray synthetic picks and coarse flat P/S model are
+    # only meant to exercise the real IMOD=9 ray tracer without crashing --
+    # not to validate location accuracy -- so disable air-quake removal
+    # (IAQ=1's default would otherwise drop events that briefly relocate to
+    # a negative depth mid-iteration, shrinking the cluster below hypoDD's
+    # own "less than 2 events" cutoff before it ever writes hypoDD.reloc)
+    # and run a single, lenient iteration (no residual/distance-threshold
+    # data re-weighting between iterations, which -- for this approximate
+    # straight-ray/flat-model input -- otherwise prunes so many dt.ct pairs
+    # between iterations that the same "less than 2 events" cutoff trips
+    # before hypoDD.reloc is written).
+    cfg.hypodd.iaq = 0
+    cfg.hypodd.weighting_rows = [
+        WeightingRow(
+            niter=1,
+            wtccp=0.01,
+            wtccs=0.005,
+            wrcc=-999,
+            wdcc=-999,
+            wtctp=1.0,
+            wtcts=0.5,
+            wrct=-999,
+            wdct=-999,
+            damp=20,
+        )
+    ]
+
+    # --- this task's own validation: must accept this well-registered input ---
+    check_vel3d_coverage(vel3d_grid, lat0, lon0, 0.0, cat, station_table)
+
+    # --- write inputs and run the real ph2dt + hypoDD binaries ---
+    write_station_dat(tmp_path / "station.dat", station_table, label_map, cfg)
+    write_phase_dat(tmp_path / "phase.dat", cat, event_id_map, label_map)
+    write_event_dat(tmp_path / "event.dat", cat, event_id_map)
+    write_ph2dt_inp(tmp_path / "ph2dt.inp", cfg)
+    write_hypodd_inp_3d(
+        tmp_path / "hypoDD.inp", cfg, cfg.hypodd.weighting_rows, tmp_path / "vel3D.dat"
+    )
+
+    ph2dt = EXTERNAL_DIR / "bin" / "ph2dt"
+    hypodd = EXTERNAL_DIR / "bin" / "hypoDD"
+
+    run([str(ph2dt), "ph2dt.inp"], cwd=tmp_path)
+    assert (tmp_path / "event.sel").exists()
+    assert (tmp_path / "dt.ct").exists()
+
+    run([str(hypodd), "hypoDD.inp"], cwd=tmp_path, timeout=120)
+
+    reloc_path = tmp_path / "hypoDD.reloc"
+    assert reloc_path.exists()
+    reloc_lines = [line for line in reloc_path.read_text().splitlines() if line.strip()]
+    assert len(reloc_lines) == n_events
+
+    # hypoDD.log is Fortran-written and occasionally carries a non-UTF-8
+    # byte; read as bytes rather than assuming an encoding (matching
+    # test_recompile_end_to_end's own convention above). "3D ray tracing" is
+    # only echoed to stdout, not hypoDD.log, so it isn't checked here.
     log_bytes = (tmp_path / "hypoDD.log").read_bytes()
     assert b"fatal" not in log_bytes.lower()
