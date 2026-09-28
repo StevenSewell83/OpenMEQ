@@ -715,18 +715,45 @@ def write_dt_cc(
     -------
     int
         The number of pairs actually written (i.e. with >= 1 line).
+
+    Notes
+    -----
+    M10.5 / OpenMEQ-16d.5's note: writes are idempotent -- `run_xcorr`
+    calls this on *every* run (even when every pair was resumed rather
+    than recomputed, `openmeq.parallel.pmap_incremental`'s own resume
+    behaviour), so writing unconditionally would give this file a fresh
+    mtime every single ``openmeq relocate`` invocation. `run_hypodd`'s own
+    ``StepManifest`` skip-unchanged fingerprint (ARCHITECTURE.md §6h)
+    includes this file's mtime/size, so an unconditional write would force
+    an unnecessary hypoDD re-invocation on every run regardless of whether
+    anything actually changed, breaking the "re-running with nothing
+    changed re-runs nothing" contract the whole M10.1-M10.5 chain is
+    supposed to provide end to end. The file is therefore only actually
+    (re)written when its assembled content differs from what's already on
+    disk.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    lines_out: list[str] = []
     n_written = 0
+    for (cuspid_i, cuspid_j), lines in zip(pairs, pair_lines, strict=True):
+        if not lines:
+            continue
+        lines_out.append(f"# {cuspid_i:9d} {cuspid_j:9d} {otc:10.6f}\n")
+        for line in lines:
+            lines_out.append(f"{line.sta:<7s} {line.dt_s:12.6f} {line.cc:6.4f} {line.phase}\n")
+        n_written += 1
+    content = "".join(lines_out)
+
+    if path.is_file():
+        try:
+            if path.read_text() == content:
+                return n_written
+        except OSError:
+            pass
+
     with open(path, "w") as fh:
-        for (cuspid_i, cuspid_j), lines in zip(pairs, pair_lines, strict=True):
-            if not lines:
-                continue
-            fh.write(f"# {cuspid_i:9d} {cuspid_j:9d} {otc:10.6f}\n")
-            for line in lines:
-                fh.write(f"{line.sta:<7s} {line.dt_s:12.6f} {line.cc:6.4f} {line.phase}\n")
-            n_written += 1
+        fh.write(content)
     return n_written
 
 

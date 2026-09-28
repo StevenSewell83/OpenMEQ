@@ -131,17 +131,21 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
     # be reported either "ran" (with a duration) or "skipped" ("not
     # implemented"), never dropped or "error", so the report stays well-formed.
     #
-    # ``magnitude`` (M8.3 / OpenMEQ-625.3) is the one documented exception:
-    # it is implemented and has its own hard dependency check (mirroring
-    # ``detect``'s own, against qc's outputs) -- it correctly errors here
-    # because its required input, ``locate/catalog_auto.xml``, doesn't
-    # exist: `locate`'s own CLI wiring (M6.5) hasn't landed in this build
-    # yet even though locate's internals (M6.1-M6.4) have (see
-    # ``openmeq/locate/__init__.py``, still ``run``-less). Once M6.5 lands
-    # and this benchmark run reaches "ran" for locate too, magnitude will
-    # naturally follow suit with no test change needed here.
+    # ``magnitude`` (M8.3 / OpenMEQ-625.3) and ``relocate`` (M10.5 /
+    # OpenMEQ-16d.5) are the two documented exceptions: both are implemented
+    # and have their own hard dependency check (mirroring ``detect``'s own,
+    # against qc's outputs) -- they correctly error here because their
+    # required input doesn't exist yet: `locate`'s own CLI wiring (M6.5)
+    # hasn't landed in this build even though locate's internals (M6.1-M6.4)
+    # have (see ``openmeq/locate/__init__.py``, still ``run``-less), so
+    # ``magnitude`` can't find ``locate/catalog_auto.xml`` and, cascading
+    # from that, ``relocate`` can't find ``magnitude/catalog_mag.xml``
+    # either. Once M6.5 lands and this benchmark run reaches "ran" for
+    # locate too, both will naturally follow suit with no test change
+    # needed here.
+    error_allowed_steps = {"magnitude", "relocate"}
     for step in ("detect", "chunk", "pick", "locate", "magnitude", "relocate"):
-        if step == "magnitude" and stages[step]["status"] == "error":
+        if step in error_allowed_steps and stages[step]["status"] == "error":
             assert "catalog" in stages[step]["note"].lower()
             continue
         assert stages[step]["status"] in ("ran", "skipped")
@@ -152,13 +156,18 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
             assert "not implemented" in stages[step]["note"]
 
     # exit_code is 1 exactly when some stage errored (scripts/benchmark.py's
-    # own `main`) -- magnitude's expected error above (until M6.5 lands) is
-    # the only one allowed to cause that; every other stage must be clean.
-    non_magnitude_errors = [
-        s for s in report["stages"] if s["status"] == "error" and s["name"] != "magnitude"
+    # own `main`) -- magnitude's/relocate's expected errors above (until
+    # M6.5 lands) are the only ones allowed to cause that; every other stage
+    # must be clean.
+    unexpected_errors = [
+        s
+        for s in report["stages"]
+        if s["status"] == "error" and s["name"] not in error_allowed_steps
     ]
-    assert not non_magnitude_errors, non_magnitude_errors
-    assert exit_code == (1 if stages["magnitude"]["status"] == "error" else 0)
+    assert not unexpected_errors, unexpected_errors
+    assert exit_code == (
+        1 if any(stages[step]["status"] == "error" for step in error_allowed_steps) else 0
+    )
 
     # `review` actually ran (this dataset never sets `review.enabled: true`,
     # so `openmeq.review.run()` took its "nothing to do" early-return path
