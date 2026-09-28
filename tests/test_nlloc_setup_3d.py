@@ -299,13 +299,16 @@ def test_nlloc_recovers_truth_event_with_3d_grid(covering_3d_grid, tmp_path):
     with Time2EQ against these same grids, the same pattern
     ``tests/test_nlloc_spike.py`` uses) recovers the hypocenter reasonably.
 
-    Uses Time2EQ rather than ``synthetic_project``'s own straight-ray-1D-layer
-    truth arrivals: those aren't consistent with this test's own toy 3D
-    velocity field (arbitrary x/z gradients, not the project's 1D layer
-    file), so comparing against them would test the wrong thing. Tolerance
-    is looser than the 1D end-to-end test's (~1 km, 0.1 km grid spacing):
-    this grid's :data:`GRID_SPACING_KM` (2 km) resolves travel times more
-    coarsely.
+    Uses Time2EQ rather than ``synthetic_project``'s own exact 1D layered
+    truth arrivals (OpenMEQ-m1f.5): those aren't consistent with this test's
+    own toy 3D velocity field (arbitrary x/z gradients, not the project's 1D
+    layer file), so comparing against them would test the wrong thing.
+    Tolerance is looser than the 1D end-to-end test's (``tests/test_nlloc_
+    setup.py``'s 0.1 km, 0.1 km grid spacing): this grid's
+    :data:`GRID_SPACING_KM` (2 km) resolves travel times more coarsely, and
+    this test's own toy velocity field is unrelated to the exact-travel-time
+    validation OpenMEQ-m1f.5 did against the project's real 1D layer model
+    (``tests/locate/test_synthetic_traveltime_validation.py``).
     """
     _require_nlloc_tools()
     cfg, table, bounds, root = covering_3d_grid
