@@ -17,6 +17,13 @@ dependencies = [
     "pandas",
     "matplotlib",
     "tqdm",
+    # Installed here (PLAN.md §2 step 2) so `install.sh`'s PhaseNet/ObsPyck
+    # steps only need to clone sources and pin model weights, not resolve
+    # these; the pin matches PhaseNet's own requirements.txt (AI4EPS/PhaseNet
+    # at the commit pinned in install.sh).
+    "tensorflow==2.11.0",
+    "PyQt5",
+    "obspyck",
 ]
 
 [project.scripts]
