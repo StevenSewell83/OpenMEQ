@@ -394,3 +394,75 @@ for the full tuning trail if this needs revisiting.
 | `cwd`/`PYTHONPATH` requirement for the relative import | **not required**, contrary to the spec's assumption |
 | Python 3.10 / TF 2.11.0 / NumPy 1.26.4 match pins | yes |
 | GPU vs CPU | GPU present but unusable (missing cuDNN/TensorRT libs); CPU fallback silent and correct |
+
+## 10. Performance on synthetic dataset (OpenMEQ-qlg.10)
+
+**Status:** measured by running the actual pretrained model against the
+M0.8 synthetic dataset (`tests/data/make_synthetic.py`, `DEFAULT_SEED`
+20250101 — the exact data `synthetic_project`/every downstream recovery
+test uses), via a throwaway measurement script,
+`scripts/phasenet_recall_check.py` (not production code — M4.2/M4.3 own
+the real chunk-prep/runner). For every event it cut a shared 60 s window
+(`origin_time - 5 s` to `+55 s`) across all 8 stations, applied
+`config/example.yaml`'s `phasenet:` preprocessing by hand (demean+detrend,
+5% Hann taper, 1 Hz highpass, anti-alias decimate 200→100 Hz via
+`Trace.decimate`), wrote one `chunks_pn/<event_id>/<event_id>.mseed`, and
+ran `predict.py` **once** over all 20 events
+(`--batch_size=1 --sampling_rate=100 --min_p_prob=0.3 --min_s_prob=0.3`,
+`CUDA_VISIBLE_DEVICES=""`), then matched `picks.csv` rows to
+`truth["events"][i]["arrivals"]` (match = same phase, `|phase_time -
+true_time| <= 0.1 s`, each pick used for at most one truth arrival to
+avoid double-counting).
+
+### Result: recall/precision (`DEFAULT_SEED` dataset, 20 events × 8 stations = 160 P + 160 S truth arrivals)
+
+| Phase | Recall (all ML) | Recall (ML≥0.5) | Precision | False positives | Mean/max timing residual (matched) |
+|---|---|---|---|---|---|
+| P | 100.0% (160/160) | 100.0% (80/80) | 100.0% (160/160) | 0 | 18.6 ms / 38.4 ms |
+| S | 100.0% (160/160) | 100.0% (80/80) | 100.0% (160/160) | 0 | 22.5 ms / 51.5 ms |
+
+Both **comfortably clear the acceptance thresholds** (P≥80%, S≥60% for
+ML≥0.5). Recall is 100% in every magnitude bin tested, down to the
+weakest event drawn for this seed (ML=−0.24, measured SNR≈2.5), and
+100% per-station for all 8 stations (both `HH?` surface and `DP?`
+borehole). Mean pick scores were high (mean 0.945, min 0.478, max 0.989
+over 320 total picks — exactly 20×8×2, one P and one S per station per
+event, no duplicates).
+
+**Robustness across other seeds** (same generator, `--seed` override, not
+the deployed `DEFAULT_SEED`, checked only to confirm this isn't a lucky
+draw): seed 1 → P 98.8%/S 100%; seed 42 → P 99.4%/S 100%; seed 7 → P
+100%/S 100%; seed 12345 → P 99.4%/S 100% (recall(ML≥0.5) in every case
+100% or within one pick of it). No seed came close to the 80%/60%
+thresholds failing.
+
+**Why this dataset (unlike the M4.1 §8 isolated-burst spike fixtures)
+gets reliably picked**: §8 above found that an isolated P- or S-shaped
+burst, alone in a window with nothing else, is picked poorly and is
+seed-sensitive. `make_synthetic.py`'s pulses are never isolated — every
+station sees a real P *followed by* a proportionally larger, lower-
+frequency S at a realistic S−P interval (the exact "S plausible relative
+to a real preceding P" condition §8 identified as what the model needs),
+with S ~2-3x P on the vertical and, on the primary horizontal, roughly
+5-6x P (`S_Z_RATIO=0.5`, `P_TO_S_Z_RATIO=0.35`, `P_HORIZ_RATIO=0.5` in
+`tests/data/make_synthetic.py` already give this ratio; see that module's
+"Pulse shape" docstring section). **Conclusion: no change to
+`make_synthetic.py`'s source waveforms was needed** — the existing
+decaying-sinusoid P/S pulses, amplitude ratios, and noise model already
+satisfy this check by a wide margin. This section documents that
+verification (per the OpenMEQ-qlg.10 work item) so **M4.4** can set its
+own pick-recovery test thresholds from these numbers (e.g. require
+P recall ≥90%, S recall ≥90% for ML≥0.5 events against this exact
+dataset, with headroom below the 100%/100% measured here).
+
+**Caveats for anyone re-running this**: the false-positive/precision
+counts above only reflect picks that fell outside the ±0.1 s window of
+every truth arrival for their (event, station, phase) — with sub-40 ms
+median residuals and 100% recall, precision is necessarily ~100% too;
+this is not an independent check of specificity against pure noise (no
+picks were expected or measured on windows containing no injected
+arrival). SNR bins in the script's output are a rough proxy (peak
+abs amplitude in a ±0.3 s window around the true arrival, on the phase's
+dominant component, divided by 1.4826×MAD of a 2 s pre-P quiet segment of
+the same channel) for characterizing *why* recall is high, not a formal
+acceptance metric.
