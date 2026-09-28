@@ -123,10 +123,17 @@ def test_benchmark_script_run_produces_well_formed_report(synthetic_project, tmp
     assert stages["load_config"]["duration_s"] is not None
     assert stages["load_config"]["peak_rss_kb"] is not None
 
-    # No pipeline step has a `run()` yet at M0 -- every one must be reported
+    # ``qc`` (M1.7, ``OpenMEQ-5nl.7``) is the first pipeline step with a
+    # real `run()`, so the benchmark script actually runs it (and reports
+    # a real duration) rather than "not implemented".
+    assert stages["qc"]["status"] == "ran"
+    assert stages["qc"]["duration_s"] is not None
+    assert stages["qc"]["peak_rss_kb"] is not None
+
+    # Every other pipeline step has no `run()` yet -- each must be reported
     # skipped, not silently dropped or erroring, so the report stays
     # well-formed as the pipeline is built out from here.
-    for step in ("qc", "detect", "chunk", "pick", "locate", "review", "magnitude", "relocate"):
+    for step in ("detect", "chunk", "pick", "locate", "review", "magnitude", "relocate"):
         assert stages[step]["status"] == "skipped"
         assert stages[step]["duration_s"] is None
         assert "not implemented" in stages[step]["note"]

@@ -65,12 +65,19 @@ per-channel-day worker: its parameters are a seed id, a ``date``, and two
 *paths* (not a live ``DataIndex``/``Config``), so it pickles trivially
 across the ``ProcessPoolExecutor`` (``spawn``) that ``openmeq.parallel.pmap``
 uses. :func:`compute_availability` is handed already-loaded ``DataIndex``/
-``Config`` objects (its own documented signature), so it writes them once
-to a temporary index JSON file and a temporary config file before handing
-*those paths* to workers -- each worker process then loads them once and
-caches them at module level (keyed by resolved path), so a batch of many
-channel-days processed by the same worker only pays the load cost once
-(mirrors the per-process caching pattern in ARCHITECTURE.md §6b). When
+``Config`` objects (its own documented signature), so it hands workers
+*paths* rather than pickling those objects into every task item: the
+index is written to ``RunPaths(cfg).index_json`` (reusing it as-is if an
+earlier step, e.g. ``openmeq.index.build_index``, already wrote it there --
+no redundant re-serialization), and the config is written once to a small
+temporary file, cleaned up in a ``finally`` after the parallel map (mirrors
+``openmeq.qc.stats.compute_daily_stats``'s own index-reuse pattern --
+OpenMEQ-5nl.7 simplified this from unconditionally writing *both* to a
+fresh ``tempfile.TemporaryDirectory`` every call). Each worker process then
+loads them once and caches them at module level (keyed by resolved path),
+so a batch of many channel-days processed by the same worker only pays the
+load cost once (mirrors the per-process caching pattern in
+ARCHITECTURE.md §6b). When
 ``cfg.parallel.chunk_days > 1``, one ``pmap`` item batches several
 consecutive calendar days for one seed id into a single task (reduces
 per-task scheduling overhead for long runs, per the issue's Performance
@@ -81,6 +88,7 @@ is trivial either way.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -93,6 +101,7 @@ from openmeq.config import Config, load_config
 from openmeq.index import DataIndex
 from openmeq.log import get_logger
 from openmeq.parallel import pmap
+from openmeq.paths import RunPaths
 
 logger = get_logger("qc.availability")
 
@@ -354,10 +363,14 @@ def compute_availability(
     production scale, see the module docstring).
 
     ``index``/``cfg`` are already-loaded objects (unlike the picklable
-    per-task worker, which takes paths): each is written once to a fresh
-    temporary file before the parallel map, and workers load from those
-    paths (and cache per process), so a large index is never repeatedly
-    pickled into every task item -- only two small path strings are.
+    per-task worker, which takes paths): ``index`` is written to
+    ``RunPaths(cfg).index_json`` only if not already present there (an
+    earlier step, e.g. ``openmeq.index.build_index``, typically already
+    wrote it -- no redundant re-serialization of a potentially large
+    index), and ``cfg`` is written once to a small temporary file, unlinked
+    in a ``finally`` after the parallel map. Workers load from those paths
+    (and cache per process), so a large index is never repeatedly pickled
+    into every task item -- only two small path strings are.
 
     ``seed_ids`` is used as given, with **no** ``cfg.qc.exclude_channels``
     filtering (that belongs to channel flagging, M1.5): this function
@@ -388,19 +401,28 @@ def compute_availability(
         sorted_dates[i : i + chunk_days] for i in range(0, len(sorted_dates), chunk_days)
     ]
 
-    with tempfile.TemporaryDirectory(prefix="openmeq_qc_availability_") as tmp_dir:
-        index_path = Path(tmp_dir) / "index.json"
-        cfg_path = Path(tmp_dir) / "config.yaml"
-
+    # Reuse the index already on disk (e.g. written moments earlier by
+    # openmeq.index.build_index, as openmeq.qc.run does) rather than
+    # unconditionally re-serializing it to a fresh temp copy every call --
+    # mirrors openmeq.qc.stats.compute_daily_stats's own pattern.
+    paths = RunPaths(cfg)
+    index_path = paths.index_json
+    if not index_path.exists():
         index.write(index_path)
-        # Written as plain JSON text (a valid YAML subset), read back by
-        # load_config's yaml.safe_load -- see the module docstring; avoids
-        # relying on yaml.safe_dump's scalar-style choices for date-shaped
-        # strings (cfg.data.start/end) round-tripping ambiguously. Every
-        # path in a loaded Config is already absolute (load_config resolved
-        # them against the *original* config file's directory), so
-        # re-resolving relative to this temp directory on reload is a
-        # no-op.
+
+    # A small standalone temp file, not a whole TemporaryDirectory (only
+    # the config needs one -- the index is handled above). Written as
+    # plain JSON text (a valid YAML subset), read back by load_config's
+    # yaml.safe_load -- see the module docstring; avoids relying on
+    # yaml.safe_dump's scalar-style choices for date-shaped strings
+    # (cfg.data.start/end) round-tripping ambiguously. Every path in a
+    # loaded Config is already absolute (load_config resolved them against
+    # the *original* config file's directory), so re-resolving relative to
+    # this temp file's directory on reload is a no-op.
+    fd, tmp_name = tempfile.mkstemp(prefix="openmeq_qc_availability_cfg_", suffix=".yaml")
+    os.close(fd)
+    cfg_path = Path(tmp_name)
+    try:
         cfg_path.write_text(json.dumps(cfg.model_dump(mode="json")), encoding="utf-8")
 
         items = [
@@ -418,6 +440,8 @@ def compute_availability(
         )
 
         batches = pmap(_availability_batch, items, cfg.parallel, desc="qc-availability")
+    finally:
+        cfg_path.unlink(missing_ok=True)
 
     rows = [row for batch in batches for row in batch]
     df = pd.DataFrame(rows, columns=COLUMNS)

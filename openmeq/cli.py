@@ -116,9 +116,16 @@ def main() -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def qc(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Recompute every QC output even if inputs haven't changed.",
+)
+def qc(config_path: str, force: bool) -> None:
     """Data QC: index, station metadata, availability, noise stats, channel flags."""
-    _dispatch("qc", config_path)
+    _dispatch("qc", config_path, force=force)
 
 
 @main.command()
