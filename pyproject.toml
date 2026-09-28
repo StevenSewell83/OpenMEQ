@@ -40,6 +40,12 @@ dev = ["pytest", "pytest-cov", "ruff==0.16.9", "tomli; python_version < '3.11'"]
 [tool.setuptools.packages.find]
 include = ["openmeq*"]
 
+# M7.2 / OpenMEQ-c3l.2: openmeq/review/obspyck_config.py splices ObsPyck's
+# own shipped example.cfg (a packaged copy) into the generated ini's
+# [keys]/[misc]/[gui_defaults]/[matplotlibrc]/[ar_picker] sections.
+[tool.setuptools.package-data]
+openmeq = ["review/data/*.cfg"]
+
 # Line length and rule sets are the repo-wide baseline (documented here so
 # later contributors don't have to guess): 100 cols matches the surrounding
 # scientific-Python ecosystem (numpy/scipy/pandas all use 88-100), and
