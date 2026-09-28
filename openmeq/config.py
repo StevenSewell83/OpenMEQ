@@ -281,11 +281,11 @@ class NllocFilterConfig(_StrictModel):
 class NllocLocSearchConfig(_StrictModel):
     """NLLoc ``LOCSEARCH OCT`` (octtree search) parameters.
 
-    TODO(OpenMEQ-mev.1): M5.1's spike (verifying NonLinLoc's exact
-    control-file syntax against the installed binary/docs) had not landed
-    when this schema was written; field names/defaults follow NLLoc's
-    documented octree-search statement and must be re-confirmed against
-    docs/nlloc_interface.md once M5.1 closes.
+    Verified against the installed NonLinLoc (docs/nlloc_interface.md §5):
+    ``LOCSEARCH OCT initNumCells_x initNumCells_y initNumCells_z minNodeSize
+    maxNumNodes numScatter useStationsDensity stopOnMinNodeSize`` -- field
+    names, order and defaults below match this exactly (the field order was
+    already correct when this schema was first written).
     """
 
     init_num_cells_x: int = 10
@@ -301,7 +301,8 @@ class NllocLocSearchConfig(_StrictModel):
 class NllocLocGauConfig(_StrictModel):
     """NLLoc ``LOCGAU`` (constant Gaussian model-error covariance).
 
-    TODO(OpenMEQ-xdf.1): confirm defaults against docs/nlloc_interface.md.
+    Verified against the installed NonLinLoc (docs/nlloc_interface.md §5):
+    ``LOCGAU SigmaTime CorrLen`` -- matches exactly.
     """
 
     sigma_time_s: float = 0.1
@@ -312,12 +313,17 @@ class NllocLocGau2Config(_StrictModel):
     """NLLoc ``LOCGAU2`` (travel-time-dependent covariance), used together
     with or instead of ``LOCGAU`` for the OCT search.
 
-    TODO(OpenMEQ-xdf.1): confirm defaults against docs/nlloc_interface.md.
+    Verified against the installed NonLinLoc (docs/nlloc_interface.md §5):
+    ``LOCGAU2 SigmaTfraction SigmaTmin SigmaTmax`` -- **correction**: the
+    original guess had a third field ``corr_len_km``, but LOCGAU2 has no
+    correlation-length parameter at all (unlike LOCGAU); its third
+    parameter is ``SigmaTmax``, the maximum travel-time error in seconds.
+    Renamed accordingly.
     """
 
     sigma_time_fraction: float = 0.01
     sigma_time_min_s: float = 0.05
-    corr_len_km: float = 5.0
+    sigma_time_max_s: float = 2.0
 
 
 class NllocConfig(_StrictModel):
@@ -332,9 +338,24 @@ class NllocConfig(_StrictModel):
     locgau: NllocLocGauConfig = Field(default_factory=NllocLocGauConfig)
     locgau2: NllocLocGau2Config = Field(default_factory=NllocLocGau2Config)
     # Ascending time_errors.uncertainty (s) bucket edges mapping to NLLoc
-    # LOCQUAL2ERR quality classes 0..N (PhaseNet emits no NLLoc-style integer
-    # pick quality, only a timing uncertainty, so this quantizes it).
-    locqual2err_thresholds_s: list[float] = Field(default_factory=lambda: [0.05, 0.1, 0.2, 0.5])
+    # LOCQUAL2ERR quality classes 0..N. **Correction (docs/nlloc_interface.md
+    # §5, LOCQUAL2ERR)**: this statement is "required, non-repeatable, for
+    # phase/observation file formats that do not include time uncertainties;
+    # ignored, non-repeatable, otherwise". OpenMEQ's NLLoc runner (M6.1) will
+    # always write LOCFILES obsFileType NLLOC_OBS via
+    # ``Catalog.write(..., format="NLLOC_OBS")``, and that format writes a
+    # literal numeric ``Err`` field per pick (obspy always emits ``GAU
+    # <uncertainty>``, never an integer quality code) -- so for OpenMEQ's
+    # pipeline NLLoc will always ignore this statement's values and use the
+    # per-pick uncertainty directly. It must still be present and
+    # syntactically valid (NLLoc rejects a missing required statement), so
+    # M6.1 must still emit some ascending list here; the values themselves
+    # have no effect on the location. The last bucket edge is conventionally
+    # a very large sentinel (NonLinLoc's own samples use ``99999.9``) for the
+    # "reject this phase" quality class, kept here for that convention only.
+    locqual2err_thresholds_s: list[float] = Field(
+        default_factory=lambda: [0.05, 0.1, 0.2, 0.5, 99999.9]
+    )
 
 
 # ---------------------------------------------------------------------------
