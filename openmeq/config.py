@@ -515,6 +515,21 @@ class XcorrConfig(_StrictModel):
         default_factory=lambda: {"P": ["Z"], "S": ["1", "2", "N", "E"]}
     )
     filter: XcorrFilterConfig = Field(default_factory=XcorrFilterConfig)
+    # M10.1 / OpenMEQ-16d.1 (per the M0.3 note appended to that issue: no
+    # config key existed yet for the xcorr waveform cache's common resample
+    # rate). Every cached window (``relocate/cache/<event_id>.npz``) is
+    # resampled to this single project-wide rate, regardless of a channel's
+    # native rate -- deliberately a fixed, explicit target rather than a
+    # per-event "highest native rate seen" choice, since M10.3 cross-
+    # correlates pairs drawn from *different* events' caches, and those must
+    # already share one common rate (an auto-detected per-event rate could
+    # legitimately differ event to event, re-introducing the very
+    # mismatched-sampling-rate problem this cache is meant to remove --
+    # docs/hypoddpy_audit.md defect #8). Default 100 Hz mirrors
+    # ``phasenet.target_rate_hz``'s existing convention and comfortably
+    # exceeds twice ``filter.freqmax``'s default (20 Hz) for a project
+    # recording at 200 Hz, per ``tests/data/make_synthetic.py``.
+    resample_rate_hz: float = 100.0
 
 
 class Ph2dtConfig(_StrictModel):

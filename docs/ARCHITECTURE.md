@@ -507,6 +507,53 @@ unaware of which path produced its input.
   `run_grid2time`; its public signature is unchanged, and it still does not
   call `build_1d_grid`/`link_3d_grid` itself.
 
+## 6e. Waveform cache for cross-correlation (M10.1)
+
+Built in M10.1 / `OpenMEQ-16d.1` (`openmeq/relocate/waveform_cache.py`),
+fixing the defects `docs/hypoddpy_audit.md` §6 assigns to this task (#2, #6,
+#8 -- see that module's own docstring for the full mapping). Cross-
+correlation (M10.3) needs the same short waveform window, filtered the same
+way, potentially many times per event (once per linked pair); this module
+builds that once, per event, into `relocate/cache/<event_id>.npz`
+(`RunPaths.relocate_cache_file`), so M10.3 never re-reads/re-filters the raw
+chunk.
+
+- **Config additions this task made** (`openmeq.config.XcorrConfig`,
+  `config/example.yaml`'s `hypodd.xcorr` block): `filter: {freqmin,
+  freqmax}` (the bandpass applied once when building the cache) and
+  `resample_rate_hz` (a single project-wide common sampling rate every
+  cached trace is resampled to, regardless of native rate -- deliberately
+  fixed rather than auto-detected per event, since M10.3 cross-correlates
+  pairs drawn from *different* events' caches, which must already share one
+  rate).
+- **Window sizing:** for a station with a P and/or S pick, the cached
+  window for each relevant channel (P -> `components["P"]`, typically `Z`;
+  S -> `components["S"]`, typically the horizontals) is the union, over
+  every applicable pick, of `[pick + window[0] - maxlag_s - margin, pick +
+  window[1] + maxlag_s + margin]` (`margin` a small fixed 0.5 s pad for the
+  bandpass's own edge effects) -- always derived from
+  `cfg.hypodd.xcorr.window_p`/`window_s`, never a hardcoded literal (audit
+  defect #2).
+- **npz layout** (this module's own choice, documented here since M10.3
+  depends on it directly): `"seed_ids"` (`str` array, post channel-mapping),
+  `"sampling_rate"` (scalar `float64`, the one rate every cached trace
+  shares), and per seed id `"<seed_id>__data"` (`float32`) /
+  `"<seed_id>__start"` (scalar `float64` POSIX seconds -- not a pickled
+  `UTCDateTime`, so the cache stays portable across ObsPy versions).
+- **Cache key:** the event's own stable `event_id` (`docs/ARCHITECTURE.md`
+  §4.4), never a transient/regenerated sequential id (audit defect #6),
+  fingerprinted (`openmeq.manifest.fingerprint`) on `cfg.hypodd.xcorr` plus
+  the chunk file's on-disk identity plus that event's own picks, via
+  `openmeq.manifest.StepManifest(paths, "relocate")` -- sharing
+  `relocate/manifest.json` with M9.5's own `"hypodd_setup"` key (manifest
+  keys are per-entry, not per-file).
+- An event whose chunk file is missing or unreadable is logged (with the
+  reason) and skipped, never marked done (so a later run retries it once
+  fixed) -- the run as a whole never raises for one bad event.
+- Parallel per event via `openmeq.parallel.pmap` (PLAN.md §4: the cache is
+  built per event, since a pair's window depends on each event's own picks
+  independently -- pairing itself is M10.3's job).
+
 ## 7. External tools
 
 | Tool | Location | Built by |

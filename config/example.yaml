@@ -204,6 +204,12 @@ hypodd:
     # TODO(OpenMEQ-16d.1): confirm these corners suit the project's actual
     # cross-correlation frequency band.
     filter: {freqmin: 2.0, freqmax: 20.0}
+    # Common target sampling rate (Hz) for the pre-filtered xcorr waveform
+    # cache (relocate/cache/<event_id>.npz) -- every cached window is
+    # resampled to this one rate project-wide (docs/ARCHITECTURE.md §6e),
+    # so that cross-correlated pairs drawn from different events' caches
+    # never hit a sampling-rate mismatch (docs/hypoddpy_audit.md defect #8).
+    resample_rate_hz: 100.0
   ph2dt:
     maxsep_km: 1.0
     maxngh: 10
