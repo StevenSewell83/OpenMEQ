@@ -156,6 +156,49 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
 
 **3D models:** an NLLoc grid (`<root>.P.mod.hdr/.buf`, `<root>.S.mod...`) for NLLoc, and SIMUL2000 `vel3D.dat` for hypoDD (format as in `HYPODD/examples/example1/vel3D.dat`).
 
+## 6b. Local ML calibration file format
+
+Resolves PLAN.md §11's open question, per M8.2 / OpenMEQ-625.2.
+
+When `magnitude.ml.relation: local` and `magnitude.ml.local.coefficients` is
+not set (all three of `a`/`b`/`c` null), `magnitude.ml.local.file` points to a
+CSV distance/`-logA0` calibration table instead of a 3-coefficient formula:
+
+```csv
+distance_km,neg_log_a0
+0,1.4
+10,1.6
+50,2.2
+100,3.0
+200,3.4
+```
+
+- **Header** is exactly `distance_km,neg_log_a0` (both columns required, no
+  extra columns).
+- **`distance_km`** is hypocentral distance in km, **strictly increasing**
+  down the file (no duplicate or repeated distances), at least 2 rows.
+- **No missing/NaN values** in either column.
+- **`ML = log10(A_mm) + neg_log_a0(R)`**, where `neg_log_a0(R)` is
+  **linearly interpolated** between the two bracketing rows for a hypocentral
+  distance `R` that falls inside the table's range.
+- **Outside the table's range** (`R` below the first row's `distance_km` or
+  above the last row's), `neg_log_a0(R)` is **clamped** to the nearest end
+  row's value (i.e. held constant, not linearly extrapolated). This is
+  `numpy.interp`'s default out-of-range behaviour, relied on rather than
+  reimplemented, and is intentional here even though it looks like a bug at
+  a glance: without it, calibration tables that only cover a network's
+  useful aperture would extrapolate wildly for occasional far/near stations.
+  Every clamped lookup increments a counter so the magnitude step's
+  diagnostics (M8.3) can report how many stations were extrapolated.
+- Loading is `openmeq.magnitude.relations.load_neg_log_a0_table(path)`;
+  interpolation is `openmeq.magnitude.relations.interp_neg_log_a0(distance_km,
+  table)`. A malformed table raises `ConfigError` naming the file path and
+  the offending row number.
+- The table (and, separately, a CSV-backed `magnitude.ml.station_corrections`)
+  is loaded once per process and cached at module level, keyed by resolved
+  file path — each `pmap` worker process gets its own cache (no cross-process
+  sharing), matching M8.1's response-cache pattern.
+
 ## 7. External tools
 
 | Tool | Location | Built by |
