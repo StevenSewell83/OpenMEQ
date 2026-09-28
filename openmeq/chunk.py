@@ -89,6 +89,32 @@ larger than a sample period at any plausible sampling rate, and small
 relative to the default 30 s ``pre_s``/``post_s`` half-widths, so it does
 not materially inflate the read.
 
+Sub-window splitting (M3.2 / ``OpenMEQ-rq8.2``, memory fix)
+-------------------------------------------------------------
+As originally built (M3.1), :func:`chunk_day_group` performed exactly
+**one** whole-network read spanning ``[min(detection window start),
+max(detection window end)]`` across an *entire day's* detections. On a
+real network (e.g. 50 channels x a full 200 Hz day) that single read is
+~3.5 GB, and multiplied across ``n_workers`` concurrent day-group tasks it
+can exhaust memory -- flagged in the M3.1 orchestrator review.
+
+:func:`chunk_day_group` now further splits each day group's (already
+time-sorted) detections into **sub-windows**
+(:func:`_split_detections_into_subwindows`): a new sub-window starts
+whenever two consecutive detections' trigger times are more than
+``cfg.chunks.max_read_window_s`` apart. Each sub-window still gets exactly
+**one** whole-network read (the "one read per sub-window" property the
+issue's notes require -- a cluster of nearby detections, e.g. an
+aftershock sequence, is still read in a single call), but the read's time
+span is now bounded by ``max_read_window_s`` plus the padding below,
+rather than by the day's full first-to-last-detection span. The previous
+single-read-per-day behaviour is exactly reproduced when every detection
+in the day is within ``max_read_window_s`` of its neighbour (e.g. a dense
+swarm, or a small/short-duration dataset) -- splitting only kicks in when
+detections are genuinely spread out. Each sub-window's ``Stream`` is
+dropped (falls out of scope) before the next sub-window is read, so peak
+memory is bounded by one sub-window's span, not the whole day's.
+
 ``cfg_path`` design (worker IPC)
 -----------------------------------
 Mirrors ``openmeq.qc.stats``'s ``cfg_path`` convention exactly (see that
@@ -111,15 +137,22 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import click
 import pandas as pd
 import yaml
 from obspy import UTCDateTime
 
+from openmeq.chunk_diagnostics import (
+    compute_completeness,
+    make_chunk_diagnostics,
+    write_completeness_csv,
+)
 from openmeq.config import ChunksConfig
 from openmeq.index import DataIndex
 from openmeq.log import get_logger
+from openmeq.manifest import StepManifest, fingerprint
 from openmeq.parallel import pmap
 
 if TYPE_CHECKING:
@@ -226,6 +259,51 @@ def _write_chunks_worker_cfg(chunks_cfg: ChunksConfig) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Sub-window splitting (M3.2 / OpenMEQ-rq8.2, memory fix -- see module docstring)
+# ---------------------------------------------------------------------------
+
+
+def _split_detections_into_subwindows(
+    detections: list[dict], max_read_window_s: float
+) -> list[list[dict]]:
+    """Split one day-group's (time-sorted) detections into read sub-windows.
+
+    A new sub-window starts whenever two consecutive detections' trigger
+    times are more than ``max_read_window_s`` apart -- see the module
+    docstring's "Sub-window splitting" section. Every detection appears in
+    exactly one sub-window, in its original (time-sorted) order.
+
+    Parameters
+    ----------
+    detections : list of dict
+        One day-group's detection rows, already sorted by ``time``
+        (:func:`group_detections_by_day`'s own contract -- this function
+        does not re-sort).
+    max_read_window_s : float
+        ``cfg.chunks.max_read_window_s``. Must be positive; a detection
+        list containing only one detection always yields a single
+        one-element sub-window regardless of this value.
+
+    Returns
+    -------
+    list of list of dict
+        Non-empty sub-window groups, in time order. Empty only if
+        ``detections`` itself is empty.
+    """
+    if not detections:
+        return []
+    subwindows: list[list[dict]] = [[detections[0]]]
+    prev_time = UTCDateTime(detections[0]["time"])
+    for det in detections[1:]:
+        t = UTCDateTime(det["time"])
+        if t - prev_time > max_read_window_s:
+            subwindows.append([])
+        subwindows[-1].append(det)
+        prev_time = t
+    return subwindows
+
+
+# ---------------------------------------------------------------------------
 # Per-day-group worker
 # ---------------------------------------------------------------------------
 
@@ -285,67 +363,90 @@ def chunk_day_group(
     chunks_cfg = _cached_chunks_cfg(cfg_path)
     pre_s = chunks_cfg.pre_s
     post_s = chunks_cfg.post_s
-
-    times = [UTCDateTime(det["time"]) for det in detections]
-    window_start = min(times) - pre_s - _READ_WINDOW_SAFETY_MARGIN_S
-    window_end = max(times) + post_s + _READ_WINDOW_SAFETY_MARGIN_S
+    max_read_window_s = chunks_cfg.max_read_window_s
 
     # "All channels" per ARCHITECTURE.md §3/PLAN.md §6 Step 3 -- every
     # channel in the whole network, not just this detection's own
     # ``stations`` column.
     seed_ids = index.seed_ids()
 
-    # The one whole-network read for this entire day-group (see module
-    # docstring). ``.merge(method=0)`` is already what ``DataIndex.read``
-    # itself does internally; the extra call here is a cheap no-op
-    # (idempotent) that keeps this call site self-documenting about the
-    # invariant it relies on before ``.split()``.
-    stream = index.read(seed_ids, window_start, window_end).merge(method=0).split()
+    # M3.2 / OpenMEQ-rq8.2 memory fix: split this day-group's (already
+    # time-sorted) detections into sub-windows so a single read never spans
+    # more than ~max_read_window_s of a sparse day (module docstring's
+    # "Sub-window splitting" section) -- still exactly one whole-network
+    # read per sub-window (unchanged from M3.1 for a dense/short day, where
+    # this yields a single sub-window covering the whole group).
+    subwindows = _split_detections_into_subwindows(detections, max_read_window_s)
 
     chunks_root = Path(chunks_dir)
     results: list[dict] = []
     n_written = 0
-    for det in detections:
-        event_id = det["event_id"]
-        t = UTCDateTime(det["time"])
-        t1 = t - pre_s
-        t2 = t + post_s
+    n_reads = 0
+    for sub_detections in subwindows:
+        times = [UTCDateTime(det["time"]) for det in sub_detections]
+        window_start = min(times) - pre_s - _READ_WINDOW_SAFETY_MARGIN_S
+        window_end = max(times) + post_s + _READ_WINDOW_SAFETY_MARGIN_S
 
-        # New Trace views, not mutating ``stream`` -- every other detection
-        # in this group still needs to cut its own chunk from the same
-        # original ``stream`` afterwards (module docstring).
-        chunk = stream.slice(t1, t2)
+        # The one whole-network read for this sub-window (see module
+        # docstring). ``.merge(method=0)`` is already what ``DataIndex.read``
+        # itself does internally; the extra call here is a cheap no-op
+        # (idempotent) that keeps this call site self-documenting about the
+        # invariant it relies on before ``.split()``.
+        stream = index.read(seed_ids, window_start, window_end).merge(method=0).split()
+        n_reads += 1
 
-        if len(chunk) == 0:
-            logger.warning(
-                "Event %s (day-group %s): no channel has any data in [%s, %s]; no chunk written",
-                event_id,
-                day,
-                t1,
-                t2,
-            )
-            continue
+        for det in sub_detections:
+            event_id = det["event_id"]
+            t = UTCDateTime(det["time"])
+            t1 = t - pre_s
+            t2 = t + post_s
 
-        event_dir = chunks_root / event_id
-        event_dir.mkdir(parents=True, exist_ok=True)
-        out_path = event_dir / f"{event_id}.mseed"
-        chunk.write(str(out_path), format="MSEED")
-        n_written += 1
+            # New Trace views, not mutating ``stream`` -- every other
+            # detection in this sub-window still needs to cut its own
+            # chunk from the same original ``stream`` afterwards (module
+            # docstring).
+            chunk = stream.slice(t1, t2)
 
-        npts_by_seed_id: dict[str, int] = {}
-        for tr in chunk:
-            npts_by_seed_id[tr.get_id()] = npts_by_seed_id.get(tr.get_id(), 0) + tr.stats.npts
-        for seed_id, npts_present in npts_by_seed_id.items():
-            results.append({"event_id": event_id, "seed_id": seed_id, "npts_present": npts_present})
+            if len(chunk) == 0:
+                logger.warning(
+                    "Event %s (day-group %s): no channel has any data in [%s, %s]; "
+                    "no chunk written",
+                    event_id,
+                    day,
+                    t1,
+                    t2,
+                )
+                continue
+
+            event_dir = chunks_root / event_id
+            event_dir.mkdir(parents=True, exist_ok=True)
+            out_path = event_dir / f"{event_id}.mseed"
+            chunk.write(str(out_path), format="MSEED")
+            n_written += 1
+
+            npts_by_seed_id: dict[str, int] = {}
+            for tr in chunk:
+                npts_by_seed_id[tr.get_id()] = npts_by_seed_id.get(tr.get_id(), 0) + tr.stats.npts
+            for seed_id, npts_present in npts_by_seed_id.items():
+                results.append(
+                    {"event_id": event_id, "seed_id": seed_id, "npts_present": npts_present}
+                )
+
+        # Free this sub-window's data before reading the next one -- the
+        # whole point of splitting is to bound peak memory to one
+        # sub-window's span, not the day's full span (module docstring).
+        del stream
 
     logger.info(
-        "Day-group %s: wrote %d/%d chunk(s) from one %d-channel read [%s, %s]",
+        "Day-group %s: wrote %d/%d chunk(s) from %d read(s) across %d sub-window(s) "
+        "(%d channels, max_read_window_s=%.0f)",
         day,
         n_written,
         len(detections),
+        n_reads,
+        len(subwindows),
         len(seed_ids),
-        window_start,
-        window_end,
+        max_read_window_s,
     )
     return results
 
@@ -428,3 +529,134 @@ def write_chunks(
     n_events = len({row["event_id"] for row in results})
     logger.info("Wrote %d chunk(s) in %.2fs (%.1f chunks/s)", n_events, elapsed, n_events / elapsed)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestration / CLI registration (M3.2, ``OpenMEQ-rq8.2``)
+# ---------------------------------------------------------------------------
+#
+# ``run(cfg, paths, **opts)`` is what ``openmeq/cli.py`` looks for on this
+# module (ARCHITECTURE.md §2's ``openmeq.cli`` contract) -- registering the
+# ``openmeq chunk`` step needs no change to ``cli.py`` itself. Mirrors
+# ``openmeq.detect.pipeline.run_detect``'s own "require inputs, fingerprint,
+# skip-unchanged, do the work, mark done, log elapsed time" shape.
+
+#: ``RunPaths.diagnostics_dir``/``manifest_json``'s step-folder-name argument
+#: -- the output folder (``chunks/``), matching ``paths.chunk_completeness_csv``
+#: and ``paths.diagnostics_dir("chunks")``'s own convention (ARCHITECTURE.md §2).
+STEP_NAME = "chunks"
+
+#: The single :class:`~openmeq.manifest.StepManifest` entry key for this
+#: step -- one whole-run unit of work, mirroring
+#: ``openmeq.detect.pipeline.MANIFEST_KEY``.
+MANIFEST_KEY = "chunk"
+
+
+def _require_detect_outputs(paths: RunPaths) -> None:
+    """Raise a clear, actionable error if ``openmeq detect``'s outputs are missing.
+
+    ``openmeq chunk`` reads ``detections/detections.csv`` (to know which
+    events to cut) and ``inventory/index.json`` (to find/read the waveform
+    files) -- the former written by ``openmeq detect`` (M2.3), the latter by
+    ``openmeq qc`` (M1.7). A fresh run directory, or one where only ``qc``
+    has run, is the expected first-run-out-of-order mistake; this is a
+    deliberate, CLI-level hard dependency check (mirroring
+    ``openmeq.detect.pipeline._require_qc_outputs``), not an incidental
+    ``FileNotFoundError`` raised deeper inside :func:`write_chunks`.
+
+    Raises
+    ------
+    click.ClickException
+        Naming every missing path and telling the user to run ``openmeq
+        detect`` first.
+    """
+    missing = [p for p in (paths.detections_csv, paths.index_json) if not p.is_file()]
+    if not missing:
+        return
+    names = ", ".join(str(p) for p in missing)
+    message = (
+        f"openmeq chunk: missing required input(s): {names}. Run `openmeq detect` first "
+        "(and `openmeq qc` before that, if inventory/index.json is missing)."
+    )
+    logger.error(message)
+    raise click.ClickException(message)
+
+
+def run(
+    cfg: Config,
+    paths: RunPaths,
+    *,
+    config_path: str | None = None,
+    force: bool = False,
+    **_ignored: Any,
+) -> None:
+    """``openmeq chunk`` step entry point: write every event's raw waveform
+    chunk, then recompute and report completeness.
+
+    1. Requires ``detections/detections.csv``/``inventory/index.json`` to
+       already exist (:func:`_require_detect_outputs`).
+    2. Skips (unless ``force``) if ``cfg.chunks`` and both input files'
+       mtimes/sizes match the last recorded fingerprint
+       (:class:`openmeq.manifest.StepManifest`) and ``chunks/
+       completeness.csv`` still exists -- the manifest fingerprint includes
+       ``detections.csv``'s own mtime (not just ``cfg.chunks``), so new
+       detections with no config change still trigger re-chunking.
+    3. :func:`write_chunks` (M3.1).
+    4. :func:`openmeq.chunk_diagnostics.compute_completeness` /
+       :func:`~openmeq.chunk_diagnostics.write_completeness_csv` /
+       :func:`~openmeq.chunk_diagnostics.make_chunk_diagnostics` (M3.2),
+       recomputed independently from the just-written chunk files (never
+       from :func:`write_chunks`'s own in-memory return value -- see
+       :mod:`openmeq.chunk_diagnostics`'s module docstring).
+    5. Marks the manifest entry done and logs the elapsed time.
+
+    Parameters
+    ----------
+    cfg : openmeq.config.Config
+    paths : openmeq.paths.RunPaths
+    config_path : str or None, keyword-only, optional
+        Unused by this step (:func:`write_chunks` manages its own small
+        worker-IPC config file internally, unlike ``openmeq detect``) --
+        accepted only because ``openmeq/cli.py``'s dispatcher always
+        supplies it (ARCHITECTURE.md §2's ``run(cfg, paths, **opts)``
+        contract).
+    force : bool, keyword-only, optional
+        ``--force``: rerun even if the manifest says nothing changed.
+    **_ignored
+        Absorbs any other step-generic kwargs the dispatcher forwards.
+    """
+    del config_path  # unused -- see docstring
+    t0 = time.perf_counter()
+    paths.ensure()
+    step_logger = get_logger("chunk")
+
+    _require_detect_outputs(paths)
+
+    fp = fingerprint(cfg.chunks, paths.detections_csv, paths.index_json)
+    manifest = StepManifest(paths, STEP_NAME)
+    if not force and manifest.is_done(MANIFEST_KEY, fp) and paths.chunk_completeness_csv.is_file():
+        step_logger.info(
+            "chunk: unchanged since the last run (cfg.chunks, detections/detections.csv and "
+            "inventory/index.json all match the last recorded fingerprint) -- skipping "
+            "(use --force to rerun)."
+        )
+        return
+
+    detections_df = pd.read_csv(paths.detections_csv)
+    index = DataIndex.load(paths.index_json)
+
+    write_chunks(detections_df, index, cfg, paths)
+
+    completeness_df = compute_completeness(detections_df, cfg, paths)
+    write_completeness_csv(completeness_df, paths.chunk_completeness_csv)
+    make_chunk_diagnostics(paths, completeness_df)
+
+    manifest.mark_done(MANIFEST_KEY, fp)
+
+    elapsed = time.perf_counter() - t0
+    step_logger.info(
+        "chunk: %d event(s), %d completeness row(s) (%.2fs).",
+        len(detections_df),
+        len(completeness_df),
+        elapsed,
+    )

@@ -211,6 +211,19 @@ class DetectionConfig(_StrictModel):
 class ChunksConfig(_StrictModel):
     pre_s: float = 30.0
     post_s: float = 30.0
+    # M3.2 / OpenMEQ-rq8.2: memory fix for M3.1's chunk_day_group, which
+    # originally read the whole span from a day's first to its last
+    # detection, for every channel, in one go -- on a real network (many
+    # channels x a full day at a high sampling rate) that single read could
+    # run out of memory. A day group is now split into sub-windows wherever
+    # two consecutive detections' trigger times are more than
+    # max_read_window_s apart (openmeq.chunk._split_detections_into_subwindows),
+    # keeping the "one read per sub-window" property while bounding any
+    # single read's time span. 600 s (10 min) comfortably covers a cluster
+    # of nearby detections (e.g. an aftershock sequence) in one read while
+    # still splitting a day's worth of sparse, spread-out detections into
+    # many small reads.
+    max_read_window_s: float = 600.0
 
 
 # ---------------------------------------------------------------------------
