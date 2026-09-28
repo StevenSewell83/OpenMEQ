@@ -249,9 +249,17 @@ def magnitude(config_path: str, catalog: str | None, force: bool) -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def relocate(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Rerun every relocate sub-step (ph2dt, cross-correlation, hypoDD) even if "
+    "relocate/manifest.json says nothing changed.",
+)
+def relocate(config_path: str, force: bool) -> None:
     """hypoDD cross-correlation and relocation."""
-    _dispatch("relocate", config_path)
+    _dispatch("relocate", config_path, force=force)
 
 
 @main.command()

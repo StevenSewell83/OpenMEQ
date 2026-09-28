@@ -969,6 +969,69 @@ contract M10.5 depends on.
   still refreshes `catalog_dd.xml`'s carried-over magnitudes without
   needlessly re-invoking hypoDD).
 
+## 6i. `openmeq relocate` orchestration and diagnostics (M10.5 / OpenMEQ-16d.5)
+
+Built in `openmeq/relocate/__init__.py`/`openmeq/relocate/diagnostics.py`.
+`run_relocate(cfg, paths, *, force=False, external_hypodd_dir=None,
+external_bin_dir=None) -> RelocateResult` chains M10.1-M10.4 in order --
+`waveform_cache.build_cache` (all accepted events) ->
+`ph2dt_step.run_ph2dt` -> `xcorr.run_xcorr` -> `hypodd_runner.run_hypodd`
+-> `diagnostics.write_relocate_diagnostics` -- relying entirely on each
+step's own `StepManifest` key (§6c-2/§6f/§6g/§6h); it adds no manifest key
+of its own. `run(cfg, paths, *, force=False, **_ignored)` wraps it as this
+package's `openmeq.cli` step entry point (§2); `force` maps to `--force` on
+the `openmeq relocate` subcommand and is forwarded to `run_ph2dt`/
+`run_xcorr`/`run_hypodd` (`build_cache` has no `force` of its own, §6f).
+Requires `magnitude/catalog_mag.xml` to exist up front (before doing any
+work, including building the whole waveform cache), raising
+`openmeq.config.ConfigError` with a "run `openmeq magnitude` first"
+message -- every chained step already checks this itself, but the
+top-level check surfaces it immediately rather than after a partial run.
+
+**Bug found and fixed during this task**: `xcorr.write_dt_cc` (M10.3)
+unconditionally rewrote `dt.cc` on every `run_xcorr` call, even when every
+pair was resumed rather than recomputed
+(`openmeq.parallel.pmap_incremental`'s own resume behaviour) -- giving
+`dt.cc` a fresh mtime every single run. Since `run_hypodd`'s own
+skip-unchanged fingerprint (§6h) is `dt.ct`+`dt.cc`+`hypoDD.inp`'s
+mtimes/sizes (`openmeq.manifest.fingerprint`, not a content hash), this
+silently forced hypoDD to re-run on *every* `openmeq relocate` invocation
+regardless of whether anything had actually changed, breaking the
+"re-running with nothing changed re-runs nothing" contract the whole
+M10.1-M10.5 chain is supposed to provide end to end (caught by this task's
+own `test_skip_unchanged_end_to_end`). Fixed by making `write_dt_cc`
+idempotent: it now only actually writes (and therefore only touches
+`dt.cc`'s mtime) when the assembled content differs from what's already on
+disk.
+
+Diagnostics (`write_relocate_diagnostics(paths) -> RelocateDiagnosticsResult`,
+PLAN.md §5's hypoDD row + OpenMEQ-16d.6's EV/AQ/CND note), written to
+`relocate/diagnostics/`, always regenerated (never gated by a manifest,
+matching `catalog_dd.xml`'s own "always redone" convention above):
+
+- `locations_before.png` / `locations_after.png`: `openmeq.plotting.plot_map_sections`
+  (reused, not reimplemented) of every relocated event's pre-hypoDD
+  (`magnitude/catalog_mag.xml`) and post-hypoDD (`relocate/catalog_dd.xml`)
+  location; `locations_after.png` is coloured by each event's relative 3D
+  shift (km).
+- `dt_cc_cc_histogram.png`: histogram of every surviving `dt.cc`
+  observation's CC value.
+- `relative_shift_hist.png`: histogram of each relocated event's
+  pre-to-post 3D shift (km).
+- `iteration_rms.png` / `iteration_connectivity.png` / `iteration_aq_cnd.png`:
+  parsed from `relocate/work/hypoDD.log`'s per-iteration summary table
+  (`diagnostics.parse_hypodd_log_iterations` -- a tolerant, token-count-based
+  parser; see that function's own docstring for the exact strategy, since
+  `hypoDD.f`'s own header/data-row format is not 1:1 and only appears once
+  per run, not once per iteration). Best-effort: if no iteration table can
+  be found (a malformed/absent `hypoDD.log`), a `WARNING` is logged and all
+  three plots are skipped -- never a hard failure, per this issue's own
+  design note.
+- `summary.csv`: one row per event in the pre-hypoDD catalogue (never
+  dropped), before/after location, relative shift, and the per-event
+  hypoDD QC extras `merge_relocations` already carries (§6h:
+  `hypodd_mag`/`hypodd_nccp`/.../`hypodd_cluster_id`).
+
 ## 7. External tools
 
 | Tool | Location | Built by |
