@@ -327,3 +327,16 @@ def test_accepted_excludes_from_accepted_catalog(cfg):
     kept = accepted(cat)
 
     assert [get_event_id(ev) for ev in kept] == [get_event_id(accepted_event)]
+
+
+def test_horizontal_error_falls_back_to_max_horizontal_uncertainty():
+    """NLLoc OCT writes horUnc -1 (ObsPy: None) but still sets the ellipse axes."""
+    from obspy.core.event import OriginUncertainty
+
+    from openmeq.locate.finalize import horizontal_error_km
+
+    assert horizontal_error_km(None) is None
+    assert horizontal_error_km(OriginUncertainty()) is None
+    assert horizontal_error_km(OriginUncertainty(max_horizontal_uncertainty=850.0)) == 0.85
+    both = OriginUncertainty(horizontal_uncertainty=400.0, max_horizontal_uncertainty=850.0)
+    assert horizontal_error_km(both) == 0.4

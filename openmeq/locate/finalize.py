@@ -212,6 +212,23 @@ class _OriginMetrics:
     err_z_km: float | None
 
 
+def horizontal_error_km(ou) -> float | None:
+    """Horizontal location error in km from an ``OriginUncertainty``.
+
+    NonLinLoc's OCT search writes ``horUnc -1`` on its ``QML_OriginUncertainty``
+    line, which ObsPy's reader turns into ``horizontal_uncertainty = None``,
+    while ``max_horizontal_uncertainty`` (the ellipse semi-major axis) is still
+    set. Fall back to that conservative value so ``max_err_h_km`` can reject
+    events at all. Values are metres in QuakeML.
+    """
+    if ou is None:
+        return None
+    for value in (ou.horizontal_uncertainty, ou.max_horizontal_uncertainty):
+        if value is not None:
+            return value / 1000.0
+    return None
+
+
 def _origin_metrics(origin: Origin | None) -> _OriginMetrics:
     if origin is None:
         return _OriginMetrics(None, None, None, None, None, None, None, None)
@@ -220,9 +237,7 @@ def _origin_metrics(origin: Origin | None) -> _OriginMetrics:
     ou = origin.origin_uncertainty
     de = origin.depth_errors
 
-    err_h_km = None
-    if ou is not None and ou.horizontal_uncertainty is not None:
-        err_h_km = ou.horizontal_uncertainty / 1000.0  # OriginUncertainty is metres.
+    err_h_km = horizontal_error_km(ou)
 
     err_z_km = None
     if de is not None and de.uncertainty is not None:

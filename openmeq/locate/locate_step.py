@@ -58,6 +58,7 @@ from openmeq.catalog import iso_z, read_catalog, write_catalog
 from openmeq.locate.finalize import (
     SummaryRow,
     finalize_event,
+    horizontal_error_km,
     write_removal_log_csv,
     write_summary_csv,
 )
@@ -172,9 +173,7 @@ def _origin_fields(origin) -> tuple:
     quality = origin.quality
     ou = origin.origin_uncertainty
     de = origin.depth_errors
-    err_h_km = (
-        ou.horizontal_uncertainty / 1000.0 if ou and ou.horizontal_uncertainty is not None else None
-    )
+    err_h_km = horizontal_error_km(ou)
     err_z_km = de.uncertainty / 1000.0 if de and de.uncertainty is not None else None
     return (
         iso_z(origin.time) if origin.time is not None else None,
