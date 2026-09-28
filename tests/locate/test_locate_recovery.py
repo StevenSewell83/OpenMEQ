@@ -51,11 +51,18 @@ from real pick-time jitter and detection/filtering is expected. A real run
 against this exact dataset (CPU, n_workers=1, printed by this test's own
 ``[locate recovery]`` lines) measured:
 
-- **18/20 (90%) truth events matched** to an accepted location within
-  ``_EVENT_MATCH_TOLERANCE_S`` (2 unmatched: 2 truth events pass A/B/
-  ``finalize`` rejected or detection/picking never recovered at all --
-  the >=85% ``_MIN_MATCH_FRACTION`` threshold has headroom below this).
-- **horizontal error: median 32.9 m, max 45.5 m.**
+- **20/20 (100%) truth events matched** to an accepted location within
+  ``_EVENT_MATCH_TOLERANCE_S`` (the >=85% ``_MIN_MATCH_FRACTION`` threshold
+  has headroom below this). This module originally measured 18/20 here
+  (2 truth events rejected by the pass-A/B/``finalize`` chain), root-caused
+  by M11.2 (``OpenMEQ-m1f.2``) to both events' azimuthal gap sitting a
+  fraction of a degree past the then-default ``max_gap_deg = 270.0`` despite
+  full 8-station P+S phase counts and small errors on both -- a
+  network-geometry artifact of this dataset's small, ~ring-shaped array, not
+  a real location failure. Fixed by raising the default to 285.0
+  (``openmeq/config.py``'s ``EventsFilterConfig.max_gap_deg`` docstring has
+  the full numbers/rationale), which is why this module now measures 20/20.
+- **horizontal error: median 32.9 m, max 103.2 m.**
 - **depth error: median 38.6 m, max 172.4 m** (depth's own worst case is
   looser than horizontal's, consistent with the shallow-event depth/
   origin-time trade-off M5.2 found and this issue's own notes restate).
@@ -64,10 +71,11 @@ Chosen thresholds, with headroom below the measured numbers above (so this
 test only fails on a real regression, never on ordinary machine/BLAS-
 library noise): ``_MEDIAN_HORIZ_KM``/``_MEDIAN_DEPTH_KM`` = **0.15 km**
 (~4.5x the measured medians); ``_MAX_HORIZ_KM``/``_MAX_DEPTH_KM`` =
-**0.5 km** (>10x the measured horizontal max, ~3x the measured depth max,
+**0.5 km** (~5x the measured horizontal max, ~3x the measured depth max,
 loose enough to absorb the shallow-event trade-off on a re-run without
 being so loose it stops meaning anything); ``_MIN_MATCH_FRACTION`` =
-**0.85** (below the measured 90%).
+**0.85** (below the measured 100%, with headroom for a legitimate
+machine/BLAS-level NLLoc difference dropping at most a couple of events).
 """
 
 from __future__ import annotations
