@@ -81,7 +81,7 @@ from pathlib import Path
 import pandas as pd
 from obspy import UTCDateTime
 
-from openmeq.catalog import event_id_from_time
+from openmeq.catalog import event_id_from_time, iso_z
 from openmeq.config import Config
 
 #: ARCHITECTURE.md §4.3 column order -- also the CSV column order.
@@ -213,7 +213,7 @@ def merge_windows(per_window_results: list[list[dict]], cfg: Config) -> pd.DataF
         rows.append(
             {
                 "event_id": event_id,
-                "time": det["time"].isoformat() + "Z",
+                "time": iso_z(det["time"]),
                 "duration_s": det["duration_s"],
                 "coincidence_sum": det["coincidence_sum"],
                 "n_stations": det["n_stations"],

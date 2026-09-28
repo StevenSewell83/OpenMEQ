@@ -148,3 +148,12 @@ def test_accepted_keeps_event_with_no_preferred_origin():
     cat = Catalog(events=[ev])
     result = accepted(cat)
     assert len(result) == 1
+
+
+def test_iso_z_always_has_microseconds():
+    from obspy import UTCDateTime
+
+    from openmeq.catalog import iso_z
+
+    assert iso_z(UTCDateTime(2025, 1, 2, 3, 8, 15)) == "2025-01-02T03:08:15.000000Z"
+    assert iso_z(UTCDateTime(2025, 1, 2, 3, 8, 15, 250000)) == "2025-01-02T03:08:15.250000Z"

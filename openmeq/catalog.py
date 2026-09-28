@@ -26,6 +26,17 @@ EXTRA_PREFIX = "openmeq"
 _EVENT_RESOURCE_PREFIX = "smi:openmeq/event/"
 
 
+def iso_z(t: UTCDateTime) -> str:
+    """Format a time as ISO-8601 UTC with microseconds and a ``Z`` suffix.
+
+    Always ``YYYY-MM-DDTHH:MM:SS.ffffffZ`` (ARCHITECTURE.md §1). This is the
+    only writer of that format: ``UTCDateTime.isoformat()`` drops the
+    fractional part when it is exactly zero, which gives a mixed-format
+    column that ``pandas.to_datetime`` then fails to parse.
+    """
+    return t.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def event_id_from_time(t: UTCDateTime) -> str:
     """Build an event id from a trigger time.
 

@@ -105,7 +105,7 @@ def _detections_per_hour(detections_df: pd.DataFrame, path: str | Path) -> None:
         )
         return
 
-    times = pd.to_datetime(detections_df["time"], utc=True)
+    times = pd.to_datetime(detections_df["time"], utc=True, format="ISO8601")
     hours = times.dt.floor("h")
     full_range = pd.date_range(hours.min(), hours.max(), freq="1h")
     counts = hours.value_counts().reindex(full_range, fill_value=0).sort_index()

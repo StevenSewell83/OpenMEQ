@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING
 
 from obspy import Stream, UTCDateTime, read
 
+from openmeq.catalog import iso_z
 from openmeq.log import get_logger
 from openmeq.parallel import pmap
 
@@ -82,7 +83,7 @@ def _iso_z(t: UTCDateTime) -> str:
     ``UTCDateTime.isoformat()`` does not append ``Z`` on its own (it just
     omits the offset); ARCHITECTURE.md §1 requires the explicit ``Z``.
     """
-    return t.isoformat() + "Z"
+    return iso_z(t)
 
 
 def _scan_file(path: str) -> list[Segment]:

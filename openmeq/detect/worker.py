@@ -135,6 +135,7 @@ import numpy as np
 from obspy import Stream, UTCDateTime
 from obspy.signal.trigger import coincidence_trigger
 
+from openmeq.catalog import iso_z
 from openmeq.config import Config, load_config
 from openmeq.index import DataIndex
 from openmeq.log import get_logger
@@ -144,7 +145,7 @@ logger = get_logger("detect.worker")
 
 def _iso_z(t: UTCDateTime) -> str:
     """``UTCDateTime`` -> ISO-8601 string with a ``Z`` suffix (ARCHITECTURE.md §1)."""
-    return t.isoformat() + "Z"
+    return iso_z(t)
 
 
 def _dates_covered(t1: UTCDateTime, t2: UTCDateTime) -> list[str]:

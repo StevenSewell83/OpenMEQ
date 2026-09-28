@@ -15,7 +15,7 @@ This document is the **contract between modules**. Every task in the build (see 
   - `requires_phasenet`
   - `requires_gui`
   - `slow`
-- **Times:** all times are UTC `obspy.UTCDateTime` in code, and ISO-8601 strings with a `Z` suffix in files.
+- **Times:** all times are UTC `obspy.UTCDateTime` in code, and ISO-8601 strings with a `Z` suffix in files, always with microseconds (`YYYY-MM-DDTHH:MM:SS.ffffffZ`), written only via `openmeq.catalog.iso_z`. Readers should still parse leniently (e.g. `pd.to_datetime(..., format="ISO8601")`).
 - **Units:** distances in km in the location and hypoDD steps; metres for station elevation and depth in metadata.
 
 ## 2. Shared modules (built in M0; later tasks use them, not their own copies)
