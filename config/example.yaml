@@ -123,8 +123,7 @@ nlloc:
   # --- M5.2 / OpenMEQ-mev.2: ObsPyck's expected model-link directory ---
   obspyck_pluginpath: ./external/obspyck_plugin
   # --- M6.1 / OpenMEQ-xdf.1: per-event NLLoc control-file parameters ---
-  # TODO(OpenMEQ-mev.1): re-confirm locsearch/locgau/locgau2 defaults against
-  # docs/nlloc_interface.md once M5.1's spike lands (not yet run as of M0.3).
+  # Verified against the installed NonLinLoc, see docs/nlloc_interface.md §5.
   locsearch:                           # LOCSEARCH OCT (octtree search) parameters
     init_num_cells_x: 10
     init_num_cells_y: 10
@@ -137,13 +136,15 @@ nlloc:
   locgau:                              # LOCGAU: constant Gaussian model-error covariance
     sigma_time_s: 0.1
     corr_len_km: 0.0
-  locgau2:                             # LOCGAU2: travel-time-dependent covariance
+  locgau2:                             # LOCGAU2: travel-time-dependent covariance (no CorrLen; 3rd param is SigmaTmax)
     sigma_time_fraction: 0.01
     sigma_time_min_s: 0.05
-    corr_len_km: 5.0
+    sigma_time_max_s: 2.0
   # Ascending time_errors.uncertainty (s) bucket edges -> NLLoc LOCQUAL2ERR
-  # quality classes 0..N (PhaseNet has no native pick-quality integer).
-  locqual2err_thresholds_s: [0.05, 0.1, 0.2, 0.5]
+  # quality classes 0..N. NLLoc ignores this statement's values for NLLOC_OBS
+  # input (which always carries a literal per-pick error, docs/nlloc_interface.md
+  # §5 LOCQUAL2ERR); a syntactically valid ascending list is still required.
+  locqual2err_thresholds_s: [0.05, 0.1, 0.2, 0.5, 99999.9]
 
 review:
   enabled: false                        # true to pause the pipeline for manual ObsPyck review

@@ -67,7 +67,8 @@ def test_load_example_config():
     assert cfg.nlloc.locsearch.init_num_cells_x == 10
     assert cfg.nlloc.locgau.sigma_time_s == pytest.approx(0.1)
     assert cfg.nlloc.locgau2.sigma_time_min_s == pytest.approx(0.05)
-    assert cfg.nlloc.locqual2err_thresholds_s == [0.05, 0.1, 0.2, 0.5]
+    assert cfg.nlloc.locgau2.sigma_time_max_s == pytest.approx(2.0)
+    assert cfg.nlloc.locqual2err_thresholds_s == [0.05, 0.1, 0.2, 0.5, 99999.9]
     assert cfg.magnitude.ml.wa_sensitivity == pytest.approx(2080)
     assert cfg.magnitude.ml.window_before_s == pytest.approx(1.0)
     assert cfg.magnitude.ml.window_after_s == pytest.approx(4.0)
