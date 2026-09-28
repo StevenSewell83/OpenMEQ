@@ -64,7 +64,10 @@ review/events/<event_id>.xml
 review/catalog_final.xml
 magnitude/catalog_mag.xml
 magnitude/station_magnitudes.csv
-relocate/work/                  # hypoDD run folder(s)
+relocate/work/                  # hypoDD run folder(s): station.dat, phase.dat, event.dat,
+                                 # ph2dt.inp, hypoDD.inp, event.sel/station.sel (ph2dt output), ...
+relocate/work/event_id_map.csv         # event_id,cuspid -- persisted, append-only (§6c)
+relocate/work/station_label_map.csv    # net_sta,label -- persisted, append-only (§6c)
 relocate/cache/<event_id>.npz   # pre-filtered waveforms for xcorr
 relocate/dt.ct, relocate/dt.cc
 relocate/catalog_dd.xml
@@ -199,6 +202,67 @@ distance_km,neg_log_a0
   is loaded once per process and cached at module level, keyed by resolved
   file path — each `pmap` worker process gets its own cache (no cross-process
   sharing), matching M8.1's response-cache pattern.
+
+## 6c. hypoDD/ph2dt file writers (1D)
+
+Built in M9.2 (`openmeq/relocate/hypodd_files.py`), validated against
+`external/HYPODD/examples/example1`. Every field/unit/quirk below was
+confirmed directly against `external/HYPODD` source (not generic hypoDD
+docs) — see `docs/hypoddpy_audit.md` §6 for the full defect list this
+module fixes and `bd show OpenMEQ-6ld` (the M9 epic's design note) for
+file:line citations.
+
+- **ID mappings are persisted, append-only CSVs**, not regenerated
+  per-run (hypoddpy's template does the latter, an audited resume-safety
+  defect): `relocate/work/event_id_map.csv` (`event_id,cuspid`, cuspids
+  assigned 1..N by sorting *newly seen* accepted events by origin time —
+  existing rows are never renumbered) and
+  `relocate/work/station_label_map.csv` (`net_sta,label`, a `NET.STA` ->
+  `character*7` hypoDD station label, bare `STA` code where unique across
+  networks, else a truncated/digit-suffixed fallback; a genuine collision
+  within 7 characters raises `ConfigError`).
+- **Units:** hypoDD/ph2dt files use **km** for depth/distance and **metres**
+  for station elevation (hypoDD itself divides by 1000 internally,
+  `getdata.f:274`); QuakeML depth is metres, so every writer converts via
+  `openmeq.relocate.hypodd_files.depth_m_to_km`, the one shared conversion
+  helper (also used by M10.4's `hypoDD.reloc` reader).
+- **Station elevation quirk:** hypoDD silently zeroes any negative station
+  elevation unless `IMOD=5` (`getdata.f:275-278`). Station elevation here is
+  the §6 effective elevation (`elevation_m - depth_m`), so boreholes
+  (`depth_m > 0`) are commonly negative. M9.2 targets `IMOD=1` and does
+  **not** auto-switch to `IMOD=5`: it writes the true (negative) value and
+  logs one `WARNING` per run naming every affected station, rather than
+  silently replicating hypoDD's own silent clamp.
+- **Rejected picks are excluded from `phase.dat` entirely** (checked via
+  `pick.evaluation_status != "rejected"`), not merely weighted to zero —
+  writing `time_weight=0` (§5's rejection convention) as a `phase.dat`
+  weight would look like a deliberately-low-quality *present* pick to
+  ph2dt's `MINWGHT` filter (`ph2dt.f:485`, which only skips weights that are
+  `>= 0` and `< minwght`), i.e. a rejected pick would still pass the default
+  filter. A pick with no `Arrival.time_weight` at all is written as `-1.0`,
+  hypoDD's own "no info" sentinel (always bypasses `MINWGHT`), not `0.0`.
+- **`hypodd.ph2dt`** (extends the block above): `minwght` (0), `maxdist_km`
+  (200), `minobs` (8), `maxobs` (20) — ph2dt.inp's own bracketed-comment
+  defaults.
+- **`hypodd.weighting_rows`**: a list of `{niter, wtccp, wtccs, wrcc, wdcc,
+  wtctp, wtcts, wrct, wdct, damp}` rows for hypoDD.inp's iterative
+  data-weighting table; defaults to `examples/example1/hypoDD.inp`'s real
+  5-row scheme (not hypoddpy's minimal 2-row default).
+- **`hypodd.istart`/`isolv`/`iaq`**: solution-control defaults `2`
+  (network sources), `2` (LSQR), `1` (remove airquakes).
+- **`hypodd.idat`/`ipha`/`max_station_dist_km`**: hypoDD.inp's `IDAT IPHA
+  DIST` line (data type, phase selection, max cluster-centroid-to-station
+  distance); defaults `3`/`3`/`200`.
+- **`hypodd.clustering`** (`obscc`, `obsct`, `mindist_km`, `maxdist_km`,
+  `maxgap_deg`): hypoDD.inp's event-clustering line. hypoddpy's template
+  hardcodes `OBSCC=OBSCT=0`, disabling clustering entirely; defaults here
+  are `0`/`8`/`-999`/`-999`/`-999`, matching example1's own working config.
+- `write_hypodd_inp_1d` always targets `IMOD=1` (1D, per-layer variable
+  vp/vs ratio — the modern, backward-compatible choice per HYPODD's
+  "Main changes in 2.1b"), references `event.sel`/`station.sel` (ph2dt's
+  filtered output, not the raw `event.dat`/`station.dat`), and always
+  writes `CID=0` (relocate all) with a blank `ID` list; per-cluster
+  relocation is M10.4's `parallel_clusters` option.
 
 ## 7. External tools
 

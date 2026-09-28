@@ -226,6 +226,19 @@ hypodd:
   istart: 2                             # 1 = from single source; 2 = from network sources
   isolv: 2                              # 1 = SVD; 2 = LSQR (scales to much larger datasets)
   iaq: 1                                # remove airquakes: 0 = no; 1 = yes
+  # --- M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" line and event-
+  # clustering block. hypoddpy's template hardcodes OBSCC=OBSCT=0, disabling
+  # clustering entirely (docs/hypoddpy_audit.md defect #14) -- exposed here
+  # instead, defaulting to examples/example1's own working OBSCT=8.
+  idat: 3                                # 1 = cross-corr only; 2 = catalog only; 3 = cross & catalog
+  ipha: 3                                # 1 = P only; 2 = S only; 3 = P & S
+  max_station_dist_km: 200               # max dist [km] between cluster centroid and station
+  clustering:
+    obscc: 0                             # min obs/pair for cross-corr data to cluster on (0 = no clustering)
+    obsct: 8                             # min obs/pair for catalog data to cluster on (0 = no clustering)
+    mindist_km: -999                     # min pair-station distance; -999 = not active
+    maxdist_km: -999                     # max pair-station distance; -999 = not active
+    maxgap_deg: -999                     # max azimuthal gap; -999 = not active
   # --- M10.4 / OpenMEQ-16d.4 ---
   parallel_clusters: false              # opt-in: relocate each ph2dt cluster as an independent
                                          # hypoDD subprocess in parallel, then merge hypoDD.reloc

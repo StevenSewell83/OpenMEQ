@@ -613,6 +613,27 @@ def _default_weighting_rows() -> list[WeightingRow]:
     ]
 
 
+class EventClusteringConfig(_StrictModel):
+    """hypoDD.inp's event-clustering line: ``OBSCC OBSCT MINDIST MAXDIST
+    MAXGAP`` (confirmed ``examples/example1/hypoDD.inp:41-42``,
+    ``getinp2.f``'s ``minobs_cc,minobs_ct,minds,maxds,maxgap`` read).
+
+    docs/hypoddpy_audit.md §6 defect #14: hypoddpy's template hardcodes
+    ``OBSCC=OBSCT=0``, silently disabling hypoDD's event-clustering feature
+    entirely, even though ``examples/example1`` itself ships with
+    ``OBSCT=8`` and clustering active. M9.2 exposes this block as config
+    instead of hardcoding it either way.
+    """
+
+    obscc: int = 0
+    #: example1's own working value (docs/hypoddpy_audit.md defect #14),
+    #: used as this project's default rather than hypoddpy's silent 0.
+    obsct: int = 8
+    mindist_km: float = -999
+    maxdist_km: float = -999
+    maxgap_deg: float = -999
+
+
 class HypoddConfig(_StrictModel):
     velocity_model: HypoddVelocityModelConfig
     xcorr: XcorrConfig = Field(default_factory=XcorrConfig)
@@ -627,6 +648,16 @@ class HypoddConfig(_StrictModel):
     istart: Literal[1, 2] = 2
     isolv: Literal[1, 2] = 2
     iaq: Literal[0, 1] = 1
+    # M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" data-type-selection
+    # line (confirmed examples/example1/hypoDD.inp:32-33, getinp2.f's
+    # idata,iphase,maxdist read). Defaults match example1: both cross-corr
+    # and catalog data, P&S phases, 200 km per ph2dt.inp's own MAXDIST
+    # bracketed-comment default (example1 itself uses 120 for its smaller
+    # aperture network).
+    idat: Literal[1, 2, 3] = 3
+    ipha: Literal[1, 2, 3] = 3
+    max_station_dist_km: float = 200.0
+    clustering: EventClusteringConfig = Field(default_factory=EventClusteringConfig)
     # M10.4 / OpenMEQ-16d.4: opt-in cluster-level parallelism (run each
     # ph2dt cluster as an independent hypoDD subprocess). Off by default;
     # only worth enabling once the single-run path is solid.
