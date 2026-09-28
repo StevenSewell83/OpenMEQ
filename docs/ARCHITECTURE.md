@@ -756,6 +756,50 @@ chunk.
   built per event, since a pair's window depends on each event's own picks
   independently -- pairing itself is M10.3's job).
 
+## 6g. Parallel cross-correlation to `dt.cc` (M10.3 / OpenMEQ-16d.3)
+
+Built in `openmeq/relocate/xcorr.py` -- fixes the defects
+`docs/hypoddpy_audit.md` §2/§6 assigns to this task (sign convention #1,
+hardcoded window #2 -- already fixed by M10.1's cache, multi-channel S
+combination #9). See that module's own docstring for the full analysis;
+summarised here since it is a binding contract other tasks (M10.4/M10.5)
+depend on.
+
+- **`dt.cc` sign convention**: for pair header `# cuspid_i cuspid_j otc`
+  (exactly `dt.ct`'s own header order for that pair, from
+  `openmeq.relocate.ph2dt_step.run_ph2dt`'s returned pair list -- never
+  reordered), the written differential time is `TT(event i) - TT(event j)`,
+  matching `dt.ct`'s own `dt1 - dt2` convention (`getdata.f:485`) so both
+  data types are consistent double-difference inputs. `OTC` is always
+  `0.0` (every `dt_s` value already subtracts each event's own accurate
+  origin time independently).
+- **Per-pair station/phase detail** comes from re-parsing `dt.ct`
+  (`openmeq.relocate.xcorr.parse_dt_ct_detail`), not from re-deriving an
+  independent "picks present at both events" set -- this matches exactly
+  what `ph2dt` itself linked for that pair (its own
+  `MAXSEP`/`MAXNGH`/`MINLNK` filtering already applied).
+- **Channel selection**: P always on `Z`; S tried independently on every
+  configured horizontal (`cfg.hypodd.xcorr.components`), keeping only the
+  single best-correlating channel's `(dt, cc)` -- not a weighted blend of
+  multiple channels' independently-measured lags (the hypoddpy template's
+  design choice, revisited here per the audit).
+- **Cross-correlation implementation**: a vectorised `correlate` +
+  three-point parabolic sub-sample fit (`openmeq.relocate.xcorr._lag_and_cc`),
+  benchmarked ~13.5x faster than `obspy.signal.cross_correlation.
+  xcorr_pick_correction` at equal accuracy (both within one sample of a
+  known synthetic lag) -- this is the production path; `filter=None` is
+  implied throughout (M10.1 already filtered the cached windows once).
+- **Resume**: one `openmeq.parallel.pmap_incremental` item per pair,
+  results appended to `relocate/work/xcorr_results.jsonl`
+  (`RunPaths.xcorr_results_jsonl`) keyed by `"{cuspid_i}_{cuspid_j}"`;
+  `dt.cc` (`RunPaths.dt_cc`) is assembled from that file, one `#`-header
+  block per pair with at least one surviving observation (a pair with zero
+  surviving lines is omitted entirely, not written with an empty block).
+- **`hypodd.xcorr.filter`** stays at its M10.1 default (2-20 Hz) -- see
+  `openmeq.relocate.xcorr`'s module docstring for the empirical comparison
+  against a 5-40 Hz alternative on this project's own synthetic P/S pulse
+  spectra.
+
 ## 7. External tools
 
 | Tool | Location | Built by |
