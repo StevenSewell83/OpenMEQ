@@ -83,6 +83,24 @@ def test_run_logs_and_raises_on_nonzero_exit(caplog):
     assert "boom" in caplog.text
 
 
+def test_run_tolerates_non_utf8_stdout_byte():
+    # M10.4 / OpenMEQ-16d.4: the real hypoDD binary was observed to
+    # occasionally emit a single non-UTF-8 byte on stdout (see `run`'s
+    # docstring) -- reproduce that shape directly (write raw invalid bytes
+    # to the subprocess's stdout) and confirm `run` no longer raises
+    # `UnicodeDecodeError` for it.
+    proc = run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'before\\xd0after\\n'); sys.stdout.flush()",
+        ]
+    )
+    assert proc.returncode == 0
+    assert "before" in proc.stdout
+    assert "after" in proc.stdout
+
+
 def test_run_timeout_raises_external_tool_error():
     with pytest.raises(ExternalToolError):
         run([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.1)
