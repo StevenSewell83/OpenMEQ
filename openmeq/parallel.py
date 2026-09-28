@@ -89,18 +89,47 @@ earlier -- e.g. in the CLI entry point, before any heavy import happens in
 the parent at all -- since the guarantee above only starts once
 ``pmap``/``pmap_incremental`` is called.
 
-Physical vs. logical cores
----------------------------
-``n_workers="auto"`` resolves to ``len(os.sched_getaffinity(0))`` (the
-number of CPUs this process is allowed to run on -- Linux-only, which is
-fine since this is a Linux-targeted project), falling back to
-``os.cpu_count()`` if ``sched_getaffinity`` is unavailable. This is the
-*logical* core count on hyperthreaded machines (not physical cores), but
-it is the pragmatic choice: it respects cgroup/affinity restrictions (e.g.
-running inside a container with a CPU quota) and needs no extra
-dependency (``psutil`` was considered and deliberately not added). If this
-turns out to oversubscribe hyperthreaded machines in practice, that's a
-question for the M11.3 performance pass, not this module.
+Physical vs. logical cores (M11.3, ``OpenMEQ-m1f.3``)
+--------------------------------------------------------
+``n_workers="auto"`` resolves to the **physical** core count this process
+is allowed to run on (:func:`_physical_core_count`), not the logical
+(hyperthread) count -- this changed in M11.3; earlier it resolved to
+``len(os.sched_getaffinity(0))`` (logical), per M0.5's own design note
+flagging that as a question for this performance pass.
+
+Why this changed: ``docs/performance.md`` (M11.3's profiling) measured this
+project's own dev machine's QC-stats step (the most memory-bandwidth-bound
+step profiled) plateauing in throughput by ~4-8 workers and *regressing*
+by ~28 -- i.e. requesting every logical core is not just unhelpful but
+actively counter-productive for that workload, on a machine whose logical
+core count includes hyperthread siblings that share, rather than add,
+memory bandwidth and execution resources. Other, more compute-bound steps
+(filtering, NLLoc, hypoDD) scale closer to the physical core count than to
+the logical one. Physical cores is therefore a *better single default*
+across the whole pipeline than logical cores, without this module needing
+to know which step is calling it (a true per-step default would need
+plumbing a step name through every ``pcfg`` call site, a larger contract
+change out of this task's scope -- see ``docs/performance.md`` for that
+follow-up note). A user who has measured their own workload/machine and
+wants every logical core (or any other exact count) can still always set
+``n_workers`` to an explicit integer in their config -- ``"auto"`` only
+changes what the *default* resolves to.
+
+:func:`_physical_core_count` counts **unique ``(physical id, core id)``
+pairs** from ``/proc/cpuinfo``, restricted to the processors
+``os.sched_getaffinity(0)`` allows this process to use (so a cgroup/CPU-quota
+restriction, e.g. inside a container, is still respected -- this is not
+simply ``logical // 2``). That distinction matters concretely on this
+project's own dev machine (a hybrid performance/efficiency-core CPU, 28
+logical / 20 physical): 8 performance cores each expose 2 logical CPUs
+(hyperthread siblings) while 12 efficiency cores expose only 1 each, so
+``logical // 2`` would (wrongly) give 14, not 20. Falls back to the same
+logical-core resolution as before (``len(os.sched_getaffinity(0))``, else
+``os.cpu_count()``) if ``/proc/cpuinfo`` is missing, unparseable, or
+reports no usable physical-core grouping at all (e.g. non-Linux) --
+:func:`_resolve_n_workers` never raises or returns 0 because of this.
+Still no extra dependency (``psutil`` was considered and deliberately not
+added, both originally and again in M11.3).
 """
 
 from __future__ import annotations
@@ -170,16 +199,90 @@ def _worker_init(threads_per_worker: int) -> None:
     _set_thread_env(threads_per_worker)
 
 
+def _logical_core_count() -> int:
+    """Logical CPU count this process may use: ``len(os.sched_getaffinity(0))``.
+
+    Falls back to ``os.cpu_count()`` on non-Linux platforms (where
+    ``sched_getaffinity`` doesn't exist), and to ``1`` if even that is
+    unavailable, so this never returns ``0``/``None``.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def _physical_core_count(cpuinfo_path: str = "/proc/cpuinfo") -> int | None:
+    """Physical core count among the CPUs this process is allowed to use.
+
+    See the module docstring's "Physical vs. logical cores" section for the
+    full rationale. Parses ``/proc/cpuinfo`` (Linux-only), counting unique
+    ``(physical id, core id)`` pairs among ``processor`` entries whose id is
+    in ``os.sched_getaffinity(0)`` (when available -- unrestricted
+    otherwise). Returns ``None`` (never raises) if ``/proc/cpuinfo`` can't
+    be read/parsed, or yields no usable grouping (e.g. missing
+    ``physical id``/``core id`` fields) -- the caller then falls back to the
+    logical count.
+
+    Parameters
+    ----------
+    cpuinfo_path : str, optional
+        Overridable only for testing against a synthetic ``/proc/cpuinfo``-
+        format file (``tests/test_parallel_physical_cores.py``); every real
+        caller uses the default.
+    """
+    try:
+        allowed = os.sched_getaffinity(0)
+    except AttributeError:
+        allowed = None  # non-Linux: no affinity restriction to apply
+
+    try:
+        with open(cpuinfo_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    cores: set[tuple[str, str]] = set()
+    processor_id: str | None = None
+    physical_id: str | None = None
+    core_id: str | None = None
+    for line in content.splitlines():
+        if not line.strip():
+            # Blank line separates one processor's field block from the
+            # next -- flush whatever this block collected.
+            if processor_id is not None and physical_id is not None and core_id is not None:
+                if allowed is None or int(processor_id) in allowed:
+                    cores.add((physical_id, core_id))
+            processor_id = physical_id = core_id = None
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key == "processor":
+            processor_id = value
+        elif key == "physical id":
+            physical_id = value
+        elif key == "core id":
+            core_id = value
+    if processor_id is not None and physical_id is not None and core_id is not None:
+        if allowed is None or int(processor_id) in allowed:
+            cores.add((physical_id, core_id))
+
+    return len(cores) if cores else None
+
+
 def _resolve_n_workers(n_workers: int | str) -> int:
-    """Resolve ``pcfg.n_workers`` ("auto" or an int) to a concrete worker count."""
+    """Resolve ``pcfg.n_workers`` ("auto" or an int) to a concrete worker count.
+
+    ``"auto"`` resolves to the physical core count (M11.3) -- see the
+    module docstring's "Physical vs. logical cores" section -- falling back
+    to the logical core count if physical-core detection isn't available.
+    """
     if isinstance(n_workers, str):
         if n_workers != "auto":
             raise ValueError(f"n_workers must be an int or 'auto', got {n_workers!r}")
-        try:
-            return len(os.sched_getaffinity(0))
-        except AttributeError:
-            # os.sched_getaffinity is Linux-only; fall back elsewhere.
-            return os.cpu_count() or 1
+        physical = _physical_core_count()
+        return physical if physical is not None else _logical_core_count()
     n = int(n_workers)
     if n < 1:
         raise ValueError(f"n_workers must be >= 1, got {n}")

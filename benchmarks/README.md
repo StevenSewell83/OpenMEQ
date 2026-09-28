@@ -22,7 +22,9 @@ trends across these files by `git_commit` + `generated_at`):
 - `n_workers_requested` (`"auto"` or int), `n_workers_resolved` (int or
   null), `threads_per_worker`
 - `dataset`: `{"source": "generated"|"config", "seed"?, "n_events"?,
-  "n_stations"?, "scratch_dir"?, "config_path"?}`
+  "n_stations"?, "n_days"?, "scratch_dir"?, "config_path"?}` (`n_days` added
+  in M11.3, alongside `--n-stations`/`--n-days`/`--tmp-dir` for an opt-in
+  larger benchmark dataset -- see `scripts/benchmark.py`'s own docstring)
 - `stages`: list of
   `{"name", "status": "ran"|"skipped"|"error", "duration_s",
   "peak_rss_kb", "peak_rss_kb_delta", "peak_rss_bytes_sampled", "note"}`
