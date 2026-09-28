@@ -7,17 +7,25 @@ counts), written to ``qc/daily_stats.csv`` (ARCHITECTURE.md §3):
 
 Parallelism
 -----------
-One unit of work per channel-day (PLAN.md §4's "QC | channel x day" row),
-run through :func:`openmeq.parallel.pmap` exactly like the miniSEED index's
-header scan (:mod:`openmeq.index`) parallelizes per file: the top-level,
-picklable worker is :func:`stats_for_channel_day`, which takes a
-``seed_id``/``day`` pair plus two *paths* -- never a waveform object or the
-in-memory :class:`~openmeq.config.Config`/:class:`~openmeq.index.DataIndex`
-themselves -- and does its own ``DataIndex.load`` + ``index.read`` inside
-the worker process. :func:`compute_daily_stats` is the orchestration
-entry point: it takes the already-loaded ``index``/``cfg`` (for a
-convenient, direct API), and internally bridges to the path-based worker
-contract.
+PLAN.md §4's "QC | channel x day" row is still the logical unit of work,
+but the ``pmap`` *task* granularity is one seed id x a batch of up to
+``cfg.parallel.chunk_days`` consecutive days (:func:`_stats_batch`),
+mirroring ``openmeq.qc.availability``'s M1.3 batching exactly
+(OpenMEQ-5nl.8: batching amortises per-task ``ProcessPoolExecutor``
+scheduling/IPC overhead at production scale). The top-level, picklable
+per-channel-day worker is still :func:`stats_for_channel_day`, which takes
+a ``seed_id``/``day`` pair plus two *paths* -- never a waveform object or
+the in-memory :class:`~openmeq.config.Config`/:class:`~openmeq.index.DataIndex`
+themselves. Both the index and the small ``qc:``-only config are loaded
+**once per worker process** and cached thereafter
+(:func:`_cached_index`/:func:`_cached_qc_cfg`, OpenMEQ-5nl.8) rather than
+reloaded on every call -- a ``ProcessPoolExecutor`` worker is long-lived
+and handles many items over its lifetime, all sharing the same index/
+config for one ``compute_daily_stats`` call; see ``docs/performance.md``
+for the production-scale evidence this mattered for.
+:func:`compute_daily_stats` is the orchestration entry point: it takes the
+already-loaded ``index``/``cfg`` (for a convenient, direct API), and
+internally bridges to the path-based worker contract.
 
 ``cfg_path`` design note
 -------------------------
@@ -91,7 +99,6 @@ import numpy as np
 import pandas as pd
 import yaml
 from obspy import UTCDateTime
-from scipy.stats import kurtosis as _scipy_kurtosis
 
 from openmeq.config import Config, QcConfig
 from openmeq.index import DataIndex
@@ -131,26 +138,6 @@ def _day_window(day: date) -> tuple[UTCDateTime, UTCDateTime]:
     return day_start, day_end
 
 
-def _run_length_per_sample(x: np.ndarray) -> np.ndarray:
-    """Vectorised run-length encoding: for each sample, the length of the run
-    of identical consecutive values it belongs to.
-
-    Uses ``np.diff(x) == 0`` (a value equals its predecessor) to find run
-    boundaries, then a cumulative sum to assign a run id per sample, then
-    ``np.bincount`` to get each run's length back out -- no per-sample
-    Python loop.
-    """
-    n = x.size
-    if n == 0:
-        return np.zeros(0, dtype=np.int64)
-    is_new_run = np.empty(n, dtype=bool)
-    is_new_run[0] = True
-    is_new_run[1:] = x[1:] != x[:-1]
-    run_id = np.cumsum(is_new_run) - 1
-    run_len = np.bincount(run_id)
-    return run_len[run_id]
-
-
 def _segment_run_counts(
     x: np.ndarray,
     *,
@@ -164,23 +151,130 @@ def _segment_run_counts(
     ``x`` is the segment's *original* dtype array (int32 in the normal
     miniSEED case) -- equality-based run detection, so no float cast is
     needed (or wanted, for the clip check -- see the module docstring).
+
+    Run-length via *boundaries*, not a per-sample expansion
+    ----------------------------------------------------------------------
+    The original implementation (see git history) built a full ``run_len``
+    array the same size as ``x`` (one ``np.bincount`` plus a fancy-index
+    gather, ``run_len[run_id]``, back out to per-sample size) purely to
+    then threshold and count it. Profiling on a full 200 Hz channel-day
+    (17.28M samples) showed that per-sample expansion -- not the O(n)
+    boundary scan itself, which is unavoidable -- was the dominant cost
+    (OpenMEQ-5nl.8). This version never re-expands past run granularity:
+    ``run_starts``/``run_lengths`` are sized by the *number of runs*
+    (typically close to ``n`` for real noise, since consecutive raw
+    samples rarely repeat exactly, but still cheaper than an explicit
+    per-sample gather), and the qualifying-run totals are two masked
+    ``.sum()`` reductions over that run-sized array -- no array the size
+    of ``x`` is ever built except the single boundary-comparison pass.
     """
-    if x.size == 0:
+    n = x.size
+    if n == 0:
         return 0, 0
 
-    run_len = _run_length_per_sample(x)
-    flat_count = int(np.count_nonzero(run_len >= flat_run_min_samples))
+    is_run_start = np.empty(n, dtype=bool)
+    is_run_start[0] = True
+    np.not_equal(x[1:], x[:-1], out=is_run_start[1:])
+    run_starts = np.flatnonzero(is_run_start)
+    # Equivalent to ``np.diff(run_starts, append=n)`` but a little cheaper:
+    # ``numpy.diff`` is a generic, axis-aware wrapper (extra overhead for a
+    # 1-D, no-``prepend``, single-``append`` case); this writes directly
+    # into a pre-sized output array via plain slicing/subtraction.
+    run_lengths = np.empty(run_starts.size, dtype=np.int64)
+    run_lengths[:-1] = run_starts[1:]
+    run_lengths[:-1] -= run_starts[:-1]
+    run_lengths[-1] = n - run_starts[-1]
 
+    flat_count = int(run_lengths[run_lengths >= flat_run_min_samples].sum())
+
+    run_values = x[run_starts]
     if is_int:
-        is_saturation_value = (x == _INT32_MAX) | (x == _INT32_MIN)
+        is_saturation_value = (run_values == _INT32_MAX) | (run_values == _INT32_MIN)
     elif float_saturation_value is not None:
-        is_saturation_value = x == float_saturation_value
+        is_saturation_value = run_values == float_saturation_value
     else:
-        is_saturation_value = np.zeros_like(x, dtype=bool)
+        is_saturation_value = np.zeros(run_values.shape, dtype=bool)
 
-    clip_mask = (run_len >= clip_run_min_samples) & is_saturation_value
-    clip_count = int(np.count_nonzero(clip_mask))
+    clip_mask = (run_lengths >= clip_run_min_samples) & is_saturation_value
+    clip_count = int(run_lengths[clip_mask].sum())
     return flat_count, clip_count
+
+
+def _median_mad_spike_count(
+    x_all: np.ndarray, spike_threshold_mad: float
+) -> tuple[float, float, int]:
+    """``(median, mad, spike_count)`` for one channel-day's concatenated valid samples.
+
+    Same two order-statistics computations as the original implementation
+    (a median is not additive across segments -- see the module
+    docstring), but with two changes that only affect *speed*, not the
+    result:
+
+    - ``overwrite_input=True`` on both :func:`numpy.median` calls. Per
+      ``numpy.median``'s own source, this skips an internal defensive
+      copy (``np.partition`` otherwise copies the whole array before
+      partitioning in place) and instead partitions ``x_all``/``dev`` in
+      place -- safe here because neither array's *order* is read again
+      afterwards (the caller only wants the median/MAD *values*, and
+      :func:`_fast_kurtosis`, called separately on the still-unsorted-but-
+      value-preserved ``x_all``, is order-independent). On a full
+      17.28M-sample channel-day this removes two full-array copies
+      (OpenMEQ-5nl.8 profiling).
+    - ``dev = abs(x_all - median)`` is computed once and reused for both
+      the MAD and the spike threshold comparison, instead of being
+      recomputed from scratch for the spike count (the original
+      implementation called ``np.abs(x_all - median)`` twice).
+    """
+    median = float(np.median(x_all, overwrite_input=True))
+    dev = np.abs(x_all - median)
+    mad = float(np.median(dev, overwrite_input=True))
+    spike_count = int(np.count_nonzero(dev > spike_threshold_mad * mad))
+    return median, mad, spike_count
+
+
+def _fast_kurtosis(x: np.ndarray) -> float:
+    """Excess (Fisher) kurtosis, matching ``scipy.stats.kurtosis(x, fisher=True)``
+    (its default ``bias=True``, i.e. the plain biased/population estimator
+    ``m4 / m2**2 - 3``, no small-sample correction) to within documented
+    float32 tolerance (see below).
+
+    ``scipy.stats.kurtosis`` computes the 2nd and 4th central moments via
+    two independent calls to its internal ``_moment``, each of which
+    re-demeans ``x`` from scratch and raises the demeaned array to the
+    target power with :func:`numpy.power` (a transcendental-style,
+    order-4-generic routine, and in float64). This instead:
+
+    - demeans once and gets the 4th power via two elementwise
+      *multiplications* (``d2 = d * d``; ``d2 * d2``) rather than ``d**4``
+      -- multiplication is a single hardware instruction per element where
+      a generic integer power is not;
+    - runs entirely in ``float32`` (cast once up front). Kurtosis has no
+      tight-tolerance consumer (unlike ``rms``/``mean_abs``, which stay
+      float64 -- see :func:`compute_channel_day_stats`): every assertion
+      against it in ``tests/test_qc_stats.py`` is a wide-margin inequality
+      (e.g. ``> 50``, ``> 10``, ``< 5``), and OpenMEQ-5nl.8 profiling found
+      float32 cut this function's cost by roughly 1.5x end to end
+      (including the cast) on a full 17.28M-sample channel-day, dominated
+      by the elementwise ``mean``/multiply reductions rather than
+      (surprisingly) the partition-based median/MAD, which barely benefits
+      from float32 (see ``docs/performance.md``).
+
+    Verified against ``scipy.stats.kurtosis`` (float64) on a sample
+    channel-day, within a documented relative tolerance, in
+    ``tests/test_qc_stats.py::test_fast_kurtosis_matches_scipy_reference``.
+
+    A zero-variance (or single-sample) input divides by zero the same way
+    ``scipy.stats.kurtosis`` does, yielding ``nan`` (with a runtime
+    warning) rather than raising.
+    """
+    x32 = x.astype(np.float32, copy=False)
+    mean = x32.mean()
+    d = x32 - mean
+    d2 = d * d
+    m2 = d2.mean()
+    m4 = (d2 * d2).mean()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return float(m4 / (m2 * m2) - 3.0)
 
 
 def _empty_stats(seed_id: str, day: date) -> dict:
@@ -220,7 +314,18 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
     dict
         One row, keys matching :data:`DAILY_STATS_COLUMNS`.
     """
-    segments = [tr.data for tr in stream.split()] if len(stream) > 0 else []
+    # ``Stream.split()`` (needed to break a *masked* array at a gap into
+    # contiguous, unmasked per-segment traces -- see the module docstring)
+    # unconditionally deep-copies trace metadata even when there is
+    # nothing to split. The overwhelming majority of channel-days have no
+    # gap at all (a single already-contiguous trace straight out of
+    # ``DataIndex.read``), so skip it entirely unless at least one trace
+    # is actually masked (OpenMEQ-5nl.8 profiling: ~10 ms/channel-day on a
+    # full 200 Hz day, pure overhead in the common no-gap case).
+    if len(stream) > 0 and any(np.ma.is_masked(tr.data) for tr in stream):
+        segments = [tr.data for tr in stream.split()]
+    else:
+        segments = [tr.data for tr in stream]
     segments = [seg for seg in segments if seg.size > 0]
 
     if not segments:
@@ -230,7 +335,7 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
 
     float_saturation_value: float | None = None
     if not is_int:
-        concat_raw = np.concatenate(segments)
+        concat_raw = segments[0] if len(segments) == 1 else np.concatenate(segments)
         if concat_raw.size > 0:
             float_saturation_value = float(concat_raw[np.argmax(np.abs(concat_raw))])
 
@@ -255,19 +360,36 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
         flat_count += seg_flat
         clip_count += seg_clip
 
+        # NOTE: ``mean_abs`` is deliberately *not* accumulated off a
+        # narrower (e.g. int32) view of the raw samples: ``np.abs`` on
+        # int32 silently overflows for exactly ``-(2**31)`` (two's
+        # complement has no positive counterpart for that value), and
+        # ``-(2**31)`` is precisely one of this module's own two int32
+        # saturation values (see the module docstring's "Clip detection
+        # order") -- a negatively-clipped channel would otherwise corrupt
+        # ``mean_abs`` silently. ``seg_f`` (float64) has no such overflow.
         seg_f = seg.astype(np.float64, copy=False)
-        sum_sq += float(np.sum(seg_f**2))
         sum_abs += float(np.sum(np.abs(seg_f)))
+        # ``np.dot(seg_f, seg_f)`` computes the same sum of squares as
+        # ``np.sum(seg_f**2)`` without ever materialising the squared
+        # array -- one BLAS-level pass instead of an elementwise square
+        # (full-size temp) followed by a separate reduction. Verified
+        # (``tests/test_qc_stats.py::test_dot_sum_of_squares_matches_manual_sum_within_tolerance``)
+        # to agree with the naive elementwise-square-then-sum to double
+        # precision's practical limit (a different summation order can
+        # differ in the last handful of ULPs for a 17M-term reduction);
+        # the existing ``rel=1e-12`` manual-calculation test
+        # (``test_rms_mean_abs_matches_manual_calc``) still passes at that
+        # tolerance.
+        sum_sq += float(np.dot(seg_f, seg_f))
         float_segments.append(seg_f)
 
     rms = float(np.sqrt(sum_sq / total_npts))
     mean_abs = float(sum_abs / total_npts)
 
-    x_all = np.concatenate(float_segments)
-    median = np.median(x_all)
-    mad = np.median(np.abs(x_all - median))
-    spike_count = int(np.count_nonzero(np.abs(x_all - median) > qc_cfg.spike_threshold_mad * mad))
-    kurt = float(_scipy_kurtosis(x_all, fisher=True))
+    x_all = float_segments[0] if len(float_segments) == 1 else np.concatenate(float_segments)
+    median, mad, spike_count = _median_mad_spike_count(x_all, qc_cfg.spike_threshold_mad)
+    kurt = _fast_kurtosis(x_all)
 
     return {
         "seed_id": seed_id,
@@ -288,6 +410,44 @@ def _load_qc_cfg(cfg_path: str | Path) -> QcConfig:
     return QcConfig.model_validate(raw.get("qc", {}))
 
 
+#: Per-worker-*process* caches, keyed by the path string each worker was
+#: called with. ``ProcessPoolExecutor`` workers are long-lived (one spawned
+#: interpreter processes many submitted items over the pool's lifetime, not
+#: one process per item -- see ``openmeq.parallel``'s module docstring), so
+#: without this, every single channel-day item re-parsed the *entire*
+#: ``inventory/index.json`` (and re-validated the small ``qc:`` YAML) from
+#: scratch, even though every item in one ``compute_daily_stats`` call
+#: shares the same index/config (OpenMEQ-5nl.8: "cache the DataIndex per
+#: worker process"). Each worker process gets its own module-level dict (no
+#: cross-process sharing -- ``spawn`` gives each worker a fresh module
+#: import), and a given ``(index_path, cfg_path)`` pair is only ever loaded
+#: once per worker's lifetime. Safe across separate ``pmap`` calls too:
+#: each call to :func:`openmeq.parallel.pmap` creates a brand-new process
+#: pool (and therefore brand-new, empty caches) when ``n_workers > 1``; the
+#: ``n_workers == 1`` path runs in the *calling* process, where this same
+#: cache also applies (harmlessly -- a single process handling every item
+#: in that run) and is why the in-process serial test suite sees a speedup
+#: too.
+_worker_index_cache: dict[str, DataIndex] = {}
+_worker_qc_cfg_cache: dict[str, QcConfig] = {}
+
+
+def _cached_index(index_path: str) -> DataIndex:
+    index = _worker_index_cache.get(index_path)
+    if index is None:
+        index = DataIndex.load(index_path)
+        _worker_index_cache[index_path] = index
+    return index
+
+
+def _cached_qc_cfg(cfg_path: str) -> QcConfig:
+    qc_cfg = _worker_qc_cfg_cache.get(cfg_path)
+    if qc_cfg is None:
+        qc_cfg = _load_qc_cfg(cfg_path)
+        _worker_qc_cfg_cache[cfg_path] = qc_cfg
+    return qc_cfg
+
+
 def stats_for_channel_day(seed_id: str, day: date, index_path: str, cfg_path: str) -> dict:
     """Top-level, picklable per-``(seed_id, day)`` worker for :func:`openmeq.parallel.pmap`.
 
@@ -301,33 +461,47 @@ def stats_for_channel_day(seed_id: str, day: date, index_path: str, cfg_path: st
     day : datetime.date
         Calendar day (UTC) to compute statistics for.
     index_path : str
-        Path to a ``DataIndex``-format JSON file (``inventory/index.json``),
-        loaded fresh in this worker process.
+        Path to a ``DataIndex``-format JSON file (``inventory/index.json``).
+        Loaded once per worker *process* and cached thereafter (see
+        :data:`_worker_index_cache`), not reloaded on every call.
     cfg_path : str
         Path to a small YAML file holding just a ``qc:`` section (see the
-        module docstring's "``cfg_path`` design note").
+        module docstring's "``cfg_path`` design note"). Also cached per
+        worker process.
 
     Returns
     -------
     dict
         One row, keys matching :data:`DAILY_STATS_COLUMNS`.
     """
-    index = DataIndex.load(index_path)
-    qc_cfg = _load_qc_cfg(cfg_path)
+    index = _cached_index(index_path)
+    qc_cfg = _cached_qc_cfg(cfg_path)
     day_start, day_end = _day_window(day)
     stream = index.read([seed_id], day_start, day_end)
     return compute_channel_day_stats(seed_id, day, stream, qc_cfg)
 
 
-def _stats_worker(item: tuple[str, date, str, str]) -> dict:
-    """``pmap``-compatible wrapper: unpacks one ``(seed_id, day, index_path,
-    cfg_path)`` item and calls :func:`stats_for_channel_day`.
+def _stats_batch(item: tuple[str, list[str], str, str]) -> list[dict]:
+    """Top-level ``pmap`` worker: one seed id x a batch of calendar days.
 
-    A separate top-level function (rather than a lambda/closure) because
-    ``pmap`` pickles ``func`` to send it to worker processes.
+    Mirrors ``openmeq.qc.availability``'s ``_availability_batch`` shape
+    exactly (OpenMEQ-5nl.8's "chunk the work so each worker handles several
+    channel-days"): ``days_iso`` are ISO ``YYYY-MM-DD`` strings (picklable
+    primitives), and this delegates to :func:`stats_for_channel_day` once
+    per day. Batching more than one day per task
+    (``cfg.parallel.chunk_days > 1``) only reduces per-task scheduling/IPC
+    overhead -- the *index*/*config* caching that makes repeated calls
+    within one task (and across tasks handled by the same long-lived
+    worker process) cheap lives in :func:`_cached_index`/
+    :func:`_cached_qc_cfg`, not in this batching itself; batching mainly
+    amortises ``ProcessPoolExecutor``'s per-task pickling/scheduling
+    overhead over several channel-days instead of one.
     """
-    seed_id, day, index_path, cfg_path = item
-    return stats_for_channel_day(seed_id, day, index_path, cfg_path)
+    seed_id, days_iso, index_path, cfg_path = item
+    return [
+        stats_for_channel_day(seed_id, date.fromisoformat(day_iso), index_path, cfg_path)
+        for day_iso in days_iso
+    ]
 
 
 def _write_qc_worker_cfg(qc_cfg: QcConfig) -> Path:
@@ -348,9 +522,17 @@ def compute_daily_stats(
 ) -> pd.DataFrame:
     """Daily noise statistics for every ``seed_ids`` x ``dates`` channel-day.
 
-    One :func:`openmeq.parallel.pmap` unit of work per ``(seed_id, day)``
-    pair (PLAN.md §4), each running :func:`stats_for_channel_day` in a
-    worker process.
+    One :func:`openmeq.parallel.pmap` unit of work per seed id x a batch of
+    up to ``cfg.parallel.chunk_days`` consecutive calendar days (PLAN.md
+    §4's channel x day unit of work, batched exactly like
+    ``openmeq.qc.availability.compute_availability`` -- OpenMEQ-5nl.8),
+    each running :func:`stats_for_channel_day` once per day inside
+    :func:`_stats_batch`. Batching amortises per-task
+    ``ProcessPoolExecutor`` scheduling/IPC overhead over several
+    channel-days; within one task (and across every task handled by the
+    same long-lived worker process), the index/config are loaded once and
+    cached (:func:`_cached_index`/:func:`_cached_qc_cfg`), not once per
+    channel-day.
 
     Parameters
     ----------
@@ -372,26 +554,41 @@ def compute_daily_stats(
         Columns exactly :data:`DAILY_STATS_COLUMNS`, in order, one row per
         ``(seed_id, day)``.
     """
+    if not seed_ids or not dates:
+        return pd.DataFrame(columns=DAILY_STATS_COLUMNS)
+
     paths = RunPaths(cfg)
     index_path = paths.index_json
     if not index_path.exists():
         index.write(index_path)
 
+    chunk_days = max(1, cfg.parallel.chunk_days)
+    sorted_dates = sorted(dates)
+    date_chunks = [
+        sorted_dates[i : i + chunk_days] for i in range(0, len(sorted_dates), chunk_days)
+    ]
+
     cfg_path = _write_qc_worker_cfg(cfg.qc)
     try:
         items = [
-            (seed_id, day, str(index_path), str(cfg_path)) for seed_id in seed_ids for day in dates
+            (seed_id, [d.isoformat() for d in chunk], str(index_path), str(cfg_path))
+            for seed_id in seed_ids
+            for chunk in date_chunks
         ]
         logger.info(
-            "Computing daily QC stats for %d channel(s) x %d day(s) = %d channel-day(s)",
+            "Computing daily QC stats for %d channel(s) x %d day(s) "
+            "= %d channel-day(s) (%d task(s), chunk_days=%d)",
             len(seed_ids),
-            len(dates),
+            len(sorted_dates),
+            len(seed_ids) * len(sorted_dates),
             len(items),
+            chunk_days,
         )
-        results = pmap(_stats_worker, items, cfg.parallel, desc="qc-daily-stats")
+        batches = pmap(_stats_batch, items, cfg.parallel, desc="qc-daily-stats")
     finally:
         cfg_path.unlink(missing_ok=True)
 
+    results = [row for batch in batches for row in batch]
     if results:
         df = pd.DataFrame(results, columns=DAILY_STATS_COLUMNS)
     else:
