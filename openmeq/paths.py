@@ -273,6 +273,34 @@ class RunPaths:
         """Pre-filtered waveform cache for one event (``relocate/cache/<event_id>.npz``)."""
         return self.relocate_cache_dir / f"{event_id}.npz"
 
+    def locate_pass_dir(self, pass_name: str, event_id: str) -> Path:
+        """Per-event NLLoc work directory root for one pass (M6.1 / OpenMEQ-xdf.1).
+
+        ``locate/passA/<event_id>/`` or ``locate/passB/<event_id>/``
+        (ARCHITECTURE.md §3). ``openmeq.locate.nlloc_runner.locate_event``
+        appends its own ``iter_NN`` subdirectory
+        (``locate_pass_dir(pass_name, event_id) / f"iter_{iteration:02d}"``),
+        one per location iteration within that pass.
+
+        Parameters
+        ----------
+        pass_name : str
+            ``"passA"`` or ``"passB"``.
+        event_id : str
+
+        Raises
+        ------
+        ValueError
+            If ``pass_name`` is not ``"passA"`` or ``"passB"``.
+        """
+        if pass_name == "passA":
+            base = self.passA_dir
+        elif pass_name == "passB":
+            base = self.passB_dir
+        else:
+            raise ValueError(f"pass_name must be 'passA' or 'passB', got {pass_name!r}")
+        return base / event_id
+
     def diagnostics_dir(self, step: str) -> Path:
         """``<step>/diagnostics/`` -- every step's diagnostics folder.
 
