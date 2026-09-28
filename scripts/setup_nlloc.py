@@ -1,13 +1,18 @@
 #!/usr/bin/env python
-"""CLI wrapper around ``openmeq.nlloc_setup`` (M5.2 / OpenMEQ-mev.2, PLAN.md §7).
+"""CLI wrapper around ``openmeq.nlloc_setup`` (M5.2 / OpenMEQ-mev.2, extended
+for 3D model grids by M5.3 / OpenMEQ-mev.3; PLAN.md §7).
 
-Builds the shared 1D velocity/travel-time NLLoc grids for every configured
-station (``Vel2Grid`` once, then ``Grid2Time`` per (station, phase) in
-parallel via ``openmeq.parallel.pmap``), and refreshes the ObsPyck model
-link. All of the actual logic lives in ``openmeq/nlloc_setup.py`` -- this is
-a thin wrapper so M6.1 (the per-event NLLoc runner, OpenMEQ-xdf.1) can
-``import openmeq.nlloc_setup`` and reuse its control-file generation
-directly, without going through this CLI.
+Builds the shared velocity/travel-time NLLoc grids for every configured
+station -- ``cfg.nlloc.velocity_model.type == "1d"`` runs ``Vel2Grid`` once
+from the project's layer file; ``"3d"`` validates (coverage + TRANS match)
+and links in a user-supplied NLLoc grid instead -- then runs ``Grid2Time``
+per (station, phase) in parallel via ``openmeq.parallel.pmap``, and
+refreshes the ObsPyck model link. ``openmeq.nlloc_setup.setup_nlloc`` (all
+of the actual logic lives in ``openmeq/nlloc_setup.py``) dispatches between
+the two based on that config field; this script is a thin wrapper so M6.1
+(the per-event NLLoc runner, OpenMEQ-xdf.1) can ``import openmeq.nlloc_setup``
+and reuse its control-file generation directly, without going through this
+CLI.
 
 Usage
 -----

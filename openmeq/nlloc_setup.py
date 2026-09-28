@@ -1,16 +1,26 @@
-"""1D NLLoc setup: control-file boilerplate, Vel2Grid, per-station Grid2Time,
-and the ObsPyck model link (M5.2 / OpenMEQ-mev.2).
+"""NLLoc setup: control-file boilerplate, Vel2Grid (1D) / user-supplied grid
+linking (3D), per-station Grid2Time, and the ObsPyck model link
+(M5.2 / OpenMEQ-mev.2, extended by M5.3 / OpenMEQ-mev.3 for 3D model grids).
 
-Implements PLAN.md §7's ``scripts/setup_nlloc.py`` for the ``nlloc.velocity_model.type
-== "1d"`` case (3D model grids are OpenMEQ-mev.3, out of scope here). This
-module is the reusable, independently-testable piece; ``scripts/setup_nlloc.py``
-is a thin ``click`` CLI wrapper around :func:`setup_nlloc`, and M6.1 (the
-per-event NLLoc runner, OpenMEQ-xdf.1) imports :func:`write_control_common`
-directly rather than re-deriving the shared ``CONTROL``/``TRANS`` boilerplate.
+Implements PLAN.md §7's ``scripts/setup_nlloc.py`` for both
+``nlloc.velocity_model.type`` cases: ``"1d"`` (:func:`build_1d_grid`, runs
+``Vel2Grid`` against the project's layer file, M5.2) and ``"3d"``
+(:func:`link_3d_grid`, copies/symlinks a user-supplied NLLoc grid in after
+:func:`check_3d_grid_coverage` validates it, M5.3 -- PLAN.md §1: 3D grids are
+always user-supplied, never built by this project). :func:`setup_nlloc`
+dispatches between them; everything downstream (:func:`run_grid2time`,
+:func:`link_obspyck_model`) is shared. This module is the reusable,
+independently-testable piece; ``scripts/setup_nlloc.py`` is a thin ``click``
+CLI wrapper around :func:`setup_nlloc`, and M6.1 (the per-event NLLoc runner,
+OpenMEQ-xdf.1) imports :func:`write_control_common` directly rather than
+re-deriving the shared ``CONTROL``/``TRANS`` boilerplate.
 
 Every control-statement syntax claim here cites docs/nlloc_interface.md (the
 M5.1 spike's verified reference); the ObsPyck filesystem layout cites
-docs/obspyck_notes.md (the M7.1 spike).
+docs/obspyck_notes.md (the M7.1 spike). The 3D grid ``.hdr``/``.buf`` on-disk
+format (no single doc page states it) is cited directly from the installed
+``external/NonLinLoc/src/GridLib.c`` source (the same v7.1.05 build the rest
+of this module already relies on) -- see :func:`read_grid3d_hdr`.
 
 Directory layout produced (ARCHITECTURE.md §6d)
 ------------------------------------------------
@@ -49,7 +59,7 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pandas as pd
 from obspy.geodetics import gps2dist_azimuth
@@ -374,6 +384,353 @@ def build_1d_grid(cfg: Config, paths: RunPaths, station_table: pd.DataFrame) -> 
 
 
 # ---------------------------------------------------------------------------
+# 3D grid coverage check + link_3d_grid (M5.3 / OpenMEQ-mev.3)
+# ---------------------------------------------------------------------------
+
+#: Grid ``chr_type`` values (GridLib.c's ``convert_grid_type`` table) that are
+#: travel-time/take-off-angle grids, not a velocity/slowness model grid --
+#: :func:`check_3d_grid_coverage` rejects a supplied root pointing at one of
+#: these with a clear error rather than a confusing coverage-shortfall
+#: message (the numbers would parse fine but mean something else entirely).
+_NON_MODEL_GRID_TYPES = frozenset(
+    {
+        "TIME",
+        "TIME2D",
+        "ANGLE",
+        "ANGLE2D",
+        "INCLINATION",
+        "INCLINATION2D",
+        "PROB_DENSITY",
+        "MISFIT",
+        "LIKELIHOOD",
+        "SSST_TIMECORR",
+    }
+)
+
+#: Tolerance (degrees) for comparing a supplied 3D grid's own ``TRANSFORM``
+#: origin against ``cfg.nlloc.grid.origin``. Not a "coverage margin" (design
+#: note: coverage itself is checked with zero tolerance) -- purely to absorb
+#: text round-tripping (the grid's ``.hdr`` was very likely written with
+#: ``%lf`` -- 6 decimals, GridLib.c:593-596 -- while ``cfg.nlloc.grid.origin``
+#: may have fewer). 1e-4 deg is ~11 m at the equator, far smaller than any
+#: sane grid spacing.
+_TRANS_ORIGIN_TOLERANCE_DEG = 1e-4
+
+
+class Grid3DHeader(NamedTuple):
+    """Parsed contents of an NLLoc 3D grid ``.hdr`` file.
+
+    See :func:`read_grid3d_hdr` for the on-disk format this mirrors.
+    ``orig{x,y,z}``/``d{x,y,z}`` are in km, in the coordinate frame the
+    grid's own ``transform_line`` defines (**not** necessarily
+    ``cfg.nlloc.grid.origin``'s frame -- :func:`check_3d_grid_coverage`
+    checks the two match before treating them as interchangeable).
+    """
+
+    numx: int
+    numy: int
+    numz: int
+    origx: float
+    origy: float
+    origz: float
+    dx: float
+    dy: float
+    dz: float
+    grid_type: str
+    float_type: str
+    transform_line: str
+
+
+def read_grid3d_hdr(hdr_path: Path) -> Grid3DHeader:
+    """Parse an NLLoc 3D grid ``.hdr`` text file.
+
+    **Format** (not documented as a single worked example anywhere in
+    ``external/NonLinLoc/docs``; read directly from the installed source,
+    the same v7.1.05 build docs/nlloc_interface.md §1 confirms, and cited by
+    file+line so this can be re-verified against a different NLLoc build):
+
+    - Line 1 (``GridLib.c:1019-1025``, ``WriteGrid3dHdr``)::
+
+          numx numy numz  origx origy origz  dx dy dz gridType floatType
+
+      whitespace-separated (exact spacing not significant -- confirmed by
+      the two separate ``fprintf`` calls that write it, GridLib.c:1019 and
+      1024/1026). ``gridType`` is one of GridLib.c's ``convert_grid_type``
+      table (``VELOCITY``, ``SLOWNESS``, ``SLOW_LEN``, ...). ``floatType``
+      is ``FLOAT`` or ``DOUBLE`` (``GRID_FLOAT_TYPE_DOUBLE`` compile flag,
+      GridLib.c:1023-1026) -- the installed build has this **commented out**
+      (``external/NonLinLoc/src/CMakeLists.txt:75``), so every grid this
+      project's own binaries write, and every grid they can read
+      (GridLib.c's own runtime check refuses a mismatched ``floatType``,
+      confirmed by the ``external/bin/Grid2Time`` string
+      ``"Global grid float type is set to FLOAT, but grid file type is not
+      FLOAT"``), is ``FLOAT`` (4-byte).
+    - Line 2, **only** for a travel-time/angle grid (``GridLib.c:1032-1036``,
+      ``psrce->label x y z``) -- never present for a velocity/slowness model
+      grid (``<root>.{P,S}.mod.hdr``), which is all this function is used
+      for in this module.
+    - The next line is ``TRANSFORM  <type> ...`` (``GridLib.c:1037``,
+      ``fprintf(fpio, "%s\\n", MapProjStr[0])`` -- always written, even for
+      ``TRANS NONE``/``GLOBAL``) -- kept verbatim in
+      :attr:`Grid3DHeader.transform_line` for
+      :func:`check_3d_grid_coverage` to parse.
+
+    Parameters
+    ----------
+    hdr_path : pathlib.Path
+
+    Returns
+    -------
+    Grid3DHeader
+
+    Raises
+    ------
+    openmeq.nlloc_setup.NllocSetupError
+        If ``hdr_path`` doesn't exist or its first line doesn't parse as
+        the format above.
+    """
+    try:
+        lines = hdr_path.read_text().splitlines()
+    except OSError as exc:
+        raise NllocSetupError(f"cannot read 3D grid header {hdr_path}: {exc}") from exc
+    if not lines:
+        raise NllocSetupError(f"3D grid header {hdr_path} is empty")
+
+    fields = lines[0].split()
+    if len(fields) < 11:
+        raise NllocSetupError(
+            f"3D grid header {hdr_path} line 1 has {len(fields)} field(s), expected 11 "
+            f"(numx numy numz origx origy origz dx dy dz gridType floatType): {lines[0]!r}"
+        )
+    try:
+        numx, numy, numz = int(fields[0]), int(fields[1]), int(fields[2])
+        origx, origy, origz = float(fields[3]), float(fields[4]), float(fields[5])
+        dx, dy, dz = float(fields[6]), float(fields[7]), float(fields[8])
+    except ValueError as exc:
+        raise NllocSetupError(
+            f"3D grid header {hdr_path} line 1 is malformed: {lines[0]!r}"
+        ) from exc
+    grid_type, float_type = fields[9], fields[10]
+
+    transform_line = ""
+    for line in lines[1:]:
+        if line.startswith("TRANSFORM"):
+            transform_line = line.strip()
+            break
+
+    return Grid3DHeader(
+        numx=numx,
+        numy=numy,
+        numz=numz,
+        origx=origx,
+        origy=origy,
+        origz=origz,
+        dx=dx,
+        dy=dy,
+        dz=dz,
+        grid_type=grid_type,
+        float_type=float_type,
+        transform_line=transform_line,
+    )
+
+
+def _parse_transform_simple(transform_line: str) -> tuple[float, float, float] | None:
+    """``(lat_orig, long_orig, rot_cw)`` from a ``TRANSFORM SIMPLE ...`` line
+    (``GridLib.c:593-596``: ``"TRANSFORM  %s LatOrig %lf  LongOrig %lf  RotCW
+    %lf"``), or ``None`` if ``transform_line`` isn't a ``SIMPLE`` transform
+    (including "isn't a TRANSFORM line at all", ``transform_line == ""``)."""
+    tokens = transform_line.split()
+    if len(tokens) < 2 or tokens[0] != "TRANSFORM" or tokens[1] != "SIMPLE":
+        return None
+    try:
+        lat = float(tokens[tokens.index("LatOrig") + 1])
+        lon = float(tokens[tokens.index("LongOrig") + 1])
+        rot = float(tokens[tokens.index("RotCW") + 1])
+    except (ValueError, IndexError):
+        return None
+    return (lat, lon, rot)
+
+
+def check_3d_grid_coverage(hdr_path: Path, cfg: Config, bounds: LocationGridBounds) -> None:
+    """Validate a user-supplied 3D NLLoc grid covers ``bounds`` (the eventual
+    ``LOCGRID`` volume, :func:`location_grid_bounds`) before it's linked in.
+
+    Two checks, both **fail-closed with no tolerance margin** (the design
+    note: NLLoc's own behaviour for an out-of-grid travel-time query should
+    not be relied upon). Empirically confirmed here (not just asserted)
+    against ``external/NonLinLoc/src/NLLocLib.c:1904-1911``: for a genuine
+    3D (``GRID_TIME``) travel-time grid, NLLoc rejects any observation whose
+    station's time grid doesn't entirely contain the initial ``LOCGRID``
+    (``IsGridInside``), printing ``"WARNING: initial location search grid
+    not contained inside arrival time grid, rejecting observation: <STA>
+    <PHASE>"`` -- the same *silent* (exit 0, message-level warning only,
+    easy to miss in a batch run) "0 events located" failure mode
+    docs/nlloc_interface.md's ``LOCGRID`` note already found for the 2D
+    (1D-model-derived) case.
+
+    1. **Transform match.** This project's every control file shares one
+       ``TRANS SIMPLE latOrig lonOrig 0.0`` (:func:`write_control_common`,
+       docs/nlloc_interface.md §4: ``TRANS``/``MAPLINE`` must be
+       byte-identical project-wide). The supplied grid's own ``.hdr`` line
+       self-describes the transform it was actually built with
+       (:func:`read_grid3d_hdr`'s ``transform_line``) -- resolving the
+       design note's "if the .hdr format does not self-describe its
+       transform" hedge: it does, so rather than asking the user for a
+       separate config field this validates the grid's own ``TRANSFORM``
+       against ``cfg.nlloc.grid.origin`` directly. Only ``TRANS SIMPLE`` (no
+       rotation) is supported, matching :func:`write_control_common`; any
+       other transform type, or a ``SIMPLE`` one centered elsewhere, is
+       rejected -- there is no general point-transform code in this project
+       to convert between them, and guessing wrong would silently misplace
+       every travel time.
+    2. **Spatial coverage.** The grid's own extent (``[origx, origx + dx *
+       (numx-1)]`` etc., in the now-confirmed-shared coordinate frame) must
+       *contain* ``bounds`` on every axis.
+
+    Parameters
+    ----------
+    hdr_path : pathlib.Path
+        The supplied grid's ``.hdr`` file (one wave type, e.g.
+        ``<root>.P.mod.hdr``).
+    cfg : openmeq.config.Config
+    bounds : LocationGridBounds
+        From :func:`location_grid_bounds` -- the volume the eventual
+        ``LOCGRID`` will span.
+
+    Raises
+    ------
+    openmeq.config.ConfigError
+        Naming the specific shortfall or mismatch found.
+    """
+    header = read_grid3d_hdr(hdr_path)
+
+    if header.float_type != "FLOAT":
+        raise ConfigError(
+            f"{hdr_path}: grid float type is {header.float_type!r}, but the installed NLLoc "
+            "build is FLOAT-only (external/NonLinLoc/src/CMakeLists.txt leaves "
+            "GRID_FLOAT_TYPE_DOUBLE unset) -- Grid2Time/NLLoc will refuse to read this grid."
+        )
+    if header.grid_type in _NON_MODEL_GRID_TYPES:
+        raise ConfigError(
+            f"{hdr_path}: gridType is {header.grid_type!r}, which is a travel-time/angle/"
+            "misfit grid, not a velocity or slowness model grid -- "
+            "cfg.nlloc.velocity_model.file must point at the <root>.{P,S}.mod.{hdr,buf} "
+            "grid pair Vel2Grid3D (or equivalent) produced, not a Grid2Time output."
+        )
+
+    lat0, lon0 = cfg.nlloc.grid.origin
+    parsed = _parse_transform_simple(header.transform_line)
+    if parsed is None:
+        raise ConfigError(
+            f"{hdr_path}: {header.transform_line or '(no TRANSFORM line found)'!r} is not a "
+            "'TRANSFORM SIMPLE ...' transform -- this project's control files all use "
+            f"'TRANS SIMPLE {lat0} {lon0} 0.0' (write_control_common, docs/nlloc_interface.md "
+            "§4: TRANS must be byte-identical across every control file for one project), so "
+            "a 3D grid built with a different transform (or a rotated/differently-centered "
+            "SIMPLE one) cannot be used as-is. Rebuild the grid with a matching TRANS line."
+        )
+    grid_lat, grid_lon, grid_rot = parsed
+    if (
+        abs(grid_lat - lat0) > _TRANS_ORIGIN_TOLERANCE_DEG
+        or abs(grid_lon - lon0) > _TRANS_ORIGIN_TOLERANCE_DEG
+        or grid_rot != 0.0
+    ):
+        raise ConfigError(
+            f"{hdr_path}: grid's own TRANSFORM (SIMPLE, LatOrig {grid_lat}, LongOrig "
+            f"{grid_lon}, RotCW {grid_rot}) does not match cfg.nlloc.grid.origin "
+            f"[{lat0}, {lon0}] (RotCW 0.0) -- every control file for one project must share "
+            "byte-identical TRANS (docs/nlloc_interface.md §4). Either set cfg.nlloc.grid.origin "
+            "to this grid's own LatOrig/LongOrig, or rebuild the grid with "
+            f"'TRANS SIMPLE {lat0} {lon0} 0.0'."
+        )
+
+    x_min, x_max = header.origx, header.origx + header.dx * (header.numx - 1)
+    y_min, y_max = header.origy, header.origy + header.dy * (header.numy - 1)
+    z_min, z_max = header.origz, header.origz + header.dz * (header.numz - 1)
+    eps = 1e-9
+
+    shortfalls = []
+    if x_min > bounds.x_min_km + eps or x_max < bounds.x_max_km - eps:
+        shortfalls.append(
+            f"x covers [{x_min:.3f}, {x_max:.3f}] km but location grid needs "
+            f"[{bounds.x_min_km:.3f}, {bounds.x_max_km:.3f}] km"
+        )
+    if y_min > bounds.y_min_km + eps or y_max < bounds.y_max_km - eps:
+        shortfalls.append(
+            f"y covers [{y_min:.3f}, {y_max:.3f}] km but location grid needs "
+            f"[{bounds.y_min_km:.3f}, {bounds.y_max_km:.3f}] km"
+        )
+    if z_min > bounds.z_min_km + eps or z_max < bounds.z_max_km - eps:
+        shortfalls.append(
+            f"z covers [{z_min:.3f}, {z_max:.3f}] km but location grid needs "
+            f"[{bounds.z_min_km:.3f}, {bounds.z_max_km:.3f}] km"
+        )
+    if shortfalls:
+        raise ConfigError(
+            f"3D grid {hdr_path} does not cover the location grid: " + "; ".join(shortfalls)
+        )
+
+
+def link_3d_grid(cfg: Config, paths: RunPaths, station_table: pd.DataFrame) -> None:
+    """3D counterpart of :func:`build_1d_grid`: instead of running
+    ``Vel2Grid``, validate and link in the user-supplied 3D grid
+    (``cfg.nlloc.velocity_model.file``, a root name -- PLAN.md §7: "3D: uses
+    the supplied NLLoc model grid (.hdr/.buf) directly, after checking it
+    covers the location grid").
+
+    Copies (falling back from a symlink only if ``os.symlink`` raises
+    ``OSError``, e.g. across filesystems -- same fallback
+    :func:`link_obspyck_model` already uses) ``<file>.{P,S}.mod.{hdr,buf}``
+    into ``paths.nlloc_grid_root``'s directory, renamed to the same
+    ``<root>.{P,S}.mod.{hdr,buf}`` convention :func:`build_1d_grid`
+    produces, so :func:`run_grid2time` needs no knowledge of which path
+    produced its input.
+
+    Parameters
+    ----------
+    cfg : openmeq.config.Config
+    paths : openmeq.paths.RunPaths
+    station_table : pandas.DataFrame
+
+    Raises
+    ------
+    NllocSetupError
+        If the source ``<file>.{P,S}.mod.{hdr,buf}`` files don't all exist.
+    openmeq.config.ConfigError
+        Via :func:`check_3d_grid_coverage`, for either wave type.
+    """
+    src_root = Path(cfg.nlloc.velocity_model.file)
+
+    missing = [
+        str(Path(f"{src_root}.{wave_type}.mod.{ext}"))
+        for wave_type in ("P", "S")
+        for ext in ("hdr", "buf")
+        if not Path(f"{src_root}.{wave_type}.mod.{ext}").exists()
+    ]
+    if missing:
+        raise NllocSetupError(f"supplied 3D grid missing expected file(s): {missing}")
+
+    bounds = location_grid_bounds(cfg, station_table)
+    for wave_type in ("P", "S"):
+        check_3d_grid_coverage(Path(f"{src_root}.{wave_type}.mod.hdr"), cfg, bounds)
+
+    grid_dir = paths.nlloc_grid_root.parent
+    grid_dir.mkdir(parents=True, exist_ok=True)
+    root_name = paths.nlloc_grid_root.name
+
+    for wave_type in ("P", "S"):
+        for ext in ("hdr", "buf"):
+            src = Path(f"{src_root}.{wave_type}.mod.{ext}").resolve()
+            dst = grid_dir / f"{root_name}.{wave_type}.mod.{ext}"
+            if dst.is_symlink() or dst.exists():
+                dst.unlink()
+            try:
+                dst.symlink_to(src)
+            except OSError:
+                shutil.copy2(src, dst)
+
+
+# ---------------------------------------------------------------------------
 # run_grid2time
 # ---------------------------------------------------------------------------
 
@@ -397,6 +754,29 @@ class _Grid2TimeUnit:
     root_name: str
 
 
+def _grid_mode_for_model(grid_dir: Path, root_name: str, phase: str) -> str:
+    """``GTMODE``'s ``gridMode`` field for this phase's own model grid
+    (``<root>.<phase>.mod.hdr``, already built/linked by :func:`build_1d_grid`
+    or :func:`link_3d_grid` before this is called): ``"GRID2D"`` for a
+    1D-model-derived, radially-symmetric grid (``numx == 2``, exactly
+    :func:`build_1d_grid`'s ``VGGRID`` convention), ``"GRID3D"`` for a
+    genuine 3D grid (``numx != 2``).
+
+    Verified against ``external/NonLinLoc/src/Grid2Time1.c:288-296``:
+    ``GTMODE GRID2D`` hard-errors (``"ERROR: grid xNum must be 2 for
+    gridMode GRID2D"``) unless the model grid's own ``numx`` is exactly 2,
+    while ``GTMODE GRID3D`` accepts any ``numx`` (only a warning below 3) --
+    so a single hardcoded ``GTMODE`` cannot serve both
+    :func:`build_1d_grid`'s always-``numx=2`` output and a user-supplied,
+    genuinely 3D (``numx>2``) grid; this reads the actual grid's own header
+    rather than trusting which of the two setup paths produced it (M5.3 /
+    OpenMEQ-mev.3's ``run_grid2time``-stays-shared requirement), so
+    :func:`run_grid2time` itself needs no per-path branching.
+    """
+    hdr_path = grid_dir / f"{root_name}.{phase}.mod.hdr"
+    return "GRID2D" if read_grid3d_hdr(hdr_path).numx == 2 else "GRID3D"
+
+
 def _run_one_grid2time(unit: _Grid2TimeUnit) -> str:
     """Run ``Grid2Time`` for exactly one (station, phase); the ``pmap`` worker body.
 
@@ -405,16 +785,17 @@ def _run_one_grid2time(unit: _Grid2TimeUnit) -> str:
     never contend over the same file, even though they all read the same
     (read-only) velocity grid and write into the same output directory.
     """
+    grid_dir = Path(unit.grid_dir)
+    grid_mode = _grid_mode_for_model(grid_dir, unit.root_name, unit.phase)
     ctrl_text = (
         unit.control_common + "\n"
         f"GTFILES  {unit.root_name}  {unit.root_name}  {unit.phase}\n"
-        "GTMODE GRID2D ANGLES_NO\n"
+        f"GTMODE {grid_mode} ANGLES_NO\n"
         "\n"
         f"GTSRCE  {unit.station}  LATLON  {unit.lat}  {unit.lon}  0.0  {unit.elev_km}\n"
         "\n"
         "GT_PLFD  1.0e-3  0\n"
     )
-    grid_dir = Path(unit.grid_dir)
     ctrl_path = grid_dir / f"grid2time_{unit.station}_{unit.phase}.in"
     ctrl_path.write_text(ctrl_text)
     run([str(bin_path("Grid2Time")), ctrl_path.name], cwd=grid_dir)
@@ -426,11 +807,16 @@ def run_grid2time(cfg: Config, paths: RunPaths, station_table: pd.DataFrame) -> 
 
     PLAN.md §7 / the design note: one (station, phase) pair is one unit of
     work (8 stations x 2 phases = 16 units on ``synthetic_project``); all
-    units read the same, already-built (:func:`build_1d_grid`) velocity
+    units read the same, already-built (:func:`build_1d_grid`) or
+    already-linked (:func:`link_3d_grid`, M5.3 / OpenMEQ-mev.3) velocity
     grid read-only, so they're safe to run concurrently via
-    ``openmeq.parallel.pmap``. ``Vel2Grid`` itself (a true, non-parallel
-    dependency) must already have been run -- this function does not call
-    :func:`build_1d_grid` itself.
+    ``openmeq.parallel.pmap``. Either producer (a true, non-parallel
+    dependency either way) must already have been run -- this function does
+    not call :func:`build_1d_grid`/:func:`link_3d_grid` itself, and does not
+    need to know which one produced its input: each unit reads its own
+    ``GTMODE`` (``GRID2D``/``GRID3D``) straight from the model grid's own
+    ``.hdr`` (:func:`_grid_mode_for_model`), so a 1D-derived (``numx=2``) and
+    a genuinely-3D (``numx>2``) grid both just work.
 
     Parameters
     ----------
@@ -513,14 +899,15 @@ def _obspyck_nlloc_control(cfg: Config, paths: RunPaths, station_table: pd.DataF
     **Deviation from the docs/obspyck_notes.md §5 sample**: that sample used
     ``LOCANGLES ANGLES_YES 5``, but its travel-time grids were built with
     ``GTMODE ... ANGLES_YES`` (a separate, throwaway spike model). This
-    module's own :func:`run_grid2time` uses ``GTMODE GRID2D ANGLES_NO``
-    (matching the M5.1 spike's own end-to-end example, the only take-off-
-    angle behaviour actually verified so far -- docs/nlloc_interface.md §4's
-    ``LOCANGLES`` note flags per-arrival angles as an unverified M6.1
-    follow-up), so no angle grids exist alongside the travel-time grids this
-    function's ``LOCFILES`` points at. ``LOCANGLES`` here is kept consistent
-    with that (``ANGLES_NO``) rather than requesting angle output the
-    underlying grids don't carry.
+    module's own :func:`run_grid2time` always uses ``ANGLES_NO`` (whether
+    ``GTMODE`` itself is ``GRID2D`` or ``GRID3D``, M5.3 / OpenMEQ-mev.3 --
+    :func:`_grid_mode_for_model`), matching the M5.1 spike's own end-to-end
+    example, the only take-off-angle behaviour actually verified so far --
+    docs/nlloc_interface.md §4's ``LOCANGLES`` note flags per-arrival angles
+    as an unverified M6.1 follow-up), so no angle grids exist alongside the
+    travel-time grids this function's ``LOCFILES`` points at. ``LOCANGLES``
+    here is kept consistent with that (``ANGLES_NO``) rather than requesting
+    angle output the underlying grids don't carry.
     """
     bounds = location_grid_bounds(cfg, station_table)
     spacing = cfg.nlloc.grid.spacing_km
@@ -637,14 +1024,20 @@ def link_obspyck_model(cfg: Config, paths: RunPaths, station_table: pd.DataFrame
 
 
 def setup_nlloc(cfg: Config, paths: RunPaths, *, force: bool = False) -> bool:
-    """Run the full 1D NLLoc setup: ``build_1d_grid`` + ``run_grid2time`` +
-    ``link_obspyck_model``, skipping if nothing relevant changed since the
-    last run.
+    """Run the full NLLoc setup -- ``build_1d_grid`` (``cfg.nlloc.velocity_model.type
+    == "1d"``) or ``link_3d_grid`` (``== "3d"``, M5.3 / OpenMEQ-mev.3) +
+    ``run_grid2time`` + ``link_obspyck_model`` -- skipping if nothing
+    relevant changed since the last run.
 
     Fingerprinted (``openmeq.manifest.fingerprint``) on ``cfg.nlloc``, the
-    merged station table's contents, and the velocity model file's
-    size/mtime -- any change to the grid/filter config, the station list,
-    or the layer file itself triggers a rebuild.
+    merged station table's contents, and the velocity model input's own
+    size/mtime -- any change to the grid/filter config, the station list, or
+    the velocity model input itself triggers a rebuild. For ``type == "1d"``
+    that input is the single layer file (``cfg.nlloc.velocity_model.file``);
+    for ``"3d"`` it's the four supplied ``<file>.{P,S}.mod.{hdr,buf}`` grid
+    files (the ``file`` value itself is a root name, not a file that exists
+    on its own, so fingerprinting it directly would never detect a changed
+    grid).
 
     Parameters
     ----------
@@ -663,17 +1056,27 @@ def setup_nlloc(cfg: Config, paths: RunPaths, *, force: bool = False) -> bool:
 
     table = load_station_table(cfg.stations)
 
-    fp = fingerprint(
-        cfg.nlloc,
-        table.to_dict("records"),
-        Path(cfg.nlloc.velocity_model.file),
-    )
+    is_3d = cfg.nlloc.velocity_model.type == "3d"
+    if is_3d:
+        model_root = cfg.nlloc.velocity_model.file
+        dep_paths = [
+            Path(f"{model_root}.{wave_type}.mod.{ext}")
+            for wave_type in ("P", "S")
+            for ext in ("hdr", "buf")
+        ]
+    else:
+        dep_paths = [Path(cfg.nlloc.velocity_model.file)]
+
+    fp = fingerprint(cfg.nlloc, table.to_dict("records"), dep_paths)
     manifest = StepManifest(paths, STEP_NAME)
     key = "setup"
     if not force and manifest.is_done(key, fp):
         return False
 
-    build_1d_grid(cfg, paths, table)
+    if is_3d:
+        link_3d_grid(cfg, paths, table)
+    else:
+        build_1d_grid(cfg, paths, table)
     run_grid2time(cfg, paths, table)
     link_obspyck_model(cfg, paths, table)
 
