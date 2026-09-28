@@ -385,22 +385,38 @@ file:line citations.
   `>= 0` and `< minwght`), i.e. a rejected pick would still pass the default
   filter. A pick with no `Arrival.time_weight` at all is written as `-1.0`,
   hypoDD's own "no info" sentinel (always bypasses `MINWGHT`), not `0.0`.
-- **`hypodd.ph2dt`** (extends the block above): `minwght` (0), `maxdist_km`
-  (200), `minobs` (8), `maxobs` (20) — ph2dt.inp's own bracketed-comment
-  defaults.
+- **`hypodd.ph2dt`** (extends the block above): `minwght` (0), `maxsep_km`
+  (10), `maxdist_km` (25), `minobs` (1), `maxobs` (16) — **OpenMEQ-16d.6**:
+  rescaled from ph2dt.inp's own regional-network bracketed-comment defaults
+  (`maxsep_km` 10 unscaled per the user guide; `maxdist_km` was 200,
+  `minobs`/`maxobs` were 8/20) to a small-aperture (~10-15 km) microseismic
+  network; see `docs/hypodd_tuning.md` for the full derivation and how to
+  rescale for a different network.
 - **`hypodd.weighting_rows`**: a list of `{niter, wtccp, wtccs, wrcc, wdcc,
   wtctp, wtcts, wrct, wdct, damp}` rows for hypoDD.inp's iterative
-  data-weighting table; defaults to `examples/example1/hypoDD.inp`'s real
-  5-row scheme (not hypoddpy's minimal 2-row default).
+  data-weighting table; a 5-row loose-then-tight scheme modelled on
+  `examples/example1/hypoDD.inp`'s own real scheme (not hypoddpy's minimal
+  2-row default), but **OpenMEQ-16d.6** rescales the `WDCC`/`WDCT`
+  distance-cutoff columns (bottoming out at 6 km, not example1's
+  regional-network 1-2 km) for a small-aperture network — the un-rescaled
+  version drove most events of this project's own small synthetic network
+  into air-quake removal by the final iteration. `WRCC`/`WRCT` (hypoDD's
+  dynamic, residual-stddev-relative cutoff mode since every value here is
+  `>= 1`) need no such rescaling and are kept at example1's own values. See
+  `docs/hypodd_tuning.md`.
 - **`hypodd.istart`/`isolv`/`iaq`**: solution-control defaults `2`
   (network sources), `2` (LSQR), `1` (remove airquakes).
 - **`hypodd.idat`/`ipha`/`max_station_dist_km`**: hypoDD.inp's `IDAT IPHA
   DIST` line (data type, phase selection, max cluster-centroid-to-station
-  distance); defaults `3`/`3`/`200`.
+  distance); defaults `3`/`3`/`25` (**OpenMEQ-16d.6**: `max_station_dist_km`
+  rescaled from a regional-network `200` the same way as `ph2dt.maxdist_km`
+  above).
 - **`hypodd.clustering`** (`obscc`, `obsct`, `mindist_km`, `maxdist_km`,
   `maxgap_deg`): hypoDD.inp's event-clustering line. hypoddpy's template
   hardcodes `OBSCC=OBSCT=0`, disabling clustering entirely; defaults here
-  are `0`/`8`/`-999`/`-999`/`-999`, matching example1's own working config.
+  are `0`/`8`/`-999`/`-999`/`-999`, matching example1's own working config
+  (unchanged by OpenMEQ-16d.6 — `obsct=8` already sits at the user guide's
+  own recommended `<= ph2dt.minlnk` boundary for this network).
 - `write_hypodd_inp_1d` always targets `IMOD=1` (1D, per-layer variable
   vp/vs ratio — the modern, backward-compatible choice per HYPODD's
   "Main changes in 2.1b"), references `event.sel`/`station.sel` (ph2dt's
@@ -929,4 +945,4 @@ The pytest fixture `synthetic_project` (in `tests/conftest.py`) generates it onc
 
 **Travel times (OpenMEQ-m1f.5, superseding the earlier straight-ray note)**: `tests/data/make_synthetic.py` computes exact 1D layered first-arrival travel times -- the direct ray by ray-parameter shooting (bisection on `p`) plus every candidate head/refracted wave, minimum over both -- the same physics NLLoc's `Grid2Time` (Podvin & Lecomte finite-difference eikonal) and hypoDD's 1D ray tracer solve, not a straight-chord approximation. Validated directly against a real `Grid2Time` grid built via `openmeq.nlloc_setup` (`tests/locate/test_synthetic_traveltime_validation.py`, `requires_nlloc`): agreement is <5 ms (P) / <10 ms (S) at every station-event pair once the grid is built at 0.05 km spacing (this dataset's own default 0.1 km spacing measures ~5.6/~9.8 ms -- just outside that target at the coarsest pairs -- so that validation test builds its own finer grid rather than loosening the target or the dataset's default). The remaining difference at any spacing is Grid2Time's own finite-difference discretisation error, not a modelling mismatch, confirmed by it roughly halving each time the grid spacing halves.
 
-Because of this, location/relocation tests no longer need to budget for a modelling-mismatch floor: real single-event NLLoc recovery against this dataset's own clean picks (8-station full network, 0.1 km NLLoc grid) now measures a median of ~23 m and a worst case of ~102 m across all 20 events (`tests/locate/test_nlloc_runner.py`), and the M10.4 hypoDD end-to-end test (`tests/test_relocate_hypodd_runner.py`) recovers a 0.5 km per-event input perturbation to a mean 3D error of ~58 m (20/20 events improved) -- the perturbation size the issue originally specified, no longer needing the larger ~2.2 km perturbation the old straight-ray floor had forced. Tests should budget tolerances at this new, much tighter scale (tens to a couple hundred metres, not "a few hundred m to ~1 km") -- see each test module's own tolerance comments for the current numbers and their margins.
+Because of this, location/relocation tests no longer need to budget for a modelling-mismatch floor: real single-event NLLoc recovery against this dataset's own clean picks (8-station full network, 0.1 km NLLoc grid) now measures a median of ~23 m and a worst case of ~102 m across all 20 events (`tests/locate/test_nlloc_runner.py`), and the M10.4 hypoDD end-to-end test (`tests/test_relocate_hypodd_runner.py`) recovers a 0.5 km per-event input perturbation to a mean 3D error of ~40 m on the **default** config (20/20 events improved; OpenMEQ-16d.6 removed the `weighting_rows`/`ph2dt` overrides this test previously needed once the hypodd/ph2dt defaults were retuned for a small-aperture microseismic network, `docs/hypodd_tuning.md`) -- the perturbation size the issue originally specified, no longer needing the larger ~2.2 km perturbation the old straight-ray floor had forced. Tests should budget tolerances at this new, much tighter scale (tens to a couple hundred metres, not "a few hundred m to ~1 km") -- see each test module's own tolerance comments for the current numbers and their margins.

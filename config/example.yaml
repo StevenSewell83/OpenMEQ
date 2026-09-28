@@ -235,30 +235,71 @@ hypodd:
     # so that cross-correlated pairs drawn from different events' caches
     # never hit a sampling-rate mismatch (docs/hypoddpy_audit.md defect #8).
     resample_rate_hz: 200.0
+  # --- OpenMEQ-16d.6: ph2dt/hypoDD defaults for a small-aperture (~10-15 km)
+  # microseismic array, not example1's ~100+ km regional network or ph2dt's
+  # own regional-network bracket-comment defaults. Every value below is
+  # explained at length in docs/hypodd_tuning.md, including how to rescale
+  # them for a larger/denser network; the short version of each is repeated
+  # here.
   ph2dt:
-    maxsep_km: 1.0
+    # Max. hypocentral separation (km) between a candidate event pair.
+    # ph2dt.inp's own bracket comment says "10" (a regional-network figure,
+    # already independent of network size per the user guide's own "~10 km
+    # is appropriate to start with in many regions"); kept unscaled here
+    # rather than shrunk further, since a small network's events can still
+    # be spread across most of the monitored volume (not necessarily a
+    # sub-km swarm) and every event needs at least one ph2dt neighbour
+    # candidate to be linked at all. docs/hypodd_tuning.md has the
+    # worked example of two otherwise-isolated events this value connects.
+    maxsep_km: 10.0
     maxngh: 10
-    minlnk: 8
-    # --- M9.2 / OpenMEQ-6ld.2: extends PLAN.md §3's hypodd.ph2dt block ---
+    minlnk: 8                           # >= hypodd.clustering.obsct, per the user guide (see below)
     minwght: 0                          # min pick weight kept
-    maxdist_km: 200                     # max event-pair-to-station distance, km
-    minobs: 8                           # min links per pair saved
-    maxobs: 20                          # max links per pair saved
-  # --- M9.2 / OpenMEQ-6ld.2: hypoDD.inp's weighting/solution-control block ---
-  # 5-row iterative weighting scheme, modelled on
-  # examples/example1/hypoDD.inp's real scheme (not hypoddpy's minimal 2-row
-  # default). See openmeq.config.WeightingRow for field meanings.
+    # Max. distance (km) between an event pair and a station. ~1.5x this
+    # project's own ~15 km network aperture, comfortably covering every
+    # station regardless of event depth or borehole offset, but far tighter
+    # than the 200 km regional-network bracket default so a station well
+    # outside the monitored volume (e.g. a shared station on a multi-site
+    # deployment) is excluded rather than silently diluting the solution.
+    maxdist_km: 25
+    # For a small number of events (a "tight cluster" per the user guide),
+    # the guide's own advice is MINOBS=1 (keep every linked pair -- a small
+    # network cannot afford to discard already-scarce inter-event links) and
+    # MAXOBS = number of stations (doubled here for P&S: every possible
+    # pick, not the regional-network bracket default of 20).
+    minobs: 1                           # min links per pair saved
+    maxobs: 16                          # max links per pair saved (2 phases x 8 stations)
+  # 5-row iterative weighting/re-weighting scheme: loose-then-tight, per the
+  # user guide's own recommended structure and modelled on
+  # examples/example1/hypoDD.inp's real scheme, but with the WDCC/WDCT
+  # distance cutoffs rescaled from example1's regional-network values
+  # (bottoming out at 1-2 km, a large fraction of *its* own inter-event
+  # spread) to a small-aperture network (bottoming out at 6 km, ~40% of a
+  # ~15 km aperture). Unscaled, example1's 1-2 km final cutoff disconnects
+  # most pairs in a small-aperture network by the last iteration -- this is
+  # exactly what drove most events into "air quake" removal before this
+  # issue (docs/hypodd_tuning.md has the full derivation). WRCC/WRCT are
+  # left at example1's own values: since they're each >= 1 here, hypoDD
+  # treats them as a *dynamic* cutoff (a multiple of the current residual
+  # standard deviation, not an absolute seconds threshold), so they already
+  # self-scale to whatever noise level the real data has and need no
+  # network-size rescaling. See openmeq.config.WeightingRow for field
+  # meanings and openmeq.config._default_weighting_rows for the full
+  # rationale.
   weighting_rows:
-    - {niter: 1, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5, wrct: 20, wdct: -999, damp: 20}
-    - {niter: 3, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5, wrct: 10, wdct: 4,    damp: 20}
-    - {niter: 3, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 3,    wtctp: 1.00, wtcts: 0.5, wrct: 10, wdct: 3,    damp: 20}
-    - {niter: 3, wtccp: 1,    wtccs: 0.5,   wrcc: 5,    wdcc: 2,    wtctp: 0.1,  wtcts: 0.05, wrct: 9, wdct: 2,    damp: 20}
-    - {niter: 3, wtccp: 1,    wtccs: 0.5,   wrcc: 4,    wdcc: 1,    wtctp: 0.01, wtcts: 0.005, wrct: 8, wdct: 2,   damp: 20}
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,  wrct: -999, wdct: -999, damp: 20}
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,  wrct: 10,   wdct: 10,   damp: 20}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 8,    wtctp: 1.00, wtcts: 0.5,  wrct: 8,    wdct: 8,    damp: 20}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 5,    wdcc: 6,    wtctp: 0.1,  wtcts: 0.05, wrct: 6,    wdct: 6,    damp: 20}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 4,    wdcc: 6,    wtctp: 0.01, wtcts: 0.005, wrct: 6,   wdct: 6,    damp: 20}
   istart: 2                             # 1 = from single source; 2 = from network sources
   isolv: 2                              # 1 = SVD; 2 = LSQR (scales to much larger datasets)
   # IAQ: 1 = remove air-quakes (default); 2 = keep air-quakes, reset depths;
   # 0 = legacy/undocumented "don't remove at all" (hypoDD.f:803, still
-  # functional; docs/hypoddpy_audit.md defect #4).
+  # functional; docs/hypoddpy_audit.md defect #4). "Air-quakes" are events
+  # that relocate above the model surface (z < 0) -- see docs/hypodd_tuning.md
+  # for what that means for a shallow/borehole datum, where z=0 may not be
+  # true ground level for every station.
   iaq: 1
   # --- M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" line and event-
   # clustering block. hypoddpy's template hardcodes OBSCC=OBSCT=0, disabling
@@ -266,10 +307,18 @@ hypodd:
   # instead, defaulting to examples/example1's own working OBSCT=8.
   idat: 3                                # 1 = cross-corr only; 2 = catalog only; 3 = cross & catalog
   ipha: 3                                # 1 = P only; 2 = S only; 3 = P & S
-  max_station_dist_km: 200               # max dist [km] between cluster centroid and station
+  # Max. dist [km] between cluster centroid and station (hypoDD.inp's own
+  # DIST field) -- OpenMEQ-16d.6: rescaled from 200 km (example1 itself
+  # already uses a smaller 120 km) to 25 km, matching ph2dt.maxdist_km
+  # above for the same small-network reasoning.
+  max_station_dist_km: 25
   clustering:
     obscc: 0                             # min obs/pair for cross-corr data to cluster on (0 = no clustering)
-    obsct: 8                             # min obs/pair for catalog data to cluster on (0 = no clustering)
+    # min obs/pair for catalog data to cluster on (0 = no clustering); kept
+    # <= ph2dt.minlnk above, per the user guide's own recommendation, so
+    # hypoDD's clustering doesn't require more links than ph2dt ever
+    # produces for a "strong" neighbour.
+    obsct: 8
     mindist_km: -999                     # min pair-station distance; -999 = not active
     maxdist_km: -999                     # max pair-station distance; -999 = not active
     maxgap_deg: -999                     # max azimuthal gap; -999 = not active

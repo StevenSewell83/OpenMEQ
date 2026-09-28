@@ -81,10 +81,15 @@ def test_load_example_config():
     assert cfg.magnitude.ml.window_after_s == pytest.approx(4.0)
     assert cfg.magnitude.ml.pre_filt == (0.5, 1.0, 45.0, 49.0)
     assert cfg.hypodd.ph2dt.minwght == pytest.approx(0.0)
-    assert cfg.hypodd.ph2dt.maxdist_km == pytest.approx(200.0)
-    assert cfg.hypodd.ph2dt.minobs == 8
-    assert cfg.hypodd.ph2dt.maxobs == 20
+    # OpenMEQ-16d.6: rescaled from the regional-network bracket defaults to
+    # a small-aperture (~15 km) microseismic network -- see
+    # docs/hypodd_tuning.md and openmeq.config.Ph2dtConfig's own comments.
+    assert cfg.hypodd.ph2dt.maxsep_km == pytest.approx(10.0)
+    assert cfg.hypodd.ph2dt.maxdist_km == pytest.approx(25.0)
+    assert cfg.hypodd.ph2dt.minobs == 1
+    assert cfg.hypodd.ph2dt.maxobs == 16
     assert len(cfg.hypodd.weighting_rows) == 5
+    assert cfg.hypodd.max_station_dist_km == pytest.approx(25.0)
     assert cfg.hypodd.istart == 2
     assert cfg.hypodd.isolv == 2
     assert cfg.hypodd.iaq == 1
