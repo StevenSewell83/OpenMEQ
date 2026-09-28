@@ -333,6 +333,48 @@ writers above — a distinct concern, not a competing writer):
   (reading the real catalogue/station table, deciding when to call it in
   the pipeline) is M9.5, out of scope here.
 
+**3D (IMOD=9) model coverage/registration check**, built in M9.6 /
+OpenMEQ-6ld.6 (`openmeq.relocate.hypodd_limits.check_vel3d_coverage`, same
+module as the compiled-limit checks above — a distinct concern from the
+file writers, per this section's own convention). Root-caused a real
+segfault (confirmed with a `-fcheck=all`/`-fbacktrace` debug build, never
+against the main checkout's `external/HYPODD`): hypoDD's `IMOD=9` ray
+tracer (`ray_3d.f`'s `intmap` subroutine, called from `vel3`) computes a
+node-grid lookup index directly from a query point's raw Cartesian
+coordinate with **no bounds check** before indexing the compiled
+`ixloc`/`iyloc`/`izloc` lookup arrays (`vel3d.inc`) — so any event or
+station that, once projected under hypoDD.inp's `LAT_3D LON_3D ROT_3D`
+(hypoDD's own runtime projection, `setorg.f`/`dist.f` — **not**
+`setorg_3d.f`/`disto.f`, which is unused dead code), falls outside the
+supplied `vel3D.dat`'s node domain corrupts memory instead of failing
+cleanly. This is an input problem (nothing previously checked that a
+supplied `vel3D.dat` actually covers the real network under the declared
+`LAT_3D`/`LON_3D`/`ROT_3D`), not a small-aperture-network limitation: the
+same small-aperture (~15 km, borehole+surface) geometry relocates
+successfully once the 3D model is correctly registered and sized. See
+`docs/hypodd_3d_notes.md` for the full backtrace and reproduction recipe.
+
+- `check_vel3d_coverage(vel3d_grid, lat_3d, lon_3d, rot_3d, catalog,
+  station_table)` projects every accepted event's and every station's
+  location into the model's frame (`_hypodd_sdc_xy_km`, a direct port of
+  `setorg.f`/`dist.f`, empirically verified against a real debug hypoDD
+  run's own `hypoDD.loc` output) and raises `openmeq.config.ConfigError`,
+  naming every offending station/event and which axis it falls outside of,
+  **before** hypoDD ever runs — this is the "add validation ... fails with
+  a clear error" fix path (the alternative, patching the vendored Fortran,
+  was rejected: the compiled binaries are shared build artifacts and a
+  clean input check catches the same failure earlier with a far more
+  actionable message).
+- A station's z-coordinate for this check is its §6 effective elevation,
+  clamped to `0.0` whenever negative — mirroring `getdata.f:275-278`'s own
+  silent clamp for any `IMOD` other than `5` (which includes `IMOD=9`), so
+  the check validates the coordinate hypoDD will *actually* query the
+  model at.
+- Not yet wired into any CLI (`scripts/setup_hypodd.py` is M9.5, out of
+  scope here, same as `ensure_compiled_limits` above) — a follow-up should
+  call `check_vel3d_coverage` immediately after `check_compiled_limits`
+  whenever `cfg.hypodd.velocity_model.type == "3d"`.
+
 ## 6d. NLLoc 1D/3D grids and the location-grid-bounds convention
 
 Built in M5.2 (`openmeq/nlloc_setup.py`), verified against
