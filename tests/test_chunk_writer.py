@@ -271,6 +271,16 @@ def test_one_read_per_day_group(project, monkeypatch):
     ]
     df = _detections_df(rows)
 
+    # A/B/C are hours apart (module docstring's constants), well beyond
+    # cfg.chunks.max_read_window_s's real default (600 s, M3.2 /
+    # OpenMEQ-rq8.2's sub-window-splitting memory fix -- see
+    # test_day_group_splits_into_subwindows_on_sparse_detections below for
+    # that behaviour). This test's own point predates that fix and is about
+    # day-*grouping* only (one read per day group, not per detection) --
+    # widen max_read_window_s here so it still exercises exactly that,
+    # undiluted by sub-window splitting.
+    cfg.chunks.max_read_window_s = 86400.0
+
     calls = []
     real_read = DataIndex.read
 
@@ -282,8 +292,83 @@ def test_one_read_per_day_group(project, monkeypatch):
 
     write_chunks(df, index, cfg, paths)
 
-    # All three detections fall on the same UTC day -> exactly one
-    # whole-network read for the whole group, not one per detection.
+    # All three detections fall on the same UTC day, and are all within the
+    # widened max_read_window_s above -> exactly one whole-network read for
+    # the whole group, not one per detection.
     assert len(calls) == 1
+    for ev in events:
+        assert paths.chunk_file(ev["event_id_hint"]).exists()
+
+
+# ---------------------------------------------------------------------------
+# Sub-window splitting (M3.2 / OpenMEQ-rq8.2 memory fix)
+# ---------------------------------------------------------------------------
+
+
+def test_split_detections_into_subwindows_groups_by_gap():
+    """Unit test for :func:`openmeq.chunk._split_detections_into_subwindows`."""
+    from openmeq.chunk import _split_detections_into_subwindows
+
+    t0 = UTCDateTime(2025, 1, 1, 0, 0, 0)
+    detections = [
+        {"event_id": "a", "time": str(t0)},
+        {"event_id": "b", "time": str(t0 + 100)},  # 100 s after a: same sub-window
+        {"event_id": "c", "time": str(t0 + 100 + 700)},  # 700 s after b: new sub-window
+        {"event_id": "d", "time": str(t0 + 100 + 700 + 50)},  # 50 s after c: same sub-window as c
+    ]
+
+    subwindows = _split_detections_into_subwindows(detections, max_read_window_s=600.0)
+
+    assert [[det["event_id"] for det in sub] for sub in subwindows] == [["a", "b"], ["c", "d"]]
+
+
+def test_split_detections_into_subwindows_empty_and_single():
+    from openmeq.chunk import _split_detections_into_subwindows
+
+    assert _split_detections_into_subwindows([], max_read_window_s=600.0) == []
+
+    one = [{"event_id": "a", "time": str(UTCDateTime(2025, 1, 1))}]
+    assert _split_detections_into_subwindows(one, max_read_window_s=600.0) == [one]
+
+
+def test_day_group_splits_into_subwindows_on_sparse_detections(project, monkeypatch):
+    """The actual memory fix: sparse detections within one day-group now
+    trigger more than one (smaller) read, not the single whole-day read
+    M3.1 originally always performed -- each read still covers exactly one
+    sub-window's detections (the "one read per sub-window" property), never
+    falling back to one read per detection either.
+    """
+    cfg, index, paths, truth = project
+    # A/B/C: A is ~4h46m before B; B is ~5m47s before C (test_chunk_writer.py
+    # module docstring's own documented gaps) -- with the real 600 s
+    # default, A alone starts one sub-window and B+C share a second.
+    event_ids = [_CLEAN_EVENT_A, _CLEAN_EVENT_B, _CLEAN_EVENT_C]
+    events = [_find_event(truth, eid) for eid in event_ids]
+    rows = [
+        _detection_row(
+            ev["event_id_hint"],
+            UTCDateTime(ev["origin"]["time"]),
+            ["XX.STA01"],
+            ["XX.STA01.00.HHZ"],
+        )
+        for ev in events
+    ]
+    df = _detections_df(rows)
+    assert cfg.chunks.max_read_window_s == 600.0  # the real shipped default
+
+    calls = []
+    real_read = DataIndex.read
+
+    def spy_read(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DataIndex, "read", spy_read)
+
+    write_chunks(df, index, cfg, paths)
+
+    # Two sub-windows ({A}, {B, C}), not one whole-day read and not three
+    # per-detection reads.
+    assert len(calls) == 2
     for ev in events:
         assert paths.chunk_file(ev["event_id_hint"]).exists()

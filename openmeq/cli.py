@@ -152,9 +152,17 @@ def detect(config_path: str, force: bool) -> None:
 
 @main.command()
 @_CONFIG_OPTION
-def chunk(config_path: str) -> None:
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Rerun even if chunks/completeness.csv, detections/detections.csv and "
+    "inventory/index.json are unchanged since the last run.",
+)
+def chunk(config_path: str, force: bool) -> None:
     """Per-event waveform chunk writing."""
-    _dispatch("chunk", config_path)
+    _dispatch("chunk", config_path, force=force)
 
 
 @main.command()

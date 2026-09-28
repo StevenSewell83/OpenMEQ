@@ -87,6 +87,8 @@ detection:
 chunks:
   pre_s: 30                             # seconds of context before a detection kept in the raw chunk
   post_s: 30                            # seconds of context after
+  max_read_window_s: 600                # split a day's reads into sub-windows wherever consecutive
+                                         # detections are more than this many seconds apart (memory bound)
 
 phasenet:
   target_rate_hz: 100                   # PhaseNet's trained sampling rate; other rates are decimated to this

@@ -79,6 +79,16 @@ def test_nonexistent_config_file_errors(tmp_path: Path) -> None:
 #: unrelated to CLI wiring.
 STUB_STEP_COMMANDS = [step for step in STEP_COMMANDS if step != "qc"]
 
+#: Steps that are implemented (not stubs) and have their own hard
+#: "run the previous step first" dependency check -- each fails clearly
+#: against a fresh config/example.yaml-based run directory rather than
+#: printing "not implemented" (mirrors ``detect``'s own M2.3 note below,
+#: extended by ``chunk`` in M3.2 / ``OpenMEQ-rq8.2``).
+_HARD_DEPENDENCY_STEPS = {
+    "detect": "openmeq qc",
+    "chunk": "openmeq detect",
+}
+
 
 @pytest.mark.parametrize("step", STUB_STEP_COMMANDS)
 def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: str) -> None:
@@ -87,16 +97,16 @@ def test_step_runs_to_completion_against_example_config(tmp_path: Path, step: st
 
     result = runner.invoke(main, [step, "-c", str(config_path)])
 
-    if step == "detect":
-        # `detect` (M2.3 / OpenMEQ-ujx.3) is implemented -- unlike every
-        # other still-stubbed step (`review` aside, see below) -- and has
-        # its own deliberate hard-dependency check (ARCHITECTURE.md §2/
-        # §4.2): a fresh config/example.yaml-based run directory has never
-        # had `openmeq qc` (M1.7, still a stub in this test file's own
-        # scope) produce inventory/index.json / qc/channel_flags.json, so
-        # this fails clearly rather than "not implemented".
+    if step in _HARD_DEPENDENCY_STEPS:
+        # `detect` (M2.3 / OpenMEQ-ujx.3) and `chunk` (M3.2 /
+        # OpenMEQ-rq8.2) are implemented -- unlike every other still-stubbed
+        # step (`review` aside, see below) -- and each has its own
+        # deliberate hard-dependency check (ARCHITECTURE.md §2): a fresh
+        # config/example.yaml-based run directory has never had the
+        # previous step's outputs built, so this fails clearly rather than
+        # "not implemented".
         assert result.exit_code != 0, result.output
-        assert "openmeq qc" in result.output
+        assert _HARD_DEPENDENCY_STEPS[step] in result.output
     else:
         assert result.exit_code == 0, result.output
 
@@ -150,27 +160,29 @@ def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None
     """Regression check for the "no duplicate/stale handler" logging pitfall
     when several subcommands run in one process (as CliRunner does here).
 
-    Uses two still-stub steps (``chunk``/``detect``) rather than ``qc``
+    Uses two still-*stub* steps (``pick``/``locate``) rather than ``qc``
     (M1.7, ``OpenMEQ-5nl.7``): ``qc`` is now a real pipeline and
     config/example.yaml's paths don't exist on disk, so invoking it here
-    would fail for reasons unrelated to this test's own logging concern."""
+    would fail for reasons unrelated to this test's own logging concern.
+    ``chunk``/``detect`` (the pair this test originally used) are both real
+    pipelines as of M2.3/M3.2 with their own hard "run the previous step
+    first" dependency checks (see ``_HARD_DEPENDENCY_STEPS`` above), so
+    both would now fail here too -- still fine for this test's own concern
+    (log-file separation doesn't depend on either step's success), but
+    ``pick``/``locate`` keep this test's own point ("two subcommands in one
+    process") uncoupled from any other step's own implementation state.
+    """
     config_path, output_dir = _patched_example_config(tmp_path)
     runner = CliRunner()
 
-    result_chunk = runner.invoke(main, ["chunk", "-c", str(config_path)])
-    result_detect = runner.invoke(main, ["detect", "-c", str(config_path)])
+    result_pick = runner.invoke(main, ["pick", "-c", str(config_path)])
+    result_locate = runner.invoke(main, ["locate", "-c", str(config_path)])
 
-    assert result_chunk.exit_code == 0, result_chunk.output
-    # `detect` (M2.3) fails here since `chunk` doesn't produce
-    # inventory/index.json / qc/channel_flags.json -- see
-    # test_step_runs_to_completion_against_example_config's own "detect"
-    # branch. The point of this test (no duplicate/stale log handler across
-    # two subcommands in one process) doesn't depend on `detect` succeeding,
-    # only on each step's log file being separate and correctly named.
-    assert result_detect.exit_code != 0, result_detect.output
+    assert result_pick.exit_code == 0, result_pick.output
+    assert result_locate.exit_code == 0, result_locate.output
 
-    chunk_log = (output_dir / "logs" / "chunk.log").read_text()
-    detect_log = (output_dir / "logs" / "detect.log").read_text()
-    assert "openmeq chunk" in chunk_log
-    assert "openmeq detect" in detect_log
-    assert "openmeq detect" not in chunk_log
+    pick_log = (output_dir / "logs" / "pick.log").read_text()
+    locate_log = (output_dir / "logs" / "locate.log").read_text()
+    assert "openmeq pick" in pick_log
+    assert "openmeq locate" in locate_log
+    assert "openmeq locate" not in pick_log
