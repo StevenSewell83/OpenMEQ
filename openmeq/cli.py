@@ -33,6 +33,11 @@ and its own manifest-based "skip unchanged" check applies exactly as it
 would standalone). :func:`run_all` is the plain, CliRunner-independent
 entry point the ``run`` command's body calls -- see its own docstring for
 the step sequence, the ``review`` branching rule and failure handling.
+
+``diagnostics funnel`` (OpenMEQ-02o.8) writes the run-level
+``diagnostics/event_funnel.{png,csv}`` (:mod:`openmeq.run_diagnostics`) on
+demand; ``openmeq run`` also writes it at the end of every run (successful
+or not) when ``cfg.diagnostics.extended_enabled("run")``.
 """
 
 from __future__ import annotations
@@ -345,6 +350,10 @@ def run_all(
     attempted) and :class:`StepFailed` is raised, naming the failing step
     and the ``--from`` option to resume with.
 
+    Either way, the run-level event funnel (:mod:`openmeq.run_diagnostics`)
+    is written last when ``cfg.diagnostics.extended_enabled("run")``; it
+    never raises, so it cannot change the outcome.
+
     Parameters
     ----------
     cfg : openmeq.config.Config
@@ -405,6 +414,7 @@ def run_all(
             configure_logging(paths, "run")
             run_logger.error("openmeq run: step %r failed after %.2fs: %s", step, elapsed, exc)
             click.echo(_format_summary_table(outcomes))
+            _maybe_run_diagnostics(cfg, paths)
             raise StepFailed(step, config_path, exc) from exc
         elapsed = time.perf_counter() - t0
         outcomes.append(StepOutcome(step, status, detail, elapsed))
@@ -413,7 +423,24 @@ def run_all(
     total = sum(o.elapsed_s for o in outcomes)
     run_logger.info("openmeq run: done (%d step(s), %.2fs total)", len(outcomes), total)
     click.echo(_format_summary_table(outcomes))
+    _maybe_run_diagnostics(cfg, paths)
     return RunAllResult(outcomes=outcomes)
+
+
+def _maybe_run_diagnostics(cfg: Config, paths: RunPaths) -> None:
+    """Write the run-level event funnel (OpenMEQ-02o.8) if
+    ``cfg.diagnostics.extended_enabled("run")`` -- after a full run and after
+    a failed partial one alike. Never raises: a diagnostic can't change the
+    run's outcome (:func:`openmeq.run_diagnostics.make_event_funnel` already
+    swallows its own errors; this also guards the import)."""
+    if not cfg.diagnostics.extended_enabled("run"):
+        return
+    try:
+        from openmeq.run_diagnostics import make_event_funnel
+
+        make_event_funnel(cfg, paths)
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never fail the run
+        get_logger("run").warning("openmeq run: event funnel diagnostic failed: %s", exc)
 
 
 def _format_summary_table(outcomes: list[StepOutcome]) -> str:
@@ -637,6 +664,31 @@ def run(
         )
     except StepFailed as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@main.group()
+def diagnostics() -> None:
+    """Run-level diagnostics, generated standalone from a run's on-disk outputs."""
+
+
+@diagnostics.command("funnel")
+@_CONFIG_OPTION
+def diagnostics_funnel(config_path: str) -> None:
+    """Event counts per stage -> diagnostics/event_funnel.{png,csv}.
+
+    Always written when asked for here (``cfg.diagnostics.run`` only gates
+    the automatic copy at the end of ``openmeq run``).
+    """
+    from openmeq.run_diagnostics import make_event_funnel
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    configure_logging(paths, "run")
+    png = make_event_funnel(cfg, paths)
+    if png is None:
+        raise click.ClickException(
+            f"openmeq diagnostics funnel: failed (see {paths.log_file('run')})"
+        )
+    click.echo(f"wrote {png} and {png.with_suffix('.csv')}")
 
 
 if __name__ == "__main__":

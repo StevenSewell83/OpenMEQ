@@ -297,6 +297,15 @@ class RunPaths:
     def catalog_dd_xml(self) -> Path:
         return self.root / "relocate" / "catalog_dd.xml"
 
+    # -- run-level diagnostics (OpenMEQ-02o.8, ``openmeq.run_diagnostics``) ------------
+
+    @property
+    def run_diagnostics_dir(self) -> Path:
+        """Top-level ``diagnostics/`` -- cross-step figures (e.g. the event
+        funnel), as opposed to every step's own :meth:`diagnostics_dir`.
+        Not part of :meth:`ensure`; its writer creates it on demand."""
+        return self.root / "diagnostics"
+
     # -- per-key helper methods ----------------------------------------------------
 
     def chunk_file(self, event_id: str) -> Path:
