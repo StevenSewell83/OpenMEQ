@@ -21,12 +21,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from obspy import Catalog
 from obspy.core.event import Pick, WaveformStreamID
 
 from openmeq.catalog import make_event, write_catalog
 from openmeq.locate.diagnostics import make_locate_diagnostics
+from openmeq.locate.diagnostics_extended import STATION_RESIDUAL_COLUMNS, extended_dir
 from openmeq.locate.locate_step import run_locate
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "data"))
@@ -181,6 +183,38 @@ def test_diagnostics_outputs_and_summary(locate_diagnostics_result):
     assert metrics["passA_residual_S_median_s"] == ""
 
     assert int(metrics["total_picks_removed"]) >= 1
+
+
+def test_extended_diagnostics_from_real_run(locate_diagnostics_result):
+    """OpenMEQ-02o.5: real NLLoc arrivals populate ``PassDiagnostics.distances_km``
+    for every residual, and enabling ``diagnostics.locate.extended`` writes the
+    extended set (per-station CSV sane) alongside the baseline."""
+    cfg, paths, result = locate_diagnostics_result
+
+    for diag_map in (result.pass_a, result.pass_b):
+        for d in diag_map.values():
+            assert set(d.distances_km) == set(d.residuals)
+            assert all(0.0 <= km < 1000.0 for km in d.distances_km.values())
+    assert any(d.distances_km for d in result.pass_b.values())
+
+    cfg = cfg.model_copy(deep=True)
+    cfg.diagnostics.locate.extended = True
+    make_locate_diagnostics(paths, cfg, result)
+    out = extended_dir(paths)
+    for pass_label in ("A", "B"):
+        for name in (
+            "res_vs_distance.png",
+            "station_res_map.png",
+            "station_residuals.csv",
+            "depth_hist_grid.png",
+        ):
+            assert (out / f"pass{pass_label}_{name}").is_file()
+
+    table = pd.read_csv(out / "passB_station_residuals.csv")
+    assert list(table.columns) == STATION_RESIDUAL_COLUMNS
+    assert set(table["phase"]) == {"P", "S"}
+    assert (table["n"] >= 1).all()
+    assert table["mean"].abs().max() < 1.0
 
 
 def test_diagnostics_zero_rejection_does_not_raise(nlloc_grids):

@@ -115,6 +115,14 @@ class PassDiagnostics:
         ``Arrival.pick_id`` resolution.
     n_picks_removed : int
         ``len(pass.removed)``.
+    distances_km : dict[str, float]
+        ``seed_id -> epicentral distance (km)`` for every pick in
+        ``residuals``, read off the same last iteration's ``Origin``
+        arrivals (``Arrival.distance``, already km per
+        ``openmeq.locate.nlloc_runner.locate_event``). Added for the
+        extended QAQC residual-vs-distance plot (OpenMEQ-02o.5); defaults
+        to empty so every existing constructor call is unaffected. A seed
+        id with no arrival distance is simply absent.
     """
 
     event_id: str
@@ -134,6 +142,28 @@ class PassDiagnostics:
     residuals: dict[str, float] = field(default_factory=dict)
     phase_by_seed_id: dict[str, str] = field(default_factory=dict)
     n_picks_removed: int = 0
+    distances_km: dict[str, float] = field(default_factory=dict)
+
+
+def _arrival_distances_km(event: Event, origin) -> dict[str, float]:
+    """``seed_id -> Arrival.distance`` (km) for ``origin``'s arrivals, in-worker.
+
+    Matches each arrival to its pick by ``pick_id`` string against
+    ``event.picks``' own ``resource_id``s rather than via
+    ``get_referred_object()`` -- same in-worker rule as the module
+    docstring, and immune to the resource registry altogether.
+    """
+    if origin is None:
+        return {}
+    seed_by_rid = {str(p.resource_id): p.waveform_id.id for p in event.picks}
+    out: dict[str, float] = {}
+    for arrival in origin.arrivals:
+        if arrival.distance is None or arrival.pick_id is None:
+            continue
+        seed_id = seed_by_rid.get(str(arrival.pick_id))
+        if seed_id is not None:
+            out[seed_id] = float(arrival.distance)
+    return out
 
 
 @dataclass
@@ -223,6 +253,7 @@ def _pass_diagnostics(event: Event, result: PassAResult | PassBResult | None) ->
         stabilized = not history[-1].removed and history[-1].nlloc_failed_reason is None
 
     phase_by_seed_id = {p.waveform_id.id: p.phase_hint for p in event.picks}
+    distances_km = _arrival_distances_km(event, history[-1].origin) if history else {}
 
     return PassDiagnostics(
         event_id=eid,
@@ -242,6 +273,7 @@ def _pass_diagnostics(event: Event, result: PassAResult | PassBResult | None) ->
         residuals=residuals,
         phase_by_seed_id=phase_by_seed_id,
         n_picks_removed=len(result.removed),
+        distances_km=distances_km,
     )
 
 
