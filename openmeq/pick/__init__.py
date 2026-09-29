@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from openmeq.chunk_diagnostics import make_chunk_pn_extended_diagnostics
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
 from openmeq.pick.diagnostics import make_pick_diagnostics
@@ -153,6 +154,8 @@ def run(
     station_table = compute_station_table(cfg.stations)
 
     prepare_all(cfg, paths, event_ids, station_table=station_table)
+    # Chunk-step extended QAQC that needs chunks_pn/ (gated by diagnostics.chunk).
+    make_chunk_pn_extended_diagnostics(cfg, paths, event_ids)
     picks_csv = run_phasenet(paths, cfg)
     catalog = build_catalog(picks_csv, paths, cfg, station_table=station_table)
     write_catalog_picks(catalog, paths)
