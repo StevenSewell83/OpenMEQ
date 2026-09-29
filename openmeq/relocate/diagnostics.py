@@ -72,6 +72,7 @@ from openmeq.log import get_logger
 from openmeq.plotting import plot_hist, plot_map_sections, plot_timeseries
 
 if TYPE_CHECKING:
+    from openmeq.config import Config
     from openmeq.paths import RunPaths
 
 logger = get_logger("relocate.diagnostics")
@@ -104,6 +105,12 @@ class HypoddIterationRow:
     os_m: float | None
     aq: float | None
     cnd: float | None
+    #: The row's second column (``str3``, ``hypoDD.f:989-994``): the
+    #: updated-iteration count ``iter - jiter``, or ``None`` when hypoDD
+    #: printed it blank (an air-quake iteration, no location update). Used
+    #: by :mod:`openmeq.relocate.extended_diagnostics` to map rows to
+    #: weighting sets.
+    updated_iteration: int | None = None
 
 
 def _value_schema(header_tokens: list[str]) -> list[str]:
@@ -175,8 +182,13 @@ def parse_hypodd_log_iterations(path: Path | str) -> list[HypoddIterationRow]:
         except ValueError:
             continue
 
+        updated_iteration: int | None = None
         if len(tokens) == expected_with_str3:
             value_tokens = tokens[2:]
+            try:
+                updated_iteration = int(tokens[1])
+            except ValueError:
+                updated_iteration = None
         elif len(tokens) == expected_without_str3:
             value_tokens = tokens[1:]
         else:
@@ -203,6 +215,7 @@ def parse_hypodd_log_iterations(path: Path | str) -> list[HypoddIterationRow]:
             os_m=parsed.get("os"),
             aq=parsed.get("aq"),
             cnd=parsed.get("cnd"),
+            updated_iteration=updated_iteration,
         )
 
     return [rows[k] for k in sorted(rows)]
@@ -251,6 +264,9 @@ class RelocateDiagnosticsResult:
     n_cc_observations: int
     iteration_rows: list[HypoddIterationRow] = field(default_factory=list)
     iteration_plots_written: bool = False
+    #: File names written under ``diagnostics/extended/`` (OpenMEQ-02o.7);
+    #: empty when extended QAQC is disabled.
+    extended_written: list[str] = field(default_factory=list)
 
 
 _SUMMARY_COLUMNS = [
@@ -274,7 +290,9 @@ _SUMMARY_COLUMNS = [
 ]
 
 
-def write_relocate_diagnostics(paths: RunPaths) -> RelocateDiagnosticsResult:
+def write_relocate_diagnostics(
+    paths: RunPaths, cfg: Config | None = None
+) -> RelocateDiagnosticsResult:
     """Write ``relocate/diagnostics/`` (PLAN.md §5's hypoDD row, plus
     OpenMEQ-16d.6's EV/AQ/CND note).
 
@@ -307,9 +325,17 @@ def write_relocate_diagnostics(paths: RunPaths) -> RelocateDiagnosticsResult:
       location, relative shift, and the per-event hypoDD QC extras
       (§6h: ``hypodd_mag``/``hypodd_nccp``/.../``hypodd_cluster_id``).
 
+    If ``cfg`` is given and ``cfg.diagnostics.extended_enabled("relocate")``
+    is true, also writes ``diagnostics/extended/``
+    (`openmeq.relocate.extended_diagnostics.write_relocate_extended_diagnostics`,
+    OpenMEQ-02o.7) -- never raises from there; the baseline set above is
+    identical either way.
+
     Parameters
     ----------
     paths : openmeq.paths.RunPaths
+    cfg : openmeq.config.Config, optional
+        Only needed for the extended set; ``None`` writes the baseline only.
 
     Returns
     -------
@@ -564,6 +590,17 @@ def write_relocate_diagnostics(paths: RunPaths) -> RelocateDiagnosticsResult:
     df = pd.DataFrame(summary_rows, columns=_SUMMARY_COLUMNS)
     df.to_csv(diagnostics_dir / "summary.csv", index=False, columns=_SUMMARY_COLUMNS)
 
+    extended_written: list[str] = []
+    if cfg is not None and cfg.diagnostics.extended_enabled("relocate"):
+        from openmeq.relocate.extended_diagnostics import write_relocate_extended_diagnostics
+
+        try:
+            extended_written = write_relocate_extended_diagnostics(
+                cfg, paths, iteration_rows=iteration_rows
+            )
+        except Exception as exc:  # noqa: BLE001 -- extended QAQC must never fail the step
+            logger.warning("relocate extended diagnostics failed: %s: %s", type(exc).__name__, exc)
+
     return RelocateDiagnosticsResult(
         diagnostics_dir=diagnostics_dir,
         n_relocated=n_relocated,
@@ -571,4 +608,5 @@ def write_relocate_diagnostics(paths: RunPaths) -> RelocateDiagnosticsResult:
         n_cc_observations=len(cc_values),
         iteration_rows=iteration_rows,
         iteration_plots_written=iteration_plots_written,
+        extended_written=extended_written,
     )

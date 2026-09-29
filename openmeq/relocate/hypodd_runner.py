@@ -747,6 +747,22 @@ def _run_hypodd_clustered(
             combined_lines.append(line)
 
     (work_dir / "hypoDD.reloc").write_text("".join(combined_lines))
+
+    # Also keep every cluster's final residuals (hypoDD.f:1265-1276) as one
+    # merged relocate/work/hypoDD.res before the per-cluster directories go
+    # (OpenMEQ-02o.7's extended res_final_by_type.png reads it). This is
+    # plain concatenation: each hypoDD.res line already carries its own
+    # C1/C2 CUSPIDs, and the files have no header.
+    res_parts: list[str] = []
+    for cdir in cluster_dirs:
+        res_path = cdir / "hypoDD.res"
+        if res_path.is_file():
+            text = res_path.read_text()
+            if text and not text.endswith("\n"):
+                text += "\n"
+            res_parts.append(text)
+    (work_dir / "hypoDD.res").write_text("".join(res_parts))
+
     for cdir in cluster_dirs:
         shutil.rmtree(cdir, ignore_errors=True)
     return nclust
