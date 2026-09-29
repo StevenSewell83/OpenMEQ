@@ -223,3 +223,20 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `hypodd.clustering.maxdist_km` | float | `-999` | hypoDD `MAXDIST` -- max. pair-station distance (km) for clustering; `-999` = not active. |
 | `hypodd.clustering.maxgap_deg` | float | `-999` | hypoDD `MAXGAP` -- max. azimuthal gap (degrees) for clustering; `-999` = not active. |
 | `hypodd.parallel_clusters` | bool | `False` | Opt-in/experimental (boolean, default `false`): relocate each of hypoDD's own event clusters (`OBSCC`/`OBSCT` above) as an independent `hypoDD` subprocess in parallel, then merge `hypoDD.reloc` (ARCHITECTURE.md §6h). |
+
+## `diagnostics` -- optional extended QAQC figures (every step except `qc`)
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `diagnostics.extended` | bool | `False` | Default for every step's opt-in extended QAQC figures (written to `<step>/diagnostics/extended/`); the always-on baseline diagnostics are unaffected. |
+| `diagnostics.n_examples` | int | `10` | Number of sample events for per-event waveform QAQC figures. |
+| `diagnostics.detect.extended` | bool \| None | `None` | Extended-QAQC override for `detect` (STA/LTA characteristic-function examples, per-station trigger-rate heatmap); unset = inherit `diagnostics.extended`. |
+| `diagnostics.chunk.extended` | bool \| None | `None` | Extended-QAQC override for `chunk` (component coverage matrix, raw vs PhaseNet-prepped chunk examples); unset = inherit `diagnostics.extended`. |
+| `diagnostics.pick.extended` | bool \| None | `None` | Extended-QAQC override for `pick` (zoomed pick panels, pre-location Wadati diagram, pick offset from detection time); unset = inherit `diagnostics.extended`. |
+| `diagnostics.pick.pick_zoom.half_window_s` | float | `2.0` | Half-width of each zoomed pick panel around the pick time (s). |
+| `diagnostics.pick.pick_zoom.n_events` | int | `10` | Number of sample events to draw zoomed pick panels for. |
+| `diagnostics.pick.pick_zoom.show_rejected` | bool | `False` | Also draw (greyed) picks dropped by the pick step's probability/duplicate filtering (boolean). |
+| `diagnostics.locate.extended` | bool \| None | `None` | Extended-QAQC override for `locate` (residual vs distance, station mean-residual map, depth histogram vs grid/model); unset = inherit `diagnostics.extended`. |
+| `diagnostics.magnitude.extended` | bool \| None | `None` | Extended-QAQC override for `magnitude` (station ML residual vs distance, GR with Mc/b-value, Wood-Anderson amplitude windows); unset = inherit `diagnostics.extended`. |
+| `diagnostics.relocate.extended` | bool \| None | `None` | Extended-QAQC override for `relocate` (dt.cc - dt.ct histogram, hypoDD.res residuals by data type, per-iteration mean shifts); unset = inherit `diagnostics.extended`. |
+| `diagnostics.run.extended` | bool \| None | `None` | Extended-QAQC override for `run` (event-count funnel across every stage of `openmeq run`); unset = inherit `diagnostics.extended`. |

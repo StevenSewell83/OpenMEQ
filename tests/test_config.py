@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from openmeq.config import Config, ConfigError, load_config
+from openmeq.config import DIAGNOSTIC_STEPS, Config, ConfigError, DiagnosticsConfig, load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIG = REPO_ROOT / "config" / "example.yaml"
@@ -337,3 +337,26 @@ def test_pydantic_validation_error_is_the_cause(tmp_path):
     with pytest.raises(ConfigError) as excinfo:
         load_config(path)
     assert isinstance(excinfo.value.__cause__, ValidationError)
+
+
+def test_diagnostics_extended_defaults_off():
+    cfg = load_config(EXAMPLE_CONFIG)
+    for step in DIAGNOSTIC_STEPS:
+        assert cfg.diagnostics.extended_enabled(step) is False
+    assert cfg.diagnostics.pick.pick_zoom.half_window_s == 2.0
+
+
+def test_diagnostics_step_override_beats_global():
+    diag = DiagnosticsConfig(extended=True, pick={"extended": False}, relocate={"extended": True})
+    assert diag.extended_enabled("detect") is True
+    assert diag.extended_enabled("pick") is False
+    diag = DiagnosticsConfig(extended=False, relocate={"extended": True})
+    assert diag.extended_enabled("relocate") is True
+    assert diag.extended_enabled("locate") is False
+
+
+def test_diagnostics_unknown_step_rejected():
+    with pytest.raises(ValueError, match="unknown diagnostics step"):
+        DiagnosticsConfig().extended_enabled("qc")
+    with pytest.raises(ValidationError):
+        DiagnosticsConfig(pick={"pick_zoom": {"half_window_s": 0}})

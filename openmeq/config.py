@@ -842,6 +842,65 @@ class HypoddConfig(_StrictModel):
 
 
 # ---------------------------------------------------------------------------
+# diagnostics (OpenMEQ-02o: optional extended QAQC figures)
+# ---------------------------------------------------------------------------
+
+
+#: Steps with an opt-in extended-QAQC figure set (``qc`` is itself QAQC and
+#: has none; ``run`` is the cross-step ``openmeq run`` summary).
+DIAGNOSTIC_STEPS: tuple[str, ...] = (
+    "detect",
+    "chunk",
+    "pick",
+    "locate",
+    "magnitude",
+    "relocate",
+    "run",
+)
+
+
+class StepDiagnosticsConfig(_StrictModel):
+    # None = inherit ``diagnostics.extended``; true/false overrides it for this step.
+    extended: bool | None = None
+
+
+class PickZoomConfig(_StrictModel):
+    half_window_s: float = Field(default=2.0, gt=0)
+    n_events: int = Field(default=10, ge=1)
+    show_rejected: bool = False
+
+
+class PickDiagnosticsConfig(StepDiagnosticsConfig):
+    pick_zoom: PickZoomConfig = Field(default_factory=PickZoomConfig)
+
+
+class DiagnosticsConfig(_StrictModel):
+    """Opt-in extended QAQC figures, on top of every step's always-on
+    baseline ``<step>/diagnostics/`` set. Extended figures go to
+    ``<step>/diagnostics/extended/``."""
+
+    extended: bool = False
+    n_examples: int = Field(default=10, ge=1)
+    detect: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    chunk: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    pick: PickDiagnosticsConfig = Field(default_factory=PickDiagnosticsConfig)
+    locate: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    magnitude: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    relocate: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    run: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+
+    def extended_enabled(self, step: str) -> bool:
+        """Whether ``step``'s extended QAQC figures should be written: the
+        step's own ``extended`` if set, else the global ``extended``."""
+        if step not in DIAGNOSTIC_STEPS:
+            raise ValueError(
+                f"unknown diagnostics step {step!r} (choices: {', '.join(DIAGNOSTIC_STEPS)})"
+            )
+        override = getattr(self, step).extended
+        return self.extended if override is None else override
+
+
+# ---------------------------------------------------------------------------
 # top-level Config
 # ---------------------------------------------------------------------------
 
@@ -859,6 +918,7 @@ class Config(_StrictModel):
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     magnitude: MagnitudeConfig = Field(default_factory=MagnitudeConfig)
     hypodd: HypoddConfig
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self, info) -> Config:

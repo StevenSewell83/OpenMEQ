@@ -400,6 +400,37 @@ MEANINGS: dict[str, str] = {
     "hypodd.parallel_clusters": "Opt-in/experimental (boolean, default `false`): relocate each of "
     "hypoDD's own event clusters (`OBSCC`/`OBSCT` above) as an independent `hypoDD` subprocess in "
     "parallel, then merge `hypoDD.reloc` (ARCHITECTURE.md §6h).",
+    # --- diagnostics ---
+    "diagnostics.extended": "Default for every step's opt-in extended QAQC figures (written to "
+    "`<step>/diagnostics/extended/`); the always-on baseline diagnostics are unaffected.",
+    "diagnostics.n_examples": "Number of sample events for per-event waveform QAQC figures.",
+    "diagnostics.detect.extended": "Extended-QAQC override for `detect` "
+    "(STA/LTA characteristic-function examples, per-station trigger-rate heatmap); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.chunk.extended": "Extended-QAQC override for `chunk` "
+    "(component coverage matrix, raw vs PhaseNet-prepped chunk examples); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.pick.extended": "Extended-QAQC override for `pick` "
+    "(zoomed pick panels, pre-location Wadati diagram, pick offset from detection time); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.locate.extended": "Extended-QAQC override for `locate` "
+    "(residual vs distance, station mean-residual map, depth histogram vs grid/model); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.magnitude.extended": "Extended-QAQC override for `magnitude` "
+    "(station ML residual vs distance, GR with Mc/b-value, Wood-Anderson amplitude windows); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.relocate.extended": "Extended-QAQC override for `relocate` "
+    "(dt.cc - dt.ct histogram, hypoDD.res residuals by data type, per-iteration mean shifts); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.run.extended": "Extended-QAQC override for `run` "
+    "(event-count funnel across every stage of `openmeq run`); "
+    "unset = inherit `diagnostics.extended`.",
+    "diagnostics.pick.pick_zoom.half_window_s": "Half-width of each zoomed pick panel around "
+    "the pick time (s).",
+    "diagnostics.pick.pick_zoom.n_events": "Number of sample events to draw zoomed pick "
+    "panels for.",
+    "diagnostics.pick.pick_zoom.show_rejected": "Also draw (greyed) picks dropped by the pick "
+    "step's probability/duplicate filtering (boolean).",
 }
 
 
@@ -507,6 +538,7 @@ SECTION_TITLES: dict[str, str] = {
     "review": "`review` -- manual ObsPyck review (`openmeq review`)",
     "magnitude": "`magnitude` -- local magnitude (`openmeq magnitude`)",
     "hypodd": "`hypodd` -- hypoDD relocation (`openmeq relocate`, `scripts/setup_hypodd.py`)",
+    "diagnostics": "`diagnostics` -- optional extended QAQC figures (every step except `qc`)",
 }
 
 
