@@ -108,7 +108,8 @@ def run(
        :func:`~openmeq.pick.to_quakeml.write_catalog_picks` (M4.4) ->
        ``pick/catalog_picks.xml``.
     6. :func:`openmeq.pick.diagnostics.make_pick_diagnostics` (M4.4) ->
-       ``pick/diagnostics/``.
+       ``pick/diagnostics/`` (plus the opt-in ``extended/`` set when
+       ``cfg.diagnostics.extended_enabled("pick")``, OpenMEQ-02o.4).
     7. Marks the manifest entry done and logs the elapsed time.
 
     Parameters
@@ -157,9 +158,10 @@ def run(
     # Chunk-step extended QAQC that needs chunks_pn/ (gated by diagnostics.chunk).
     make_chunk_pn_extended_diagnostics(cfg, paths, event_ids)
     picks_csv = run_phasenet(paths, cfg)
-    catalog = build_catalog(picks_csv, paths, cfg, station_table=station_table)
+    rejected: list[dict] = []
+    catalog = build_catalog(picks_csv, paths, cfg, station_table=station_table, rejected=rejected)
     write_catalog_picks(catalog, paths)
-    make_pick_diagnostics(paths, catalog)
+    make_pick_diagnostics(paths, catalog, cfg, rejected=rejected)
 
     manifest.mark_done(MANIFEST_KEY, fp)
 

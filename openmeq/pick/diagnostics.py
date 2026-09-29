@@ -27,6 +27,10 @@ Outputs (``pick/diagnostics/``, ARCHITECTURE.md §3)
 - ``summary.csv``: ``metric,value`` rows (event/pick counts, mean
   probability by phase), matching every other step's diagnostics summary
   convention (e.g. ``openmeq.detect.diagnostics``, ``openmeq.chunk_diagnostics``).
+- ``extended/`` (opt-in, ``cfg.diagnostics.extended_enabled("pick")``):
+  ``pick_zoom_<event_id>.png``, ``wadati_prelocate.png``,
+  ``pick_offset_hist.png`` -- see :mod:`openmeq.pick.extended_diagnostics`.
+  Never written when ``make_pick_diagnostics`` is given no ``cfg``.
 
 Probability-trace overlay (``result.h5``, optional)
 --------------------------------------------------------
@@ -70,6 +74,7 @@ if TYPE_CHECKING:
     from obspy import Catalog
     from obspy.core.event import Event
 
+    from openmeq.config import Config
     from openmeq.paths import RunPaths
 
 logger = get_logger("pick.diagnostics")
@@ -335,7 +340,13 @@ def _make_example_plots(paths: RunPaths, catalog: Catalog, diagnostics_dir: Path
 # ---------------------------------------------------------------------------
 
 
-def make_pick_diagnostics(paths: RunPaths, catalog: Catalog) -> Path:
+def make_pick_diagnostics(
+    paths: RunPaths,
+    catalog: Catalog,
+    cfg: Config | None = None,
+    *,
+    rejected: list[dict] | None = None,
+) -> Path:
     """Build every ``pick/diagnostics/`` output from an already-built catalogue.
 
     Never recomputes picking or conversion -- purely reads ``catalog``
@@ -348,6 +359,14 @@ def make_pick_diagnostics(paths: RunPaths, catalog: Catalog) -> Path:
     ----------
     paths : openmeq.paths.RunPaths
     catalog : obspy.Catalog
+    cfg : openmeq.config.Config, optional
+        Enables the opt-in ``extended/`` set when
+        ``cfg.diagnostics.extended_enabled("pick")``
+        (:func:`openmeq.pick.extended_diagnostics.make_pick_extended_diagnostics`);
+        omitted, only the baseline set is written.
+    rejected : list of dict, keyword-only, optional
+        :func:`~openmeq.pick.to_quakeml.build_catalog`'s ``rejected=``
+        records, forwarded to the extended ``pick_zoom`` figures.
 
     Returns
     -------
@@ -367,6 +386,12 @@ def make_pick_diagnostics(paths: RunPaths, catalog: Catalog) -> Path:
     _write_summary(df, catalog, diagnostics_dir / "summary.csv")
 
     _make_example_plots(paths, catalog, diagnostics_dir)
+
+    if cfg is not None:
+        # Deferred: extended_diagnostics imports helpers from this module.
+        from openmeq.pick.extended_diagnostics import make_pick_extended_diagnostics
+
+        make_pick_extended_diagnostics(paths, catalog, cfg, rejected=rejected)
 
     logger.info(
         "pick diagnostics: %d event(s), %d pick(s) -> %s",

@@ -87,6 +87,21 @@ Probability -> ``extra``
 "probability", phase_score)`` (ARCHITECTURE.md §5), so it survives the
 QuakeML round-trip via ``openmeq.catalog.get_extra``.
 
+Rejected picks (``rejected=``, extended QAQC only)
+----------------------------------------------------
+:func:`build_catalog` optionally appends one record per ``picks.csv`` row
+it *drops* to a caller-supplied ``rejected`` list (OpenMEQ-02o.4's
+``pick_zoom_<event_id>.png`` ``show_rejected`` overlay) -- a pure side
+channel: the catalogue returned is identical whether or not ``rejected``
+is given. Two reasons exist here: ``"duplicate"`` (lost the
+highest-probability dedupe above) and ``"unresolved channel"``. There is no
+probability-threshold reason: ``cfg.phasenet.min_p_prob``/``min_s_prob``
+are applied inside PhaseNet's own ``predict.py``
+(``openmeq.pick.run_phasenet``'s ``--min_p_prob``/``--min_s_prob``), so a
+below-threshold candidate never reaches ``picks.csv`` at all (the zoom
+figure recovers those from ``result.h5`` instead,
+:mod:`openmeq.pick.extended_diagnostics`).
+
 No origins
 -----------
 Per ARCHITECTURE.md §3, ``pick/catalog_picks.xml`` holds "events with
@@ -139,6 +154,18 @@ def _dedupe_best_per_station_phase(df: pd.DataFrame) -> pd.DataFrame:
         kind="mergesort",  # stable, so equal-score/time ties keep original row order
     )
     return ordered.drop_duplicates(subset=["station_id", "phase_type"], keep="first")
+
+
+def _rejected_record(event_id: str, row: pd.Series, reason: str) -> dict:
+    """One ``build_catalog(rejected=...)`` entry (see module docstring)."""
+    return {
+        "event_id": event_id,
+        "station_id": str(row["station_id"]),
+        "phase_type": str(row["phase_type"]),
+        "time": UTCDateTime(row["phase_time"]),
+        "probability": float(row["phase_score"]),
+        "reason": reason,
+    }
 
 
 def _read_chunk_pn_stream(paths: RunPaths, event_id: str) -> Stream:
@@ -219,6 +246,8 @@ def build_catalog(
     paths: RunPaths,
     cfg: Config,
     station_table: pd.DataFrame | None = None,
+    *,
+    rejected: list[dict] | None = None,
 ) -> Catalog:
     """Convert PhaseNet's ``picks.csv`` into one ``Event`` per chunk, with picks only.
 
@@ -245,6 +274,12 @@ def build_catalog(
         ``station_table`` is logged, never an error) -- mirrors
         :func:`openmeq.pick.prep.prepare_chunk`'s identical, optional use of
         it. Defaults to skipping the check if not given.
+    rejected : list of dict, keyword-only, optional
+        If given, one ``{"event_id", "station_id", "phase_type", "time",
+        "probability", "reason"}`` dict is appended per dropped
+        ``picks.csv`` row (``reason`` ``"duplicate"`` or ``"unresolved
+        channel"``, see module docstring). Never changes the returned
+        catalogue.
 
     Returns
     -------
@@ -275,6 +310,9 @@ def build_catalog(
     for event_id, group in df.groupby("event_id", sort=True):
         stream = _read_chunk_pn_stream(paths, event_id)
         best = _dedupe_best_per_station_phase(group)
+        if rejected is not None:
+            for _, row in group.drop(index=best.index).iterrows():
+                rejected.append(_rejected_record(event_id, row, "duplicate"))
 
         event = make_event(event_id)
         for _, row in best.iterrows():
@@ -301,6 +339,8 @@ def build_catalog(
                     station_id,
                     paths.chunk_pn_file(event_id),
                 )
+                if rejected is not None:
+                    rejected.append(_rejected_record(event_id, row, "unresolved channel"))
                 continue
 
             pick = _build_pick(row, waveform_id, cfg.phasenet.pick_uncertainty_s)
