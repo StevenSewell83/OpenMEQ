@@ -163,6 +163,28 @@ already had it); at production scale (e.g. one window per day over a
 multi-month survey) this is a per-run fixed cost proportional to the number
 of windows, not to the data volume, so it does not show up in a
 per-channel-day profile but does shorten real wall-clock time.
+
+**Per-station triggers for extended QAQC (``OpenMEQ-02o.2``).**
+:func:`detect_window_with_station_triggers` runs exactly the same
+read/preprocess/``coincidence_trigger`` pass as :func:`detect_window` (both
+delegate to :func:`_detect`), and additionally returns every *single-station*
+STA/LTA trigger -- the per-trace on/off intervals ``coincidence_trigger``
+computes internally but never exposes. They are recomputed by
+:func:`_station_triggers` in a separate per-trace pass (the characteristic
+function via :func:`characteristic_function`, i.e. the very same
+``Trace.trigger("recstalta", sta=..., lta=...)`` call ``coincidence_trigger``
+makes on its own internal copy, then ``trigger_onset`` with
+``coincidence_trigger``'s own default ``max_len``/``max_len_delete``), rather
+than by handing ``coincidence_trigger`` a precomputed-CF stream: the
+``coincidence_trigger`` call itself stays unchanged, so the merged detections
+are identical whether or not extended diagnostics are on, and only one
+trace's CF is held in memory at a time. The extra cost (one recursive
+STA/LTA -- a C loop -- per trace; the expensive detrend/filter pass is
+shared) is only paid when ``cfg.diagnostics.extended_enabled("detect")``. A
+station trigger is kept only if its on-time falls inside the *unpadded*
+``[window_start, window_end)`` window, so adjacent windows' overlap pads
+never duplicate one: unlike the coincidence triggers, the station-trigger
+list needs no downstream de-duplication.
 """
 
 from __future__ import annotations
@@ -173,7 +195,7 @@ from datetime import timedelta
 
 import numpy as np
 from obspy import Stream, UTCDateTime
-from obspy.signal.trigger import coincidence_trigger
+from obspy.signal.trigger import coincidence_trigger, trigger_onset
 
 from openmeq.catalog import iso_z
 from openmeq.config import Config, load_config
@@ -389,6 +411,192 @@ def _cached_cfg(cfg_path: str) -> Config:
     return cfg
 
 
+#: ``coincidence_trigger``'s own ``max_trigger_length`` default (seconds,
+#: verified against the installed ObsPy 1.5.1 signature) -- reused by
+#: :func:`_station_triggers` so a station trigger is cut exactly where
+#: ``coincidence_trigger`` itself would cut it.
+_COINCIDENCE_MAX_TRIGGER_LENGTH_S = 1e6
+
+
+def preprocess_stream(stream: Stream, det_cfg) -> Stream:
+    """Merge, gap-split, detrend and filter ``stream`` exactly as detection does.
+
+    The single preprocessing path shared by :func:`detect_window` and the
+    extended-QAQC ``cf_examples`` figures (:mod:`openmeq.detect.extended`),
+    so the plotted filtered trace/STA-LTA ratio cannot drift from what the
+    detector actually triggered on. See the module docstring's
+    "``stream.split()`` before filtering", "Performance" and "Fast linear
+    detrend" notes for why each step is done the way it is.
+
+    Parameters
+    ----------
+    stream : obspy.Stream
+        Raw stream (as returned by :func:`_read_window`); consumed.
+    det_cfg : openmeq.config.DetectionConfig
+
+    Returns
+    -------
+    obspy.Stream
+        The filtered, float32, gap-free-per-trace stream (possibly empty).
+    """
+    stream.merge(method=0)
+    stream = stream.split()
+    if len(stream) == 0:
+        return stream
+
+    for tr in stream:
+        tr.data = tr.data.astype(np.float32)
+
+    # M11.3: closed-form OLS detrend (see module docstring's "Fast linear
+    # detrend" note) instead of ``stream.detrend("linear")`` (ObsPy ->
+    # ``scipy.signal.detrend`` -> ``scipy.linalg.lstsq``), which cProfile
+    # showed costing ~49% of this function's total time.
+    for tr in stream:
+        tr.data = _fast_linear_detrend(tr.data)
+    _apply_filter(stream, det_cfg.filter)
+
+    for tr in stream:
+        tr.data = tr.data.astype(np.float32)
+    return stream
+
+
+def characteristic_function(tr, det_cfg) -> np.ndarray:
+    """Recursive STA/LTA ratio of one preprocessed trace, as the detector computes it.
+
+    Exactly the call ``coincidence_trigger("recstalta", ..., sta=, lta=)``
+    makes on its internal copy of each trace (``Trace.trigger``, which
+    converts ``sta``/``lta`` seconds to ``int(seconds * sampling_rate)``
+    samples). ``tr`` itself is not modified.
+    """
+    return tr.copy().trigger("recstalta", sta=det_cfg.sta, lta=det_cfg.lta).data
+
+
+def _station_triggers(stream: Stream, det_cfg, t1: UTCDateTime, t2: UTCDateTime) -> list[dict]:
+    """Every single-trace STA/LTA trigger whose on-time is in ``[t1, t2)``.
+
+    See the module docstring's "Per-station triggers" note. One dict per
+    trigger: ``{"seed_id", "station" ("NET.STA"), "on_time", "off_time"
+    (ISO-Z strings), "duration_s", "peak_ratio"}`` -- ``peak_ratio`` being
+    the STA/LTA maximum over ``[on, off)`` (``coincidence_trigger``'s own
+    ``cft_peak``). Sorted by ``(on_time, seed_id)`` for determinism.
+    """
+    rows = []
+    for tr in stream:
+        cft = characteristic_function(tr, det_cfg)
+        sr = tr.stats.sampling_rate
+        onsets = trigger_onset(
+            cft,
+            det_cfg.trigger_on,
+            det_cfg.trigger_off,
+            max_len=int(_COINCIDENCE_MAX_TRIGGER_LENGTH_S * sr + 0.5),
+            max_len_delete=False,
+        )
+        for on, off in onsets:
+            on_t = tr.stats.starttime + float(on) / sr
+            if not (t1 <= on_t < t2):
+                continue
+            off_t = tr.stats.starttime + float(off) / sr
+            peak = float(cft[on:off].max()) if off > on else float(cft[on])
+            rows.append(
+                {
+                    "seed_id": tr.id,
+                    "station": f"{tr.stats.network}.{tr.stats.station}",
+                    "on_time": _iso_z(on_t),
+                    "off_time": _iso_z(off_t),
+                    "duration_s": float(off_t - on_t),
+                    "peak_ratio": peak,
+                }
+            )
+    rows.sort(key=lambda r: (r["on_time"], r["seed_id"]))
+    return rows
+
+
+def _detect(
+    window_start: str,
+    window_end: str,
+    index_path: str,
+    flags_path: str,
+    cfg_path: str,
+    *,
+    with_station_triggers: bool,
+) -> tuple[list[dict], list[dict]]:
+    """Shared body of :func:`detect_window`/:func:`detect_window_with_station_triggers`.
+
+    Returns ``(triggers, station_triggers)``; ``station_triggers`` is always
+    ``[]`` unless ``with_station_triggers``.
+    """
+    t0 = time.perf_counter()
+    t1 = UTCDateTime(window_start)
+    t2 = UTCDateTime(window_end)
+
+    index = _cached_index(index_path)
+    with open(flags_path, encoding="utf-8") as f:
+        channel_flags = json.load(f)
+    flags = channel_flags.get("flags", {})
+    cfg = _cached_cfg(cfg_path)
+    det_cfg = cfg.detection
+
+    stream = _read_window(index, flags, t1, t2, pad=det_cfg.day_overlap_s)
+    if len(stream) == 0:
+        logger.info(
+            "detect_window %s..%s: no usable data (%.2fs)",
+            window_start,
+            window_end,
+            time.perf_counter() - t0,
+        )
+        return [], []
+
+    stream = preprocess_stream(stream, det_cfg)
+    if len(stream) == 0:
+        return [], []
+
+    trace_ids = _build_trace_ids(stream, det_cfg.station_weights)
+
+    raw_triggers = coincidence_trigger(
+        "recstalta",
+        det_cfg.trigger_on,
+        det_cfg.trigger_off,
+        stream,
+        det_cfg.coincidence_sum,
+        trace_ids=trace_ids,
+        sta=det_cfg.sta,
+        lta=det_cfg.lta,
+        details=True,
+    )
+    triggers = [_normalize_trigger(t) for t in raw_triggers]
+    station_triggers = _station_triggers(stream, det_cfg, t1, t2) if with_station_triggers else []
+
+    logger.info(
+        "detect_window %s..%s: %d trace(s), %d trigger(s)%s (%.2fs)",
+        window_start,
+        window_end,
+        len(stream),
+        len(triggers),
+        f", {len(station_triggers)} station trigger(s)" if with_station_triggers else "",
+        time.perf_counter() - t0,
+    )
+    return triggers, station_triggers
+
+
+def detect_window_with_station_triggers(
+    window_start: str,
+    window_end: str,
+    index_path: str,
+    flags_path: str,
+    cfg_path: str,
+) -> tuple[list[dict], list[dict]]:
+    """:func:`detect_window` plus every single-station STA/LTA trigger (extended QAQC).
+
+    Same arguments as :func:`detect_window`; top-level and picklable. The
+    first element is exactly :func:`detect_window`'s return value; the
+    second is :func:`_station_triggers`'s list for the unpadded window (see
+    the module docstring's "Per-station triggers" note).
+    """
+    return _detect(
+        window_start, window_end, index_path, flags_path, cfg_path, with_station_triggers=True
+    )
+
+
 def detect_window(
     window_start: str,
     window_end: str,
@@ -421,68 +629,8 @@ def detect_window(
         usable for this window (every candidate flagged not-``ok``) or no
         trigger is found.
     """
-    t0 = time.perf_counter()
-    t1 = UTCDateTime(window_start)
-    t2 = UTCDateTime(window_end)
-
-    index = _cached_index(index_path)
-    with open(flags_path, encoding="utf-8") as f:
-        channel_flags = json.load(f)
-    flags = channel_flags.get("flags", {})
-    cfg = _cached_cfg(cfg_path)
-    det_cfg = cfg.detection
-
-    stream = _read_window(index, flags, t1, t2, pad=det_cfg.day_overlap_s)
-    if len(stream) == 0:
-        logger.info(
-            "detect_window %s..%s: no usable data (%.2fs)",
-            window_start,
-            window_end,
-            time.perf_counter() - t0,
-        )
-        return []
-
-    stream.merge(method=0)
-    stream = stream.split()
-    if len(stream) == 0:
-        return []
-
-    for tr in stream:
-        tr.data = tr.data.astype(np.float32)
-
-    # M11.3: closed-form OLS detrend (see module docstring's "Fast linear
-    # detrend" note) instead of ``stream.detrend("linear")`` (ObsPy ->
-    # ``scipy.signal.detrend`` -> ``scipy.linalg.lstsq``), which cProfile
-    # showed costing ~49% of this function's total time.
-    for tr in stream:
-        tr.data = _fast_linear_detrend(tr.data)
-    _apply_filter(stream, det_cfg.filter)
-
-    for tr in stream:
-        tr.data = tr.data.astype(np.float32)
-
-    trace_ids = _build_trace_ids(stream, det_cfg.station_weights)
-
-    raw_triggers = coincidence_trigger(
-        "recstalta",
-        det_cfg.trigger_on,
-        det_cfg.trigger_off,
-        stream,
-        det_cfg.coincidence_sum,
-        trace_ids=trace_ids,
-        sta=det_cfg.sta,
-        lta=det_cfg.lta,
-        details=True,
-    )
-    triggers = [_normalize_trigger(t) for t in raw_triggers]
-
-    logger.info(
-        "detect_window %s..%s: %d trace(s), %d trigger(s) (%.2fs)",
-        window_start,
-        window_end,
-        len(stream),
-        len(triggers),
-        time.perf_counter() - t0,
+    triggers, _ = _detect(
+        window_start, window_end, index_path, flags_path, cfg_path, with_station_triggers=False
     )
     return triggers
 

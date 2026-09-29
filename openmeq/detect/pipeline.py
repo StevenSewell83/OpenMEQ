@@ -23,6 +23,26 @@ a nonexistent ``detect/manifest.json`` rather than
 instructions ("ARCHITECTURE.md ... wins over the spec if they conflict"), so
 :data:`STEP_NAME` here is ``"detections"``, matching
 ``paths.detect_diagnostics_dir``'s own ``diagnostics_dir("detections")``.
+
+Extended QAQC (``OpenMEQ-02o.2``)
+----------------------------------
+When ``cfg.diagnostics.extended_enabled("detect")`` is true, each window
+runs :func:`~openmeq.detect.worker.detect_window_with_station_triggers`
+instead of :func:`~openmeq.detect.worker.detect_window` (same detections,
+plus every single-station trigger), ``detections/station_triggers.csv`` is
+written, and :func:`openmeq.detect.extended.make_detect_extended_diagnostics`
+builds ``detections/diagnostics/extended/``. When it is false nothing about
+the step changes: the plain worker runs, and a ``station_triggers.csv`` left
+over from an earlier extended run is deleted on a real (non-skipped) run so
+it can never sit next to a ``detections.csv`` it no longer matches.
+
+The fingerprint deliberately does *not* include ``cfg.diagnostics`` --
+toggling a diagnostics switch must not invalidate the detections themselves.
+Instead the skip-unchanged check additionally requires
+``station_triggers.csv`` to exist when extended QAQC is on (so switching it
+on for an already-detected run triggers one rerun, the only way to obtain
+per-station triggers), and a skipped run with extended QAQC on but no
+``extended/`` directory yet rebuilds those figures from the on-disk CSVs.
 """
 
 from __future__ import annotations
@@ -31,10 +51,22 @@ import time
 from typing import TYPE_CHECKING
 
 import click
+import pandas as pd
 
 from openmeq.detect.diagnostics import make_detect_diagnostics
+from openmeq.detect.extended import (
+    extended_dir,
+    make_detect_extended_diagnostics,
+    station_triggers_csv,
+    station_triggers_frame,
+    write_station_triggers_csv,
+)
 from openmeq.detect.merge import merge_windows, write_detections_csv
-from openmeq.detect.worker import build_windows, detect_window
+from openmeq.detect.worker import (
+    build_windows,
+    detect_window,
+    detect_window_with_station_triggers,
+)
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
 from openmeq.parallel import pmap
@@ -107,6 +139,27 @@ def _detect_window_item(item: tuple[str, str, str, str, str]) -> list[dict]:
     return detect_window(window_start, window_end, index_path, flags_path, cfg_path)
 
 
+def _detect_window_extended_item(
+    item: tuple[str, str, str, str, str],
+) -> tuple[list[dict], list[dict]]:
+    """:func:`_detect_window_item`'s extended-QAQC twin (also returns station triggers)."""
+    window_start, window_end, index_path, flags_path, cfg_path = item
+    return detect_window_with_station_triggers(
+        window_start, window_end, index_path, flags_path, cfg_path
+    )
+
+
+def _rebuild_extended_from_disk(cfg: Config, paths: RunPaths) -> None:
+    """Skip-unchanged path: build ``extended/`` from the CSVs already on disk."""
+    try:
+        detections_df = pd.read_csv(paths.detections_csv)
+        station_df = pd.read_csv(station_triggers_csv(paths))
+    except Exception as exc:  # noqa: BLE001 - extended QAQC must never fail the step
+        get_logger("detect").warning("detect extended QAQC: could not re-read CSVs: %s", exc)
+        return
+    make_detect_extended_diagnostics(cfg, paths, detections_df, station_df)
+
+
 def run_detect(
     cfg: Config,
     paths: RunPaths,
@@ -129,7 +182,10 @@ def run_detect(
        actually exercised).
     4. :func:`~openmeq.detect.merge.merge_windows` /
        :func:`~openmeq.detect.merge.write_detections_csv`.
-    5. :func:`~openmeq.detect.diagnostics.make_detect_diagnostics`.
+    5. :func:`~openmeq.detect.diagnostics.make_detect_diagnostics`, plus
+       (only if ``cfg.diagnostics.extended_enabled("detect")``)
+       ``station_triggers.csv`` and the ``extended/`` figures -- see the
+       module docstring's "Extended QAQC" note.
     6. Marks the manifest entry done and logs the elapsed time.
 
     Parameters
@@ -161,12 +217,21 @@ def run_detect(
 
     fp = fingerprint(cfg.detection, paths.channel_flags_json, paths.index_json)
     manifest = StepManifest(paths, STEP_NAME)
-    if not force and manifest.is_done(MANIFEST_KEY, fp) and paths.detections_csv.is_file():
+    extended = cfg.diagnostics.extended_enabled("detect")
+    station_csv = station_triggers_csv(paths)
+    if (
+        not force
+        and manifest.is_done(MANIFEST_KEY, fp)
+        and paths.detections_csv.is_file()
+        and (not extended or station_csv.is_file())
+    ):
         step_logger.info(
             "detect: unchanged since the last run (cfg.detection, qc/channel_flags.json and "
             "inventory/index.json all match the last recorded fingerprint) -- skipping "
             "(use --force to rerun)."
         )
+        if extended and not extended_dir(paths).is_dir():
+            _rebuild_extended_from_disk(cfg, paths)
         return
 
     if config_path is None:
@@ -188,12 +253,25 @@ def run_detect(
         )
         for window_start, window_end in windows
     ]
-    per_window_results = pmap(_detect_window_item, items, cfg.parallel, desc="detect")
+    if extended:
+        results = pmap(_detect_window_extended_item, items, cfg.parallel, desc="detect")
+        per_window_results = [triggers for triggers, _ in results]
+        station_df = station_triggers_frame([station for _, station in results])
+    else:
+        per_window_results = pmap(_detect_window_item, items, cfg.parallel, desc="detect")
+        station_df = None
 
     df = merge_windows(per_window_results, cfg)
     write_detections_csv(df, paths.detections_csv)
 
     make_detect_diagnostics(paths, df)
+
+    if station_df is not None:
+        write_station_triggers_csv(station_df, station_csv)
+        make_detect_extended_diagnostics(cfg, paths, df, station_df)
+    elif station_csv.is_file():
+        # Stale from an earlier extended run -- see the module docstring.
+        station_csv.unlink()
 
     manifest.mark_done(MANIFEST_KEY, fp)
 
