@@ -334,3 +334,21 @@ hypodd:
                                          # clusters (OBSCC/OBSCT above -- not a ph2dt feature) as an
                                          # independent hypoDD subprocess in parallel, then merge
                                          # hypoDD.reloc (ARCHITECTURE.md §6h)
+
+diagnostics:
+  # Opt-in extended QAQC figures, written to <step>/diagnostics/extended/ on top of
+  # every step's always-on baseline diagnostics. Per-step `extended` overrides this.
+  extended: false
+  n_examples: 10                        # sample events for per-event waveform figures
+  detect: {extended: null}              # null = inherit diagnostics.extended
+  chunk: {extended: null}
+  pick:
+    extended: null
+    pick_zoom:
+      half_window_s: 2.0                # zoomed panel half-width around each pick, s
+      n_events: 10
+      show_rejected: false              # also draw picks dropped by probability/duplicate filtering
+  locate: {extended: null}
+  magnitude: {extended: null}
+  relocate: {extended: null}
+  run: {extended: null}                 # event-count funnel across the whole run
