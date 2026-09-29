@@ -168,6 +168,7 @@ from obspy import UTCDateTime
 from openmeq.chunk_diagnostics import (
     compute_completeness,
     make_chunk_diagnostics,
+    make_chunk_extended_diagnostics,
     write_completeness_csv,
 )
 from openmeq.config import ChunksConfig
@@ -628,7 +629,10 @@ def run(
        :func:`~openmeq.chunk_diagnostics.make_chunk_diagnostics` (M3.2),
        recomputed independently from the just-written chunk files (never
        from :func:`write_chunks`'s own in-memory return value -- see
-       :mod:`openmeq.chunk_diagnostics`'s module docstring).
+       :mod:`openmeq.chunk_diagnostics`'s module docstring). Then
+       :func:`~openmeq.chunk_diagnostics.make_chunk_extended_diagnostics`
+       (opt-in ``chunks/diagnostics/extended/``; a no-op unless
+       ``cfg.diagnostics.extended_enabled("chunk")``).
     5. Marks the manifest entry done and logs the elapsed time.
 
     Parameters
@@ -671,6 +675,7 @@ def run(
     completeness_df = compute_completeness(detections_df, cfg, paths)
     write_completeness_csv(completeness_df, paths.chunk_completeness_csv)
     make_chunk_diagnostics(paths, completeness_df)
+    make_chunk_extended_diagnostics(cfg, paths, list(detections_df["event_id"]))
 
     manifest.mark_done(MANIFEST_KEY, fp)
 
