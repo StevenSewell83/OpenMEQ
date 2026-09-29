@@ -332,3 +332,43 @@ def test_build_catalog_real_phasenet(phasenet_world, tmp_path):
     assert paths2.catalog_picks_xml.is_file()
     cat2 = read_catalog(paths2.catalog_picks_xml)
     assert len(cat2.events) == len(catalog.events)
+
+
+# ---------------------------------------------------------------------------
+# test_rejected_side_channel (OpenMEQ-02o.4)
+# ---------------------------------------------------------------------------
+
+
+def test_rejected_side_channel(hand_built_project):
+    """``rejected=`` records every dropped row with its reason and never
+    changes the catalogue built."""
+    cfg, paths, event_id = hand_built_project
+    file_name = f"{event_id}/{event_id}.mseed"
+    rows = [
+        _pick_row("XX.ORNT.00.HH", "P", _START + 20.0, 0.60, file_name),
+        _pick_row("XX.ORNT.00.HH", "P", _START + 20.05, 0.95, file_name),
+        _pick_row("XX.ORNT.00.HH", "S", _START + 32.0, 0.80, file_name),
+        _pick_row("XX.GHOST.00.HH", "P", _START + 22.0, 0.5, file_name),
+    ]
+    picks_csv = _write_picks_csv(paths, rows)
+
+    plain = build_catalog(picks_csv, paths, cfg)
+    rejected: list[dict] = []
+    with_rejected = build_catalog(picks_csv, paths, cfg, rejected=rejected)
+
+    def _key(cat):
+        return [
+            (p.waveform_id.get_seed_string(), p.phase_hint, p.time, get_extra(p, "probability"))
+            for ev in cat
+            for p in ev.picks
+        ]
+
+    assert _key(plain) == _key(with_rejected)
+    by_reason = {(r["station_id"], r["reason"]): r for r in rejected}
+    assert len(rejected) == 2
+    dup = by_reason[("XX.ORNT.00.HH", "duplicate")]
+    assert dup["phase_type"] == "P"
+    assert dup["probability"] == pytest.approx(0.60)
+    assert dup["time"] == UTCDateTime(_START + 20.0)
+    assert dup["event_id"] == event_id
+    assert ("XX.GHOST.00.HH", "unresolved channel") in by_reason
