@@ -321,6 +321,37 @@ def test_horizontal_component_selection(caplog):
     assert any("no horizontal channels present" in rec.message for rec in caplog.records)
 
 
+def test_capture_matches_measurement():
+    """``capture=`` (extended QAQC) records the chosen channel's WA trace,
+    window and peak sample, consistent with the returned amplitude; the
+    default (no capture) result is identical."""
+    inv, lat, lon = _simple_3comp_station_setup()
+    t0 = UTCDateTime(2025, 1, 1, 0, 0, 0)
+    event, _origin = _make_event_with_origin("evtest0000000009_000", t0, lat, lon, 3000.0)
+    event.picks.append(_pick(NETWORK, "STA1", "HHZ", "P", t0 + 2.0))
+    event.picks.append(_pick(NETWORK, "STA1", "HHN", "S", t0 + 5.0))
+    n = int(20.0 * 100.0)
+    stream = Stream(
+        [
+            _make_trace(NETWORK, "STA1", cha, _sine_burst(n, 100.0, 5.0, amp), t0)
+            for cha, amp in (("HHZ", 500.0), ("HHN", 800.0), ("HHE", 3000.0))
+        ]
+    )
+    mag_cfg = MagnitudeConfig()
+
+    plain = measure_event_amplitudes(event, stream, inv, mag_cfg)
+    captures = {}
+    results = measure_event_amplitudes(event, stream, inv, mag_cfg, capture=captures)
+
+    assert results == plain
+    cap = captures[(NETWORK, "STA1")]
+    assert cap.channel == results[0].component_used == "HHE"
+    assert cap.amplitude_m == results[0].amplitude_m
+    assert cap.window_start <= cap.peak_time <= cap.window_end
+    i_peak = round((cap.peak_time - cap.trace.stats.starttime) * cap.trace.stats.sampling_rate)
+    assert abs(cap.trace.data[i_peak]) == pytest.approx(cap.amplitude_m)
+
+
 # ---------------------------------------------------------------------------
 # distance
 # ---------------------------------------------------------------------------

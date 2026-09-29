@@ -107,6 +107,15 @@ Skips (logged, never raised)
 - No waveform data (or a data gap) covering the measurement window.
 - A flat-lined window (``np.ptp(window_data) == 0``).
 - No usable horizontal *or* vertical channel at all for a station.
+
+Trace capture (extended QAQC)
+-----------------------------
+``measure_event_amplitudes(..., capture={})`` additionally records, per
+station, the chosen channel's already-computed WA-simulated trace, window
+and peak-sample time as a :class:`WoodAndersonCapture` (used by
+``magnitude/diagnostics/extended/amp_window_<event_id>.png``). It reuses
+the very trace the measurement was made on -- no second simulation -- and
+is ``None`` (nothing retained) by default.
 """
 
 from __future__ import annotations
@@ -193,6 +202,35 @@ class StationAmplitude:
     component_used: str
     window_start: UTCDateTime
     window_end: UTCDateTime
+
+
+@dataclass
+class WoodAndersonCapture:
+    """The chosen channel's processed trace behind one :class:`StationAmplitude`.
+
+    Only produced when :func:`measure_event_amplitudes` is given a
+    ``capture`` dict (extended QAQC); see the module docstring.
+
+    Attributes
+    ----------
+    net, sta, channel : str
+    trace : obspy.Trace
+        The full-extent WA-simulated displacement trace (metres) the
+        amplitude was measured on.
+    window_start, window_end : obspy.UTCDateTime
+    peak_time : obspy.UTCDateTime
+        Time of the ``max(abs(...))`` sample inside the window.
+    amplitude_m : float
+    """
+
+    net: str
+    sta: str
+    channel: str
+    trace: Trace
+    window_start: UTCDateTime
+    window_end: UTCDateTime
+    peak_time: UTCDateTime
+    amplitude_m: float
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +344,19 @@ def _measure_one_channel(
     Returns ``None`` (logging why) for any of this task's "skip" conditions
     (module docstring): no coverage, a gap, a flat window, or no response.
     """
+    measured = _measure_one_channel_full(trace, inventory, window_start, window_end, ml_cfg)
+    return None if measured is None else measured[0]
+
+
+def _measure_one_channel_full(
+    trace: Trace,
+    inventory: Inventory,
+    window_start: UTCDateTime,
+    window_end: UTCDateTime,
+    ml_cfg: MlConfig,
+) -> tuple[float, Trace, UTCDateTime] | None:
+    """:func:`_measure_one_channel`, also returning the processed trace and
+    the peak sample's time: ``(amplitude_m, wa_trace, peak_time)``."""
     seed_id = trace.id
 
     raw_window = trace.slice(window_start, window_end)
@@ -336,7 +387,10 @@ def _measure_one_channel(
     windowed = processed.slice(window_start, window_end)
     if windowed.stats.npts == 0:
         return None
-    return float(np.max(np.abs(np.asarray(windowed.data))))
+    abs_data = np.abs(np.asarray(windowed.data))
+    i_peak = int(np.argmax(abs_data))
+    peak_time = windowed.stats.starttime + i_peak * windowed.stats.delta
+    return float(abs_data[i_peak]), processed, peak_time
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +459,12 @@ def _group_by_station(stream: Stream) -> dict[tuple[str, str], list[Trace]]:
 
 
 def measure_event_amplitudes(
-    event: Event, stream: Stream, inventory: Inventory, cfg: MagnitudeConfig
+    event: Event,
+    stream: Stream,
+    inventory: Inventory,
+    cfg: MagnitudeConfig,
+    *,
+    capture: dict[tuple[str, str], WoodAndersonCapture] | None = None,
 ) -> list[StationAmplitude]:
     """Measure per-station Wood-Anderson amplitudes for one event.
 
@@ -431,6 +490,10 @@ def measure_event_amplitudes(
         docstring's "Response cache" section).
     cfg : openmeq.config.MagnitudeConfig
         ``cfg.magnitude`` (this function reads ``cfg.ml.*``).
+    capture : dict or None, keyword-only, optional
+        If given, filled in place with one :class:`WoodAndersonCapture` per
+        returned station, keyed ``(net, sta)`` (extended QAQC only; see the
+        module docstring's "Trace capture" section).
 
     Returns
     -------
@@ -461,23 +524,26 @@ def measure_event_amplitudes(
         horizontal_traces = [t for t in traces if t.stats.channel[-1] in _HORIZONTAL_LAST_CHARS]
         vertical_traces = [t for t in traces if t.stats.channel[-1] == "Z"]
 
-        horizontal_hits: list[tuple[Trace, float]] = []
+        # (trace, amplitude_m, wa_trace, peak_time) per usable channel.
+        horizontal_hits: list[tuple[Trace, float, Trace, UTCDateTime]] = []
         for trace in horizontal_traces:
-            amp = _measure_one_channel(trace, inventory, window_start, window_end, ml_cfg)
-            if amp is not None:
-                horizontal_hits.append((trace, amp))
+            measured = _measure_one_channel_full(trace, inventory, window_start, window_end, ml_cfg)
+            if measured is not None:
+                horizontal_hits.append((trace, *measured))
 
-        vertical_hit: tuple[Trace, float] | None = None
+        vertical_hit: tuple[Trace, float, Trace, UTCDateTime] | None = None
         for trace in vertical_traces:
-            amp = _measure_one_channel(trace, inventory, window_start, window_end, ml_cfg)
-            if amp is not None:
-                vertical_hit = (trace, amp)
+            measured = _measure_one_channel_full(trace, inventory, window_start, window_end, ml_cfg)
+            if measured is not None:
+                vertical_hit = (trace, *measured)
                 break
 
         if horizontal_hits:
-            chosen_trace, amplitude_m = max(horizontal_hits, key=lambda pair: pair[1])
+            chosen_trace, amplitude_m, wa_trace, peak_time = max(
+                horizontal_hits, key=lambda hit: hit[1]
+            )
         elif vertical_hit is not None:
-            chosen_trace, amplitude_m = vertical_hit
+            chosen_trace, amplitude_m, wa_trace, peak_time = vertical_hit
             if horizontal_traces:
                 logger.warning(
                     "%s.%s: no usable horizontal component in window; falling back to Z (%s)",
@@ -516,5 +582,16 @@ def measure_event_amplitudes(
                 window_end=window_end,
             )
         )
+        if capture is not None:
+            capture[(net, sta)] = WoodAndersonCapture(
+                net=net,
+                sta=sta,
+                channel=chosen_trace.stats.channel,
+                trace=wa_trace,
+                window_start=window_start,
+                window_end=window_end,
+                peak_time=peak_time,
+                amplitude_m=amplitude_m,
+            )
 
     return results

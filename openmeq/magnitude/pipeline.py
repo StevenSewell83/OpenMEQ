@@ -28,12 +28,17 @@ magnitude`` (registered as ``run`` in ``openmeq/magnitude/__init__.py``,
    ``StationMagnitude``/``Magnitude`` QuakeML objects directly onto the
    `Event` it returns (``docs/ARCHITECTURE.md`` §5).
 4. Writes ``magnitude/catalog_mag.xml`` and ``magnitude/station_magnitudes.csv``,
-   then :func:`openmeq.magnitude.diagnostics.make_magnitude_diagnostics`.
+   then :func:`openmeq.magnitude.diagnostics.make_magnitude_diagnostics`, and
+   -- only when ``cfg.diagnostics.extended_enabled("magnitude")`` --
+   :func:`openmeq.magnitude.diagnostics_extended.make_magnitude_extended_diagnostics`
+   (``magnitude/diagnostics/extended/``; never fails the step).
 5. :class:`openmeq.manifest.StepManifest` skip-unchanged, fingerprinted on
    ``cfg.magnitude`` plus the selected input catalogue file's identity (so a
    ``--catalog`` override, or the catalogue selection itself switching from
    ``catalog_auto.xml`` to a newly-appeared ``catalog_final.xml``, both
-   correctly bust the cache).
+   correctly bust the cache). When extended QAQC is enabled, its settings
+   (``n_examples``) are appended to the fingerprint, so switching it on
+   reruns the step; the disabled-case fingerprint is unchanged from before.
 
 Idempotent re-processing (design decision, this task)
 -------------------------------------------------------
@@ -80,6 +85,7 @@ from openmeq.catalog import event_id as get_event_id
 from openmeq.log import get_logger
 from openmeq.magnitude.amplitude import StationAmplitude, _find_pick, measure_event_amplitudes
 from openmeq.magnitude.diagnostics import make_magnitude_diagnostics
+from openmeq.magnitude.diagnostics_extended import make_magnitude_extended_diagnostics
 from openmeq.magnitude.relations import get_clamp_counter, station_ml
 from openmeq.manifest import StepManifest, fingerprint
 from openmeq.parallel import pmap
@@ -522,7 +528,15 @@ def run_magnitude(
         step_logger.error(message)
         raise click.ClickException(message)
 
-    fp = fingerprint(cfg.magnitude, catalog_path)
+    extended = cfg.diagnostics.extended_enabled(STEP_NAME)
+    if extended:
+        fp = fingerprint(
+            cfg.magnitude,
+            catalog_path,
+            {"extended": True, "n_examples": cfg.diagnostics.n_examples},
+        )
+    else:
+        fp = fingerprint(cfg.magnitude, catalog_path)
     manifest = StepManifest(paths, STEP_NAME)
     if not force and manifest.is_done(MANIFEST_KEY, fp) and paths.catalog_mag_xml.is_file():
         step_logger.info(
@@ -572,6 +586,8 @@ def run_magnitude(
     df.to_csv(paths.station_magnitudes_csv, index=False)
 
     make_magnitude_diagnostics(paths, df, out_catalog)
+    if extended:
+        make_magnitude_extended_diagnostics(paths, df, out_catalog, cfg)
 
     manifest.mark_done(MANIFEST_KEY, fp)
 

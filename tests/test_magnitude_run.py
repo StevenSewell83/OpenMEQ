@@ -43,6 +43,7 @@ from openmeq.cli import main
 from openmeq.config import (
     Config,
     DataConfig,
+    DiagnosticsConfig,
     HypoddConfig,
     HypoddVelocityModelConfig,
     LocalMlCoefficientsConfig,
@@ -494,6 +495,56 @@ def test_diagnostics_written(tmp_path):
         p = diag_dir / name
         assert p.is_file(), f"{p} missing"
         assert p.stat().st_size > 0, f"{p} is empty"
+
+
+def test_extended_diagnostics_disabled_by_default(tmp_path):
+    cfg, paths, event_id = _scenario(tmp_path, n_stations=3)
+
+    run_magnitude(cfg, paths)
+
+    assert not (paths.diagnostics_dir("magnitude") / "extended").exists()
+
+
+def test_extended_diagnostics_written_when_enabled(tmp_path):
+    cfg, paths, event_id = _scenario(tmp_path, n_stations=3)
+    cfg.diagnostics = DiagnosticsConfig(extended=True)
+
+    run_magnitude(cfg, paths)
+
+    ext = paths.diagnostics_dir("magnitude") / "extended"
+    for name in (
+        "res_vs_distance.png",
+        "gr_mc_bvalue.png",
+        "gr_mc_bvalue.csv",
+        f"amp_window_{event_id}.png",
+    ):
+        assert (ext / name).is_file(), f"{name} missing"
+        assert (ext / name).stat().st_size > 0
+    # One-event catalogue: the tiny-catalogue branch, not a fit.
+    gr = pd.read_csv(ext / "gr_mc_bvalue.csv")
+    assert gr.loc[0, "status"] == "insufficient events"
+    # Baseline set still written, unchanged.
+    assert (paths.diagnostics_dir("magnitude") / "magnitude_frequency.png").is_file()
+
+
+def test_extended_diagnostics_failure_never_fails_step(tmp_path, monkeypatch, caplog):
+    from openmeq.magnitude import diagnostics_extended
+
+    cfg, paths, event_id = _scenario(tmp_path, n_stations=2)
+    cfg.diagnostics = DiagnosticsConfig(magnitude={"extended": True})
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(diagnostics_extended, "plot_residual_vs_distance", boom)
+    with caplog.at_level("WARNING", logger="openmeq.magnitude"):
+        run_magnitude(cfg, paths)
+
+    ext = paths.diagnostics_dir("magnitude") / "extended"
+    assert not (ext / "res_vs_distance.png").exists()
+    assert (ext / "gr_mc_bvalue.png").is_file()
+    assert any("res_vs_distance.png failed" in r.getMessage() for r in caplog.records)
+    assert paths.catalog_mag_xml.is_file()
 
 
 # ---------------------------------------------------------------------------
