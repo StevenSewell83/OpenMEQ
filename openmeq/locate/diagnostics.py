@@ -21,6 +21,12 @@ reason) counts, and each pass's own event/pick counts and mean/median
 residuals -- a flat ``key: value`` per line, parseable by any test or
 operator without a special-purpose reader.
 
+Plus, only when ``cfg.diagnostics.extended_enabled("locate")``, the opt-in
+extended set under ``locate/diagnostics/extended/`` (residual vs distance,
+station residual map + CSV, depth histogram vs grid/model) --
+:mod:`openmeq.locate.diagnostics_extended`. The baseline set above is
+unchanged either way, and an extended-QAQC failure only logs a warning.
+
 Every ``groupby``/plot call here is guarded against an empty frame -- zero
 rejections or zero removals is an expected, valid outcome on clean synthetic
 data, not an error (this module never raises on an empty pass, event set or
@@ -410,7 +416,8 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
     Returns
     -------
     pathlib.Path
-        ``paths.diagnostics_dir("locate")``.
+        ``paths.diagnostics_dir("locate")`` (the extended set, if enabled,
+        is under its ``extended/`` subfolder).
     """
     diag_dir = paths.diagnostics_dir("locate")
     diag_dir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +439,14 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
         )
 
     _write_summary_txt(diag_dir / "summary.txt", result, removal_log)
+
+    if cfg.diagnostics.extended_enabled("locate"):
+        try:
+            from openmeq.locate.diagnostics_extended import make_locate_extended_diagnostics
+
+            make_locate_extended_diagnostics(paths, cfg, result, stations)
+        except Exception as exc:  # noqa: BLE001 - extended QAQC must never fail the step
+            logger.warning("extended locate diagnostics failed: %s", exc)
 
     return diag_dir
 
