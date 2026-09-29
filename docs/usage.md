@@ -30,7 +30,8 @@ recompute anyway.
 
 Every step also writes `<step>/diagnostics/*.png` (and a CSV/text summary)
 and `logs/<step>.log`, so you can always see what a step actually did without
-re-running it.
+re-running it. Optional extended QAQC figures (`diagnostics:` in the config)
+are described in `docs/diagnostics_extended.md`.
 
 ## `openmeq run` -- the whole chain
 
