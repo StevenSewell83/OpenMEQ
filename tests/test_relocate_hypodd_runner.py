@@ -556,6 +556,21 @@ def test_parallel_clusters_matches_single_run(tmp_path, monkeypatch):
     for cuspid, merged_line in merged_lines.items():
         assert merged_line == single_lines[cuspid]
 
+    # OpenMEQ-02o.7: every cluster's own hypoDD.res survives, concatenated
+    # into work_dir/hypoDD.res (the per-cluster dirs are removed). A single
+    # CID=0 run's hypoDD.res only holds its *last* cluster (hypoDD re-opens
+    # it inside its cluster loop) -- so the merged file covers strictly more.
+    from openmeq.relocate.extended_diagnostics import parse_hypodd_res
+
+    cluster_of = {int(c): int(line.split()[23]) for c, line in single_lines.items()}
+    merged_res = parse_hypodd_res(work_dir / "hypoDD.res")
+    single_res = parse_hypodd_res(single_dir / "hypoDD.res")
+    merged_clusters = {cluster_of[r.cuspid1] for r in merged_res if r.cuspid1 in cluster_of}
+    single_clusters = {cluster_of[r.cuspid1] for r in single_res if r.cuspid1 in cluster_of}
+    assert len(merged_clusters) == 3
+    assert len(single_clusters) == 1
+    assert not list(work_dir.glob("_cluster_*"))
+
 
 # ---------------------------------------------------------------------------
 # test_synthetic_end_to_end: setup_hypodd -> run_ph2dt -> build_cache ->

@@ -21,7 +21,10 @@ ARCHITECTURE.md §2):
    ``relocate/catalog_dd.xml``.
 5. `openmeq.relocate.diagnostics.write_relocate_diagnostics` (this task):
    before/after maps, dt.cc CC distribution, per-iteration residual/
-   connectivity/AQ/CND trends, relative-shift histogram, ``summary.csv``.
+   connectivity/AQ/CND trends, relative-shift histogram, ``summary.csv``;
+   plus, when ``cfg.diagnostics.extended_enabled("relocate")``, the
+   extended ``diagnostics/extended/`` set
+   (`openmeq.relocate.extended_diagnostics`, OpenMEQ-02o.7).
 
 Every step above already requires ``magnitude/catalog_mag.xml`` and raises
 a clear `openmeq.config.ConfigError` itself if it's missing; `run_relocate`
@@ -166,7 +169,7 @@ def run_relocate(
     )
 
     logger.info("relocate: writing diagnostics...")
-    diagnostics = write_relocate_diagnostics(paths)
+    diagnostics = write_relocate_diagnostics(paths, cfg)
 
     logger.info(
         "relocate: done (%d relocated, %d not linked, run_mode=%s).",
