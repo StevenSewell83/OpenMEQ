@@ -50,7 +50,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `qc.daily_stats` | list[str] | `['rms', 'mean_abs', 'spike_count', 'kurtosis']` | Which per-channel-day statistics to compute; informational list, does not gate which flags are possible (see the `max_*`/`min_*` thresholds below). |
 | `qc.spike_threshold_mad` | float | `10.0` | A sample counts as an isolated-impulse spike if `\|residual\| > this * MAD(residual)` (unitless multiplier on the running-median residual's own MAD; ARCHITECTURE.md §3). |
 | `qc.min_availability_pct` | float | `80.0` | Minimum data coverage (percent, 0-100) for a channel/day to count as `ok` on availability grounds alone. |
-| `qc.exclude_channels` | list[str] | `[]` | Seed ids (e.g. `XX.STA01..HHZ`) always flagged not-ok regardless of their measured statistics. |
+| `qc.exclude_channels` | list[str] | `[]` | Seed ids (e.g. `XX.STA01..HHZ`) left out of detection, and always flagged not-ok in the QC report. The only way to drop a channel: QC flags themselves are informational. |
 | `qc.flat_run_min_samples` | int | `50` | A run of this many or more identical consecutive raw samples counts toward `flat_count` (sample count, not seconds). |
 | `qc.clip_run_min_samples` | int | `3` | A run of this many or more consecutive saturation-value samples counts toward `clip_count` (sample count). |
 | `qc.max_spike_fraction` | float | `1.2e-05` | Flag `"spikes"` if `spike_count / npts` exceeds this fraction (unitless, 0-1) for a channel/day. Tuned against this project's own synthetic dataset (`docs/performance.md`); **expect to retune against a real dataset's own spike statistics.** |
@@ -59,6 +59,12 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `qc.monthly_outlier_ratio` | float | `3.0` | Flag `"network_outlier"` if a station's monthly statistic is more than this multiple of the network median, or below its reciprocal (unitless ratio). |
 | `qc.spike_median_window` | int | `7` | Running-median window width (samples, odd) the isolated-impulse spike residual is computed against. |
 | `qc.max_flat_run_s` | float | `60.0` | Flag `"flat"` if the single longest flat run on a channel/day exceeds this many seconds, independent of `max_flat_fraction` (either criterion alone is sufficient). |
+| `qc.noise.core_band` | tuple[float, float] | `(5.0, 25.0)` | `[low, high]` Hz band for the hourly noise level, kurtosis and crest factor; keep it above every sensor's corner so a scalar sensitivity makes like sensors comparable. |
+| `qc.noise.low_band` | tuple[float, float] | `(1.0, 5.0)` | `[low, high]` Hz band whose ratio to the core band tracks per-station response/coupling drift (not comparable between sensor models). |
+| `qc.noise.window_s` | float | `3600.0` | Noise-statistics window length (seconds); must divide a day. |
+| `qc.noise.min_window_frac` | float | `0.5` | A noise window counts only if at least this fraction of its samples is present. |
+| `qc.noise.dead_rms_counts` | float | `0.5` | A noise window whose core-band RMS (counts) is below this is dead/flatlined hardware. |
+| `qc.instrument_groups` | dict[str, list[str]] | `{}` | Instrument group -> stations (`STA`, `NET.STA` or seed id) for the per-instrument noise plots; overrides the StationXML sensor model for the stations listed. |
 
 ## `detection` -- STA/LTA network detection (`openmeq detect`)
 

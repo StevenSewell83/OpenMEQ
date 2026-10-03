@@ -19,7 +19,6 @@ instructions: another in-flight task, ``OpenMEQ-m1f.6``, is consolidating
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -116,26 +115,10 @@ def _setup_project(synthetic_project, tmp_path: Path):
     return cfg, paths, truth, new_config_path
 
 
-def _all_ok_flags(index: DataIndex, dates: list[str]) -> dict:
-    flags = {
-        seed_id: {d: {"ok": True, "reasons": []} for d in dates} for seed_id in index.seed_ids()
-    }
-    return {"version": 1, "flags": flags}
-
-
-def _write_flags(paths: RunPaths, flags_dict: dict) -> Path:
-    paths.channel_flags_json.parent.mkdir(parents=True, exist_ok=True)
-    paths.channel_flags_json.write_text(json.dumps(flags_dict))
-    return paths.channel_flags_json
-
-
 def test_detect_window_caches_index_and_config_per_worker_process(
     synthetic_project, tmp_path, monkeypatch
 ):
     cfg, paths, _truth, config_path = _setup_project(synthetic_project, tmp_path)
-    index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_path = _write_flags(paths, _all_ok_flags(index, dates))
 
     windows = build_windows(cfg)
     assert len(windows) >= 2, "need at least two windows to exercise the cache"
@@ -165,9 +148,7 @@ def test_detect_window_caches_index_and_config_per_worker_process(
     all_triggers = []
     for window_start, window_end in windows:
         all_triggers.extend(
-            detect_window(
-                window_start, window_end, str(paths.index_json), str(flags_path), str(config_path)
-            )
+            detect_window(window_start, window_end, str(paths.index_json), str(config_path))
         )
 
     # Same index_path/cfg_path across every window in this run -> loaded

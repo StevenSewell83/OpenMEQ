@@ -164,6 +164,7 @@ from openmeq.index import DataIndex
 from openmeq.log import get_logger
 from openmeq.parallel import pmap
 from openmeq.paths import RunPaths
+from openmeq.qc.noise import NOISE_COLUMNS, empty_noise_stats, hourly_noise_stats
 
 logger = get_logger("qc.stats")
 
@@ -179,6 +180,7 @@ DAILY_STATS_COLUMNS = [
     "longest_flat_run_s",
     "clip_count",
     "npts",
+    *NOISE_COLUMNS,
 ]
 
 #: int32 full-scale saturation values (miniSEED/STEIM-decoded integer data).
@@ -382,6 +384,7 @@ def _empty_stats(seed_id: str, day: date) -> dict:
         "longest_flat_run_s": 0.0,
         "clip_count": 0,
         "npts": 0,
+        **empty_noise_stats(),
     }
 
 
@@ -422,10 +425,11 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
     sampling_rate = float(stream[0].stats.sampling_rate) if len(stream) > 0 else None
 
     if len(stream) > 0 and any(np.ma.is_masked(tr.data) for tr in stream):
-        segments = [tr.data for tr in stream.split()]
+        traces = list(stream.split())
     else:
-        segments = [tr.data for tr in stream]
-    segments = [seg for seg in segments if seg.size > 0]
+        traces = list(stream)
+    traces = [tr for tr in traces if tr.data.size > 0]
+    segments = [tr.data for tr in traces]
 
     if not segments:
         return _empty_stats(seed_id, day)
@@ -514,6 +518,7 @@ def compute_channel_day_stats(seed_id: str, day: date, stream, qc_cfg: QcConfig)
     longest_flat_run_s = longest_flat_run_samples / sampling_rate if sampling_rate else 0.0
 
     return {
+        **hourly_noise_stats(traces, day, qc_cfg.noise),
         "seed_id": seed_id,
         "date": day.isoformat(),
         "rms": rms,

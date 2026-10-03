@@ -106,9 +106,11 @@ qc -> detect -> chunk -> pick -> locate -> [review] -> magnitude -> relocate
 
 Run the whole chain with `openmeq run -c config.yaml` (supports `--force`,
 `--from`/`--to` a sub-range, and `--skip-review`), or any step on its own.
-Every step writes its own subfolder of `cfg.project.output_dir`, plus a
-`<step>/diagnostics/` folder of PNG plots and CSV/text summaries, and a
-`logs/<step>.log`. Two setup scripts (`scripts/setup_nlloc.py`,
+Every step writes its own numbered subfolder of `cfg.project.output_dir`
+(`0_setup/`, `1_qc/`, `2_detection/`, `4_data_chunks/`, `5_ml_picks/`,
+`7_location/`, `8_relocation/`, `9_plots/`, matching the MicroQuake run
+layout), each with a `diagnostics/` folder of PNG plots and CSV/text
+summaries, plus a `logs/<step>.log` and a `config_snapshot.yaml`. Two setup scripts (`scripts/setup_nlloc.py`,
 `scripts/setup_hypodd.py`) can be run independently of the rest of the
 pipeline, e.g. to build travel-time grids or check compiled array limits
 before any events exist. Full detail, including exact inputs/outputs/options

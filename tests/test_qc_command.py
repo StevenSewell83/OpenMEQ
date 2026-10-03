@@ -86,15 +86,15 @@ def qc_first_run(qc_project):
 #: ARCHITECTURE.md §3's inventory/ and qc/ output layout this command must
 #: produce (qc/diagnostics/*.png and logs/qc.log are checked separately).
 _EXPECTED_FILES = [
-    "inventory/index.json",
-    "inventory/stations.xml",
-    "inventory/stations.csv",
-    "inventory/metadata_report.json",
-    "qc/availability.csv",
-    "qc/daily_stats.csv",
-    "qc/monthly_stats.csv",
-    "qc/channel_flags.json",
-    "qc/manifest.json",
+    "0_setup/index.json",
+    "0_setup/stations.xml",
+    "0_setup/stations.csv",
+    "0_setup/metadata_report.json",
+    "1_qc/availability.csv",
+    "1_qc/daily_stats.csv",
+    "1_qc/monthly_stats.csv",
+    "1_qc/channel_flags.json",
+    "1_qc/manifest.json",
     "logs/qc.log",
 ]
 
@@ -115,7 +115,7 @@ def test_qc_command_runs_end_to_end(qc_first_run):
         path = output_dir / rel
         assert path.is_file(), f"{rel} was not created under {output_dir}"
 
-    diagnostics_dir = output_dir / "qc" / "diagnostics"
+    diagnostics_dir = output_dir / "1_qc" / "diagnostics"
     pngs = sorted(diagnostics_dir.glob("*.png"))
     assert pngs, f"expected at least one qc/diagnostics/*.png under {diagnostics_dir}"
 
@@ -134,7 +134,7 @@ def test_qc_command_recovers_known_issues(qc_first_run):
     guaranteed by M0.8, ARCHITECTURE.md §8)."""
     _result, _config_path, output_dir, truth, _elapsed = qc_first_run
 
-    payload = json.loads((output_dir / "qc" / "channel_flags.json").read_text())
+    payload = json.loads((output_dir / "1_qc" / "channel_flags.json").read_text())
     assert payload["version"] == 1
     flags = payload["flags"]
 

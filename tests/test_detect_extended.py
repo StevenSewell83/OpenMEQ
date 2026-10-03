@@ -11,7 +11,6 @@ enabled/disabled combination can be exercised end to end without the
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 
@@ -94,9 +93,6 @@ def _make_project(tmp_path: Path, *, extended: bool) -> tuple[Path, RunPaths]:
     paths = RunPaths(cfg)
     paths.ensure()
     build_index(cfg)
-    flags = {s: {DAY.date.isoformat(): {"ok": True, "reasons": []}} for s in seed_ids}
-    paths.channel_flags_json.parent.mkdir(parents=True, exist_ok=True)
-    paths.channel_flags_json.write_text(json.dumps({"version": 1, "flags": flags}))
     return config_path, paths
 
 
@@ -206,7 +202,6 @@ def test_worker_variants_agree(tmp_path):
         DAY.isoformat(),
         (DAY + 86400.0).isoformat(),
         str(paths.index_json),
-        str(paths.channel_flags_json),
         str(config_path),
     )
     plain = detect_window(*args)

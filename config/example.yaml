@@ -51,7 +51,7 @@ qc:
   spike_threshold_mad: 10               # a sample is a spike if |r| > this * MAD(r)
   spike_median_window: 7                # running-median window (samples, odd) the residual is taken against
   min_availability_pct: 80              # a channel/day below this coverage is flagged not-ok
-  exclude_channels: []                  # seed_ids to always flag not-ok, e.g. ["XX.STA01..HHZ"]
+  exclude_channels: []                  # seed_ids to leave out of detection (and flag not-ok), e.g. ["XX.STA01..HHZ"]
   # --- M1.4 / OpenMEQ-5nl.4: daily noise-statistics run-length thresholds ---
   flat_run_min_samples: 50              # >= this many identical consecutive samples counts as "flat"
   clip_run_min_samples: 3               # >= this many consecutive saturation-value samples counts as "clipped"
@@ -65,6 +65,16 @@ qc:
   max_clip_count: 0                     # flag "clipped" if clip_count exceeds this
   monthly_outlier_ratio: 3.0            # flag "network_outlier" if a station's monthly stat ratio
                                          # to the network median exceeds this (or is below its reciprocal)
+  # --- OpenMEQ-h8j: hourly noise statistics + per-instrument noise plots ---
+  # (1_qc/noise_daily.csv and 1_qc/diagnostics/noise/; MicroQuake noise_daily style)
+  noise:
+    core_band: [5.0, 25.0]              # Hz; above every sensor corner, so like sensors compare
+    low_band: [1.0, 5.0]                # Hz; low/core ratio = per-station drift tracker
+    window_s: 3600                      # window length, s (must divide a day)
+    min_window_frac: 0.5                # a window counts if >= this fraction of samples present
+    dead_rms_counts: 0.5                # core-band RMS (counts) below this = dead/flatlined window
+  instrument_groups: {}                 # {group: [STA | NET.STA | seed_id]} overrides the
+                                         # StationXML sensor model, e.g. {"GS-11D": ["RT05"]}
 
 detection:
   sta: 0.05                             # STA/LTA short-term average window, s

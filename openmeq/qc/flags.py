@@ -1,8 +1,9 @@
 """Monthly cross-station QC comparison and per-channel-day flags (M1.5, ``OpenMEQ-5nl.5``).
 
 Completes PLAN.md §6 Step 1's "Monthly cross-station comparison" and its
-required output, ``qc/channel_flags.json`` (ARCHITECTURE.md §4.2), consumed
-directly by detection (M2.1) to exclude bad channels. This module works
+required output, ``qc/channel_flags.json`` (ARCHITECTURE.md §4.2) -- an
+informational report: no step drops data on these flags (OpenMEQ-7c4;
+detection only honours ``cfg.qc.exclude_channels``). This module works
 purely from the two QC CSVs/DataFrames M1.3 (``qc/availability.csv``,
 :mod:`openmeq.qc.availability`) and M1.4 (``qc/daily_stats.csv``,
 :mod:`openmeq.qc.stats`) already produced -- it never reads waveforms, so it

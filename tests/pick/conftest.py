@@ -41,12 +41,19 @@ import pytest
 import yaml
 
 from openmeq.config import Config, load_config
-from openmeq.paths import RunPaths
+from openmeq.paths import SETUP_DIR, STEP_DIRS, RunPaths
 
 #: The per-step output folders (ARCHITECTURE.md §3) that make up a
 #: "detect+chunk done" project -- copied verbatim from the shared
 #: ``full_pipeline_run`` fixture rather than recomputed.
-_PRE_PICK_FOLDERS = ("inventory", "qc", "detections", "chunks", "chunks_pn")
+#: Relative to the run root, so they follow ``openmeq.paths``' numbered layout.
+_PRE_PICK_FOLDERS = (
+    SETUP_DIR,
+    STEP_DIRS["qc"],
+    STEP_DIRS["detections"],
+    STEP_DIRS["chunks"],
+    STEP_DIRS["chunks_pn"],
+)
 
 
 def _dump_config_copy(cfg: Config, path: Path) -> None:

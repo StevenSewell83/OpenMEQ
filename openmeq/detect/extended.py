@@ -37,7 +37,7 @@ Outputs
 Characteristic-function fidelity
 --------------------------------
 The example panels reuse the detector's own code path rather than a
-plotting-side reimplementation: the same flag-aware read
+plotting-side reimplementation: the same read
 (:func:`openmeq.detect.worker._read_window`), the same
 :func:`~openmeq.detect.worker.preprocess_stream` (merge/split/float32/fast
 detrend/``cfg.detection.filter``) and the same
@@ -59,7 +59,6 @@ warning naming the figure and carries on.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -422,8 +421,6 @@ def _cf_examples(cfg: Config, paths: RunPaths, detections_df: pd.DataFrame, out_
 
     det_cfg = cfg.detection
     index = DataIndex.load(paths.index_json)
-    with open(paths.channel_flags_json, encoding="utf-8") as f:
-        flags = json.load(f).get("flags", {})
 
     span = _run_span(cfg)
     warmup = _warmup_s(det_cfg)
@@ -441,7 +438,9 @@ def _cf_examples(cfg: Config, paths: RunPaths, detections_df: pd.DataFrame, out_
         w1 = t_ref + window["duration_s"] + POST_S
 
         def _one(window=window, w0=w0, w1=w1, i=i) -> None:
-            stream = preprocess_stream(_read_window(index, flags, w0, w1, pad=0.0), det_cfg)
+            stream = preprocess_stream(
+                _read_window(index, cfg.qc.exclude_channels, w0, w1, pad=0.0), det_cfg
+            )
             _plot_cf_example(window, stream, det_cfg, out_dir / f"cf_examples_{i:02d}.png")
 
         _safely(f"cf_examples_{i:02d} ({window['label']})", _one)
@@ -481,7 +480,7 @@ def make_detect_extended_diagnostics(
         ``cfg.detection`` (preprocessing/thresholds), ``cfg.data`` (run
         span) and ``cfg.diagnostics.n_examples`` are used.
     paths : openmeq.paths.RunPaths
-        ``index_json``/``channel_flags_json`` (waveform reads) and
+        ``index_json`` (waveform reads) and
         ``detect_diagnostics_dir``.
     detections_df : pandas.DataFrame
         ``detections.csv``-shaped table, in-memory or re-read from disk.

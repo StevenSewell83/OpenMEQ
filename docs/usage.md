@@ -21,6 +21,27 @@ write their own subfolder of `cfg.project.output_dir`:
 qc -> detect -> chunk -> pick -> locate -> [review] -> magnitude -> relocate
 ```
 
+The step folders are numbered to match the MicroQuake run layout (e.g.
+`projects/RK-NM/run_2024_2026`), so the same stage has the same number in
+runs from either tool:
+
+| Folder | Written by |
+|---|---|
+| `0_setup/` | `qc`: file index, merged StationXML, station table, metadata report |
+| `1_qc/` | `qc` |
+| `2_detection/` | `detect` |
+| `4_data_chunks/chunks/`, `4_data_chunks/chunks_pn/` | `chunk` (raw) and `pick` prep (PhaseNet-ready) |
+| `5_ml_picks/` | `pick` |
+| `7_location/` (NLLoc grids in `7_location/nlloc/`) | `locate` |
+| `7b_review/` | `review` |
+| `8_relocation/magnitude/` | `magnitude` |
+| `8_relocation/` | `relocate` |
+| `9_plots/` | run-level diagnostics |
+| `logs/`, `config_snapshot.yaml` | every step |
+
+3 and 6 are unused: OpenMEQ has no separate duplicate-removal or
+pick-refinement stage.
+
 Every step is idempotent: run standalone with `openmeq <step> -c config.yaml`,
 or chained with `openmeq run -c config.yaml`. Re-running a step (or the whole
 chain) with nothing changed does almost no work -- each step checks its own
@@ -94,21 +115,21 @@ for a human). Instead, on the `review` link in the chain:
 
 - **`cfg.review.enabled: false`** (the default), or `--skip-review` was
   passed: nothing to do; `magnitude` falls through to
-  `locate/catalog_auto.xml` directly.
+  `7_location/catalog_auto.xml` directly.
 - **`cfg.review.enabled: true`, and nothing has been reviewed yet** (no
-  `review/events/*.xml` and no `review/catalog_final.xml`): `openmeq run`
+  `7b_review/events/*.xml` and no `7b_review/catalog_final.xml`): `openmeq run`
   logs a message telling you to run `openmeq review -c config.yaml`
   separately, then continues the rest of the chain using
-  `locate/catalog_auto.xml` for that run. Re-run `openmeq run` later (after
+  `7_location/catalog_auto.xml` for that run. Re-run `openmeq run` later (after
   reviewing some events) and it will pick up your review automatically.
 - **`cfg.review.enabled: true`, and a prior separate `openmeq review`
   session already produced some reviewed events**: `openmeq run` safely
-  (re)compiles `review/catalog_final.xml` (`openmeq review --compile`,
+  (re)compiles `7b_review/catalog_final.xml` (`openmeq review --compile`,
   which never launches ObsPyck) so it reflects everything reviewed so far,
   then continues.
 
-`magnitude` always runs against `review/catalog_final.xml` if it exists,
-else `locate/catalog_auto.xml` -- this is the one and only place that
+`magnitude` always runs against `7b_review/catalog_final.xml` if it exists,
+else `7_location/catalog_auto.xml` -- this is the one and only place that
 catalogue-selection rule is decided (`openmeq.magnitude.pipeline
 .select_catalog_path`), so it applies identically whether you call `openmeq
 magnitude` directly or through `openmeq run`.
@@ -118,28 +139,49 @@ magnitude` directly or through `openmeq run`.
 **Reads:** `cfg.data.waveform_dirs` (raw miniSEED), `cfg.stations` (StationXML
 file/folder and/or CSV).
 
-**Writes** (under `inventory/` and `qc/`):
+**Writes** (under `0_setup/` and `1_qc/`):
 
-- `inventory/index.json` -- a header-only miniSEED index every later step
+- `0_setup/index.json` -- a header-only miniSEED index every later step
   uses to find files, instead of re-scanning directories.
-- `inventory/stations.xml` / `.csv` -- the merged station inventory.
-- `inventory/metadata_report.json` -- channels with data but no metadata,
+- `0_setup/stations.xml` / `.csv` -- the merged station inventory.
+- `0_setup/metadata_report.json` -- channels with data but no metadata,
   and the reverse.
-- `qc/availability.csv` -- per channel/day coverage, gaps, overlaps.
-- `qc/daily_stats.csv` -- per channel/day RMS, mean absolute amplitude,
+- `1_qc/availability.csv` -- per channel/day coverage, gaps, overlaps.
+- `1_qc/daily_stats.csv` -- per channel/day RMS, mean absolute amplitude,
   isolated-impulse spike count, kurtosis, flat/clip run statistics.
-- `qc/monthly_stats.csv` -- each station's stats against the network
+- `1_qc/monthly_stats.csv` -- each station's stats against the network
   median, for outlier detection.
-- `qc/channel_flags.json` -- the good/bad channel-per-day verdict
-  (`"ok": true/false`, with `"reasons"` when not ok) that `detect` uses to
-  exclude bad channels.
+- `1_qc/channel_flags.json` -- the good/bad channel-per-day verdict
+  (`"ok": true/false`, with `"reasons"` when not ok). This is a report for
+  you to review: no later step drops data because of it. To keep a channel
+  out of processing, list it in `qc.exclude_channels`.
 
-**Diagnostics** (`qc/diagnostics/`): an availability heatmap, daily RMS/mean-
+**Diagnostics** (`1_qc/diagnostics/`): an availability heatmap, daily RMS/mean-
 abs/spike-count/kurtosis time series per channel, monthly box plots and
 rankings per statistic, and a flag overview plot.
 
+**Noise by instrument** (`1_qc/diagnostics/noise/`, data in
+`1_qc/noise_daily.csv`): the MicroQuake `noise_daily` figures. Each channel-day
+is cut into hourly windows; each window gets a band-limited RMS
+(`qc.noise.core_band`, default 5-25 Hz), kurtosis and crest factor, and the
+day is summarised by the median and p5/p95 across its hours. Levels are
+divided by each channel's scalar StationXML sensitivity (dB re 1 m/s; dB re 1
+count where there is none, marked †). Channels are grouped by the StationXML
+sensor model, or by `qc.instrument_groups` where you set it (marked ‡), and
+each group gets its own figures on its own colour/axis range, since levels
+only compare between like instruments:
+
+- `<group>_heatmap.png` -- daily noise level and daily transient spread
+  (p95 − p5), station × day.
+- `<group>_strips.png` -- one panel per station, median with a p5–p95 band.
+- `<group>_overlay.png` -- the group's stations on one axis.
+- `impulsiveness.png` -- every station on one scale (kurtosis and crest
+  factor are scale-invariant, so no response is needed).
+
+Vertical channels only.
+
 Run standalone to sanity-check new data before detecting anything on it; run
-first in the chain always (`detect` depends on `channel_flags.json`).
+first in the chain always (`detect` reads the `0_setup/index.json` it builds).
 
 **Tuning note:** `qc.max_spike_fraction` (and the other `qc.max_*`/`qc.min_*`
 thresholds) are tuned against this project's own synthetic dataset
@@ -149,13 +191,14 @@ the QC flags on a new deployment.
 
 ## Step 2: `openmeq detect` -- network coincidence detection
 
-**Reads:** `inventory/index.json`, `qc/channel_flags.json` (excludes flagged
-channels), `cfg.detection`.
+**Reads:** `0_setup/index.json`, `cfg.detection`. Uses every channel with
+data except those in `cfg.qc.exclude_channels`; QC flags do not gate
+detection.
 
-**Writes:** `detections/detections.csv` (trigger time, duration, coincidence
+**Writes:** `2_detection/detections.csv` (trigger time, duration, coincidence
 sum, participating stations).
 
-**Diagnostics** (`detections/diagnostics/`): detections per day/hour,
+**Diagnostics** (`2_detection/diagnostics/`): detections per day/hour,
 coincidence-sum histogram, station participation.
 
 Filters each day's data, runs recursive STA/LTA per channel, and applies
@@ -166,40 +209,40 @@ triggers within `detection.dedup_window_s` are merged into one detection
 
 ## Step 3: `openmeq chunk` -- per-event waveform chunks
 
-**Reads:** `detections/detections.csv`, `inventory/index.json`.
+**Reads:** `2_detection/detections.csv`, `0_setup/index.json`.
 
-**Writes:** `chunks/<event_id>/<event_id>.mseed` (raw, all channels,
+**Writes:** `4_data_chunks/chunks/<event_id>/<event_id>.mseed` (raw, all channels,
 original sampling rate, `chunks.pre_s`/`post_s` around the trigger) and
-`chunks/completeness.csv` (fraction of the expected window actually present
+`4_data_chunks/chunks/completeness.csv` (fraction of the expected window actually present
 per station).
 
-**Diagnostics** (`chunks/diagnostics/`): completeness heatmap and box plot.
+**Diagnostics** (`4_data_chunks/chunks/diagnostics/`): completeness heatmap and box plot.
 
 These raw chunks are kept and reused by review, magnitude and
 cross-correlation later -- they are never regenerated once written unless
-`detections.csv`/`inventory/index.json` change or you pass `--force`.
+`detections.csv`/`0_setup/index.json` change or you pass `--force`.
 
 ## Step 4: `openmeq pick` -- PhaseNet picking
 
-**Reads:** `chunks/<event_id>/*.mseed`, `cfg.stations.channel_map`,
+**Reads:** `4_data_chunks/chunks/<event_id>/*.mseed`, `cfg.stations.channel_map`,
 `cfg.phasenet`.
 
 **Writes:**
 
-- `chunks_pn/<event_id>/<event_id>.mseed` -- PhaseNet-ready waveforms
+- `4_data_chunks/chunks_pn/<event_id>/<event_id>.mseed` -- PhaseNet-ready waveforms
   (merged/gap-filled, demeaned/detrended, tapered, optional high-pass,
   anti-alias-filtered and decimated to `phasenet.target_rate_hz`, channels
   mapped to Z/1/2 or rotated to ZNE if `stations.orientations` gives a known
   azimuth).
-- `chunks_pn/data_list.csv` -- the PhaseNet input list.
-- `chunks_pn/prep_report.csv` -- per event/station, how many components were
+- `4_data_chunks/chunks_pn/data_list.csv` -- the PhaseNet input list.
+- `4_data_chunks/chunks_pn/prep_report.csv` -- per event/station, how many components were
   found and how many had to be zero-filled.
-- `pick/phasenet_raw/` -- PhaseNet's own native output.
-- `pick/catalog_picks.xml` -- one QuakeML `Event` per detection with
+- `5_ml_picks/phasenet_raw/` -- PhaseNet's own native output.
+- `5_ml_picks/catalog_picks.xml` -- one QuakeML `Event` per detection with
   automatic P/S picks, probabilities and pick uncertainties (no origins
   yet -- that's `locate`'s job).
 
-**Diagnostics** (`pick/diagnostics/`): P/S pick counts per station,
+**Diagnostics** (`5_ml_picks/diagnostics/`): P/S pick counts per station,
 pick-probability histograms, picks-per-event histogram, and example
 waveform + probability plots for a sample of events.
 
@@ -213,22 +256,22 @@ regardless of `phasenet.batch_size` (see the `phasenet` section of
 
 ## Step 5: `openmeq locate` -- two-pass NLLoc location and filtering
 
-**Reads:** `pick/catalog_picks.xml`, `cfg.nlloc` (velocity model, grid,
+**Reads:** `5_ml_picks/catalog_picks.xml`, `cfg.nlloc` (velocity model, grid,
 filter thresholds). The first time this step runs (or whenever
 `cfg.nlloc.velocity_model`/`cfg.nlloc.grid` change), it builds/refreshes the
-NLLoc travel-time grids under `nlloc/` (equivalent to running
+NLLoc travel-time grids under `7_location/nlloc/` (equivalent to running
 `scripts/setup_nlloc.py` yourself -- see below).
 
 **Writes:**
 
-- `locate/catalog_auto.xml` -- one preferred `Origin` per surviving event.
-- `locate/summary.csv` -- `event_id,time,lat,lon,depth_km,rms,gap,n_p,n_s,
+- `7_location/catalog_auto.xml` -- one preferred `Origin` per surviving event.
+- `7_location/summary.csv` -- `event_id,time,lat,lon,depth_km,rms,gap,n_p,n_s,
   err_h_km,err_z_km,status,reason`, one row per input event, **never
   dropped** (a rejected or never-converged event still gets a row, with
   numeric fields left empty rather than the row omitted).
-- `locate/removal_log.csv` -- every pick removed at every pass/iteration and
+- `7_location/removal_log.csv` -- every pick removed at every pass/iteration and
   why.
-- `locate/passA/<event_id>/iter_NN/`, `locate/passB/<event_id>/iter_NN/` --
+- `7_location/passA/<event_id>/iter_NN/`, `7_location/passB/<event_id>/iter_NN/` --
   the raw NLLoc work directories (obs file, control file, `.hyp` output) for
   each relocation iteration, useful for debugging one event by hand.
 
@@ -246,7 +289,7 @@ stable or `max_iter` is reached:
   wins): `min_p_phases`, `min_phases`, `min_s_phases`, `max_rms_s`,
   `max_gap_deg`, `max_err_h_km`, `max_err_z_km` (`nlloc.filter.events`).
 
-**Diagnostics** (`locate/diagnostics/`, per pass, `passA_`/`passB_`
+**Diagnostics** (`7_location/diagnostics/`, per pass, `passA_`/`passB_`
 prefixes): P/S residual histograms (overall and per station), an event map +
 E-W/N-S depth-section figure, RMS/gap/error histograms, and pick/event
 removal-by-reason bar charts, plus `summary.txt` with flat
@@ -270,12 +313,12 @@ project before any events exist, or to pre-build grids before a large
 
 ## Step 6: `openmeq review` -- manual review (optional)
 
-**Reads:** `locate/catalog_auto.xml`, the raw `chunks/<event_id>/*.mseed`,
-`cfg.review`, `review/state.json` (resume state).
+**Reads:** `7_location/catalog_auto.xml`, the raw `4_data_chunks/chunks/<event_id>/*.mseed`,
+`cfg.review`, `7b_review/state.json` (resume state).
 
-**Writes:** `review/events/<event_id>.xml` (one file per manually-reviewed
-event that was actually re-picked/re-saved), `review/state.json`, and, with
-`--compile`, `review/catalog_final.xml`.
+**Writes:** `7b_review/events/<event_id>.xml` (one file per manually-reviewed
+event that was actually re-picked/re-saved), `7b_review/state.json`, and, with
+`--compile`, `7b_review/catalog_final.xml`.
 
 This step is entirely optional (`cfg.review.enabled: false` by default) and
 is the only interactive step in the pipeline. It launches
@@ -312,7 +355,7 @@ section -- spliced byte-identical from ObsPyck's own shipped `example.cfg`):
 The map view's "do NLLoc" button relocates the event with your edited picks
 using the same NLLoc control file/grids `setup_nlloc.py` built. Saving
 ("save Event locally") writes a timestamped QuakeML file in that event's own
-scratch work directory (`review/work/<event_id>/`); the batch loop detects
+scratch work directory (`7b_review/work/<event_id>/`); the batch loop detects
 the save by diffing that directory's file list before/after ObsPyck exits
 (ObsPyck's own exit code cannot distinguish "saved" from "closed without
 saving" -- both exit `0`), not by trusting the exit code alone.
@@ -332,7 +375,7 @@ Event <event_id>: no save detected. [s]kip / [r]eject / [q]uit batch?
   with **no** `state.json` entry (neither skipped nor done), so it's offered
   again first next time.
 
-**Resuming:** `review/state.json` records `"done"`/`"skipped"`/`"rejected"`
+**Resuming:** `7b_review/state.json` records `"done"`/`"skipped"`/`"rejected"`
 per event and is written after every event, not just at the end -- a killed
 session loses at most the one event that was in progress when it died.
 Once an event has a `state.json` entry it is **never** re-offered
@@ -345,9 +388,9 @@ entries and have them offered again.
 openmeq review -c config.yaml --compile
 ```
 
-Merges `review/events/*.xml` (each one replaces the automatic event
+Merges `7b_review/events/*.xml` (each one replaces the automatic event
 wholesale -- origin, picks, everything) and any `"rejected"` decisions over
-`locate/catalog_auto.xml`, into `review/catalog_final.xml`. Safe to run any
+`7_location/catalog_auto.xml`, into `7b_review/catalog_final.xml`. Safe to run any
 time (never launches ObsPyck); `openmeq run` calls this automatically once
 anything has been reviewed (see "The `review` step's branching rule" above).
 An event never offered for review, or still `"skipped"`, passes through
@@ -355,15 +398,15 @@ unchanged.
 
 ## Step 7: `openmeq magnitude` -- local magnitude (ML)
 
-**Reads:** `review/catalog_final.xml` if it exists, else
-`locate/catalog_auto.xml` (override with `--catalog PATH`, e.g. to compute
-magnitudes on hypoDD-relocated output), `inventory/stations.xml` (needs a
-real instrument response), `chunks/<event_id>/*.mseed`, `cfg.magnitude`.
+**Reads:** `7b_review/catalog_final.xml` if it exists, else
+`7_location/catalog_auto.xml` (override with `--catalog PATH`, e.g. to compute
+magnitudes on hypoDD-relocated output), `0_setup/stations.xml` (needs a
+real instrument response), `4_data_chunks/chunks/<event_id>/*.mseed`, `cfg.magnitude`.
 
-**Writes:** `magnitude/catalog_mag.xml` (with `Amplitude`/`StationMagnitude`/
-`Magnitude` objects added), `magnitude/station_magnitudes.csv`.
+**Writes:** `8_relocation/magnitude/catalog_mag.xml` (with `Amplitude`/`StationMagnitude`/
+`Magnitude` objects added), `8_relocation/magnitude/station_magnitudes.csv`.
 
-**Diagnostics** (`magnitude/diagnostics/`): station ML vs. distance, station
+**Diagnostics** (`8_relocation/magnitude/diagnostics/`): station ML vs. distance, station
 residuals (useful for deriving `magnitude.ml.station_corrections`), a
 Gutenberg-Richter magnitude-frequency plot, and ML through time.
 
@@ -371,23 +414,23 @@ Per event: remove instrument response and simulate a Wood-Anderson
 seismograph, measure peak amplitude in a window around the S pick (max of
 horizontals, falls back to Z), convert to ML via the configured relation
 (`hutton_boore` or `local`, `magnitude.ml.relation`), and combine station
-MLs (median by default) into the event ML. `magnitude/catalog_mag.xml` is
+MLs (median by default) into the event ML. `8_relocation/magnitude/catalog_mag.xml` is
 what `relocate` reads next, so hypoDD's relocated catalogue carries
 magnitudes through too.
 
 ## Step 8: `openmeq relocate` -- hypoDD relocation
 
-**Reads:** `magnitude/catalog_mag.xml`, the raw chunks (for
+**Reads:** `8_relocation/magnitude/catalog_mag.xml`, the raw chunks (for
 cross-correlation), `cfg.hypodd`.
 
-**Writes:** `relocate/catalog_dd.xml` (a new `smi:openmeq/hypodd` origin per
+**Writes:** `8_relocation/catalog_dd.xml` (a new `smi:openmeq/hypodd` origin per
 relocated event, `event.preferred_origin_id` updated, magnitudes carried
-over unchanged), `relocate/summary.csv`, plus the hypoDD/ph2dt working files
-under `relocate/work/` (`station.dat`, `phase.dat`, `event.dat`,
+over unchanged), `8_relocation/summary.csv`, plus the hypoDD/ph2dt working files
+under `8_relocation/work/` (`station.dat`, `phase.dat`, `event.dat`,
 `ph2dt.inp`/`hypoDD.inp`, `dt.ct`/`dt.cc`, `hypoDD.log`, `hypoDD.reloc`) and
-the per-event cross-correlation waveform cache under `relocate/cache/`.
+the per-event cross-correlation waveform cache under `8_relocation/cache/`.
 
-**Diagnostics** (`relocate/diagnostics/`): before/after location maps and
+**Diagnostics** (`8_relocation/diagnostics/`): before/after location maps and
 depth sections (the "after" map coloured by relocation shift), a `dt.cc`
 CC-value histogram, a relative-shift histogram, and per-iteration RMS/
 connectivity/air-quake-and-condition-number plots parsed from `hypoDD.log`.

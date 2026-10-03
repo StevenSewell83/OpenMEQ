@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,10 @@ def _load_cfg_and_paths(config_path: str) -> tuple[Config, RunPaths]:
 
     paths = RunPaths(cfg)
     paths.ensure()
+    # The exact config this invocation ran with, next to its outputs (as the
+    # MicroQuake run layout does) -- overwritten by every step, so it always
+    # matches the most recent one.
+    shutil.copyfile(config_path, paths.config_snapshot_yaml)
     return cfg, paths
 
 
@@ -485,7 +490,7 @@ def qc(config_path: str, force: bool) -> None:
     "force",
     is_flag=True,
     default=False,
-    help="Rerun even if qc/channel_flags.json, inventory/index.json and cfg.detection "
+    help="Rerun even if inventory/index.json, cfg.detection and qc.exclude_channels "
     "are unchanged since the last run.",
 )
 def detect(config_path: str, force: bool) -> None:

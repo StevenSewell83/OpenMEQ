@@ -59,6 +59,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from obspy import UTCDateTime
+
 from openmeq.index import build_index
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
@@ -73,6 +75,8 @@ from openmeq.qc.flags import (
     write_channel_flags,
     write_monthly_stats_csv,
 )
+from openmeq.qc.instruments import instrument_table
+from openmeq.qc.noise_plots import make_noise_diagnostics, noise_table, write_noise_daily_csv
 from openmeq.qc.plots import make_qc_diagnostics
 from openmeq.qc.stats import compute_daily_stats, write_daily_stats_csv
 from openmeq.stations import (
@@ -87,6 +91,32 @@ if TYPE_CHECKING:
     from openmeq.paths import RunPaths
 
 logger = get_logger("qc")
+
+
+def _noise_diagnostics(cfg: Config, paths: RunPaths, inv, seed_ids, daily_stats_df) -> None:
+    """Per-instrument noise table and figures (OpenMEQ-h8j).
+
+    A failure here is logged, never raised: these figures are a report and
+    must not stop QC's own outputs (already written) from being marked done.
+    """
+    try:
+        mid = cfg.data.start + (cfg.data.end - cfg.data.start) / 2
+        instruments = instrument_table(
+            inv, seed_ids, UTCDateTime(mid.isoformat()), cfg.qc.instrument_groups
+        )
+        noise_df = noise_table(daily_stats_df, instruments)
+        write_noise_daily_csv(noise_df, paths.noise_daily_csv)
+        make_noise_diagnostics(
+            noise_df,
+            paths.qc_noise_diagnostics_dir,
+            start=cfg.data.start,
+            end=cfg.data.end,
+            noise_cfg=cfg.qc.noise,
+            title=cfg.project.name,
+        )
+    except Exception:  # noqa: BLE001 - report figures must never fail the step
+        logger.exception("qc: noise diagnostics failed (QC outputs are unaffected)")
+
 
 #: Step key StepManifest is keyed on (ARCHITECTURE.md §2/§3's whole-step
 #: manifest; see the module docstring's "Skip-unchanged" section).
@@ -188,6 +218,7 @@ def run(cfg: Config, paths: RunPaths, *, force: bool = False, **_opts: object) -
         paths.qc_diagnostics_dir,
         stats=cfg.qc.daily_stats,
     )
+    _noise_diagnostics(cfg, paths, inv, seed_ids, daily_stats_df)
 
     manifest.mark_done(_MANIFEST_KEY, input_fp)
 

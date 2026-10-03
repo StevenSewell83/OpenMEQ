@@ -1,12 +1,9 @@
 """Tests for ``openmeq.detect.worker`` (M2.1, ``OpenMEQ-ujx.1``).
 
-Per the orchestrator note on this issue: these tests hand-build
-``qc/channel_flags.json`` files rather than running the real QC step
-(``openmeq.qc``), so they never depend on which synthetic channels QC itself
-would flag (that's being changed concurrently by another task). Every test
-below builds its own minimal, explicit flags dict via :func:`_all_ok_flags`
-(and mutates it for the exclusion test), covering exactly the seed ids/dates
-the index actually has.
+QC flags do not gate detection (OpenMEQ-7c4): ``detect_window`` reads every
+indexed channel except ``cfg.qc.exclude_channels``, and never reads
+``qc/channel_flags.json``. :func:`test_qc_flagged_channel_still_used` and
+:func:`test_exclude_channels_dropped` pin that contract.
 
 Every test that runs a pipeline step (builds an index, writes flags,
 produces output) works from a **function-scoped** copy of the shared,
@@ -30,6 +27,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 from obspy import UTCDateTime
 from obspy.signal import trigger as obspy_trigger_module
 
@@ -64,30 +62,29 @@ def _setup_project(synthetic_project, tmp_path: Path):
     return cfg, paths, truth, new_config_path
 
 
-def _all_ok_flags(index: DataIndex, dates: list[str]) -> dict:
-    """A ``channel_flags.json``-shaped dict marking every seed id ``ok`` on every date.
+def _spy_coincidence_streams(monkeypatch) -> list:
+    """Record the stream ``detect_window`` hands to ``coincidence_trigger``."""
+    captured_streams = []
+    real_coincidence_trigger = obspy_trigger_module.coincidence_trigger
 
-    Hand-built per the orchestrator note (see module docstring) -- this
-    never depends on QC's own flagging logic/defaults.
-    """
-    flags = {
-        seed_id: {d: {"ok": True, "reasons": []} for d in dates} for seed_id in index.seed_ids()
-    }
-    return {"version": 1, "flags": flags}
+    def _spy(*args, **kwargs):
+        # coincidence_trigger's positional signature is
+        # (trigger_type, thr_on, thr_off, stream, thr_coincidence_sum, ...);
+        # detect_window calls it positionally, so the stream is args[3].
+        captured_streams.append(args[3])
+        return real_coincidence_trigger(*args, **kwargs)
+
+    monkeypatch.setattr("openmeq.detect.worker.coincidence_trigger", _spy)
+    return captured_streams
 
 
-def _write_flags(paths: RunPaths, flags_dict: dict) -> Path:
-    paths.channel_flags_json.parent.mkdir(parents=True, exist_ok=True)
-    paths.channel_flags_json.write_text(json.dumps(flags_dict))
-    return paths.channel_flags_json
+def _stations(stream) -> set[str]:
+    return {f"{tr.stats.network}.{tr.stats.station}" for tr in stream}
 
 
 @pytest.mark.slow
 def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
-    index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_path = _write_flags(paths, _all_ok_flags(index, dates))
 
     windows = build_windows(cfg)
     assert len(windows) == 2
@@ -95,9 +92,7 @@ def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
     all_triggers = []
     for window_start, window_end in windows:
         all_triggers.extend(
-            detect_window(
-                window_start, window_end, str(paths.index_json), str(flags_path), str(config_path)
-            )
+            detect_window(window_start, window_end, str(paths.index_json), str(config_path))
         )
 
     assert len(all_triggers) > 0
@@ -121,50 +116,52 @@ def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
 
 
 @pytest.mark.slow
-def test_flagged_channel_excluded(synthetic_project, tmp_path, monkeypatch):
+def test_qc_flagged_channel_still_used(synthetic_project, tmp_path, monkeypatch):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_dict = _all_ok_flags(index, dates)
+    flagged_station = "XX.STA01"
+    # Every channel-day not ok -- the RK-NM 2026 Q1 situation. Detection must
+    # ignore this file entirely.
+    flags = {
+        seed_id: {"2025-01-01": {"ok": False, "reasons": ["spikes", "network_outlier"]}}
+        for seed_id in index.seed_ids()
+    }
+    paths.channel_flags_json.parent.mkdir(parents=True, exist_ok=True)
+    paths.channel_flags_json.write_text(json.dumps({"version": 1, "flags": flags}))
+    captured_streams = _spy_coincidence_streams(monkeypatch)
 
-    excluded_station = "XX.STA01"
-    for seed_id in list(flags_dict["flags"]):
-        if seed_id.startswith(f"{excluded_station}."):
-            for d in dates:
-                flags_dict["flags"][seed_id][d] = {"ok": False, "reasons": ["test-excluded"]}
-
-    flags_path = _write_flags(paths, flags_dict)
-    windows = build_windows(cfg)
-
-    captured_streams = []
-    real_coincidence_trigger = obspy_trigger_module.coincidence_trigger
-
-    def _spy(*args, **kwargs):
-        # coincidence_trigger's positional signature is
-        # (trigger_type, thr_on, thr_off, stream, thr_coincidence_sum, ...);
-        # detect_window calls it positionally, so the stream is args[3].
-        captured_streams.append(args[3])
-        return real_coincidence_trigger(*args, **kwargs)
-
-    monkeypatch.setattr("openmeq.detect.worker.coincidence_trigger", _spy)
-
-    for window_start, window_end in windows:
-        detect_window(
-            window_start, window_end, str(paths.index_json), str(flags_path), str(config_path)
-        )
+    window_start, window_end = build_windows(cfg)[0]
+    triggers = detect_window(window_start, window_end, str(paths.index_json), str(config_path))
 
     assert captured_streams, "coincidence_trigger was never called"
-    for stream in captured_streams:
-        stations_present = {f"{tr.stats.network}.{tr.stats.station}" for tr in stream}
-        assert excluded_station not in stations_present
+    assert flagged_station in _stations(captured_streams[0])
+    assert len(triggers) > 0
+
+
+@pytest.mark.slow
+def test_exclude_channels_dropped(synthetic_project, tmp_path, monkeypatch):
+    cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
+    index = DataIndex.load(paths.index_json)
+    excluded_station = "XX.STA01"
+    excluded = [sid for sid in index.seed_ids() if sid.startswith(f"{excluded_station}.")]
+    assert excluded
+    raw = yaml.safe_load(config_path.read_text())
+    raw.setdefault("qc", {})["exclude_channels"] = excluded
+    config_path.write_text(yaml.safe_dump(raw))
+    captured_streams = _spy_coincidence_streams(monkeypatch)
+
+    window_start, window_end = build_windows(cfg)[0]
+    detect_window(window_start, window_end, str(paths.index_json), str(config_path))
+
+    assert captured_streams, "coincidence_trigger was never called"
+    stations_present = _stations(captured_streams[0])
+    assert excluded_station not in stations_present
+    assert len(stations_present) >= cfg.detection.coincidence_sum
 
 
 @pytest.mark.slow
 def test_gap_day_does_not_crash(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
-    index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_path = _write_flags(paths, _all_ok_flags(index, dates))
 
     gap_issue = next(i for i in truth["known_issues"] if i["kind"] == "gap")
     gap_date = gap_issue["start"].date.isoformat()
@@ -176,9 +173,7 @@ def test_gap_day_does_not_crash(synthetic_project, tmp_path):
         windows[0],
     )
 
-    triggers = detect_window(
-        gap_window[0], gap_window[1], str(paths.index_json), str(flags_path), str(config_path)
-    )
+    triggers = detect_window(gap_window[0], gap_window[1], str(paths.index_json), str(config_path))
     assert isinstance(triggers, list)
     # Other channels/segments are unaffected by the one channel's gap, so
     # detection over a whole day still finds triggers.
@@ -188,9 +183,6 @@ def test_gap_day_does_not_crash(synthetic_project, tmp_path):
 @pytest.mark.slow
 def test_day_boundary_event_appears_in_both_adjacent_windows(synthetic_project, tmp_path):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
-    index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_path = _write_flags(paths, _all_ok_flags(index, dates))
 
     day_boundary = UTCDateTime("2025-01-02T00:00:00Z")
     boundary_event = min(truth["events"], key=lambda ev: abs(ev["origin"]["time"] - day_boundary))
@@ -205,9 +197,7 @@ def test_day_boundary_event_appears_in_both_adjacent_windows(synthetic_project, 
 
     origin_time = boundary_event["origin"]["time"]
     for window_start, window_end in (day1_window, day2_window):
-        triggers = detect_window(
-            window_start, window_end, str(paths.index_json), str(flags_path), str(config_path)
-        )
+        triggers = detect_window(window_start, window_end, str(paths.index_json), str(config_path))
         trigger_times = [UTCDateTime(t["time"]) for t in triggers]
         assert any(abs(tt - origin_time) <= _MATCH_TOLERANCE_S for tt in trigger_times), (
             f"window {window_start}..{window_end} has no trigger near the boundary "

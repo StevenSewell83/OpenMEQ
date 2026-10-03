@@ -136,7 +136,7 @@ def test_manifest_json_written_at_documented_path(tmp_path: Path) -> None:
     manifest.mark_done("key-a", "fp-a")
 
     manifest_path = paths.manifest_json("qc")
-    assert manifest_path == paths.root / "qc" / "manifest.json"
+    assert manifest_path == paths.root / "1_qc" / "manifest.json"
     assert manifest_path.is_file()
 
     data = json.loads(manifest_path.read_text())

@@ -143,6 +143,35 @@ class StationsConfig(_StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class QcNoiseConfig(_StrictModel):
+    """Hourly-window band-limited noise statistics (OpenMEQ-h8j, ``openmeq.qc.noise``).
+
+    Defaults match MicroQuake's ``plot_daily_noise_stats.py``.
+    """
+
+    # Cross-station comparable band, Hz: above the corner of every common
+    # short-period sensor (GS-11D 4.5 Hz, L4C/LE-3Dlite 1 Hz), so a scalar
+    # sensitivity is enough to compare sensors of one family.
+    core_band: tuple[float, float] = (5.0, 25.0)
+    # Low band, Hz: only feeds the low/core ratio, a per-station drift tracker.
+    low_band: tuple[float, float] = (1.0, 5.0)
+    window_s: float = 3600.0
+    # A window counts if at least this fraction of its samples is present.
+    min_window_frac: float = 0.5
+    # A window whose core-band RMS (counts) is below this is dead/flatlined.
+    dead_rms_counts: float = 0.5
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> QcNoiseConfig:
+        for name in ("core_band", "low_band"):
+            lo, hi = getattr(self, name)
+            if not 0 < lo < hi:
+                raise ValueError(f"qc.noise.{name} must be [low, high] with 0 < low < high")
+        if not 0 < self.window_s <= 86400 or 86400 % self.window_s:
+            raise ValueError("qc.noise.window_s must divide a day (86400 s)")
+        return self
+
+
 class QcConfig(_StrictModel):
     daily_stats: list[str] = Field(
         default_factory=lambda: ["rms", "mean_abs", "spike_count", "kurtosis"]
@@ -171,6 +200,12 @@ class QcConfig(_StrictModel):
     # sensor for an hour, regardless of what fraction of the whole day that
     # is), in addition to the existing max_flat_fraction criterion.
     max_flat_run_s: float = 60.0
+    # OpenMEQ-h8j: hourly noise statistics and the per-instrument noise plots.
+    noise: QcNoiseConfig = Field(default_factory=QcNoiseConfig)
+    # Instrument group -> stations ("STA", "NET.STA" or a full seed id), for
+    # the noise plots. Overrides the sensor model read from StationXML; any
+    # station not listed keeps its StationXML group.
+    instrument_groups: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

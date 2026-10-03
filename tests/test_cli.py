@@ -116,7 +116,14 @@ def test_step_runs_or_fails_clearly_against_example_config(tmp_path: Path, step:
     # The ensured directory tree (ARCHITECTURE.md §3), spot-checked --
     # ``paths.ensure()`` runs before a step's body, so this holds even when
     # the step fails its dependency check.
-    for rel in ("inventory", "qc/diagnostics", "logs", "chunks", "locate/passA", "relocate/cache"):
+    for rel in (
+        "0_setup",
+        "1_qc/diagnostics",
+        "logs",
+        "4_data_chunks/chunks",
+        "7_location/passA",
+        "8_relocation/cache",
+    ):
         assert (output_dir / rel).is_dir(), f"{rel} was not created under {output_dir}"
 
 
@@ -161,7 +168,7 @@ def test_review_compile_flag_runs(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert (output_dir / "logs" / "review.log").is_file()
-    assert (output_dir / "review" / "catalog_final.xml").is_file()
+    assert (output_dir / "7b_review" / "catalog_final.xml").is_file()
 
 
 def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
@@ -184,8 +191,19 @@ def test_magnitude_catalog_option_runs(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert (output_dir / "logs" / "magnitude.log").is_file()
-    assert (output_dir / "magnitude" / "catalog_mag.xml").is_file()
-    assert (output_dir / "magnitude" / "station_magnitudes.csv").is_file()
+    assert (output_dir / "8_relocation" / "magnitude" / "catalog_mag.xml").is_file()
+    assert (output_dir / "8_relocation" / "magnitude" / "station_magnitudes.csv").is_file()
+
+
+def test_step_writes_config_snapshot(tmp_path: Path) -> None:
+    """Every step copies the config it ran with to ``config_snapshot.yaml`` (OpenMEQ-9wj)."""
+    config_path, output_dir = _patched_example_config(tmp_path)
+
+    result = CliRunner().invoke(main, ["review", "-c", str(config_path)])
+
+    assert result.exit_code == 0, result.output
+    snapshot = output_dir / "config_snapshot.yaml"
+    assert snapshot.read_text() == Path(config_path).read_text()
 
 
 def test_two_steps_in_one_process_get_separate_log_files(tmp_path: Path) -> None:

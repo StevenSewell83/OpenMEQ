@@ -115,8 +115,9 @@ MEANINGS: dict[str, str] = {
     "MAD; ARCHITECTURE.md §3).",
     "qc.min_availability_pct": "Minimum data coverage (percent, 0-100) for a channel/day to count "
     "as `ok` on availability grounds alone.",
-    "qc.exclude_channels": "Seed ids (e.g. `XX.STA01..HHZ`) always flagged not-ok regardless of "
-    "their measured statistics.",
+    "qc.exclude_channels": "Seed ids (e.g. `XX.STA01..HHZ`) left out of detection, and always "
+    "flagged not-ok in the QC report. The only way to drop a channel: QC flags themselves are "
+    "informational.",
     "qc.flat_run_min_samples": "A run of this many or more identical consecutive raw samples "
     "counts toward `flat_count` (sample count, not seconds).",
     "qc.clip_run_min_samples": "A run of this many or more consecutive saturation-value samples "
@@ -133,6 +134,18 @@ MEANINGS: dict[str, str] = {
     "spike residual is computed against.",
     "qc.max_flat_run_s": 'Flag `"flat"` if the single longest flat run on a channel/day exceeds '
     "this many seconds, independent of `max_flat_fraction` (either criterion alone is sufficient).",
+    "qc.noise.core_band": "`[low, high]` Hz band for the hourly noise level, kurtosis and crest "
+    "factor; keep it above every sensor's corner so a scalar sensitivity makes like sensors "
+    "comparable.",
+    "qc.noise.low_band": "`[low, high]` Hz band whose ratio to the core band tracks per-station "
+    "response/coupling drift (not comparable between sensor models).",
+    "qc.noise.window_s": "Noise-statistics window length (seconds); must divide a day.",
+    "qc.noise.min_window_frac": "A noise window counts only if at least this fraction of its "
+    "samples is present.",
+    "qc.noise.dead_rms_counts": "A noise window whose core-band RMS (counts) is below this is "
+    "dead/flatlined hardware.",
+    "qc.instrument_groups": "Instrument group -> stations (`STA`, `NET.STA` or seed id) for the "
+    "per-instrument noise plots; overrides the StationXML sensor model for the stations listed.",
     # --- detection ---
     "detection.sta": "STA/LTA short-term-average window (seconds).",
     "detection.lta": "STA/LTA long-term-average window (seconds).",

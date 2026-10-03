@@ -25,7 +25,7 @@ from openmeq.detect.merge import (
     write_detections_csv,
 )
 from openmeq.detect.worker import build_windows, detect_window
-from openmeq.index import DataIndex, build_index
+from openmeq.index import build_index
 from openmeq.paths import RunPaths
 
 _MATCH_TOLERANCE_S = 12.0  # same generous tolerance as test_detect_worker.py
@@ -341,13 +341,6 @@ def test_merge_windows_sorted_by_time(cfg):
 # ---------------------------------------------------------------------------
 
 
-def _all_ok_flags(index: DataIndex, dates: list[str]) -> dict:
-    flags = {
-        seed_id: {d: {"ok": True, "reasons": []} for d in dates} for seed_id in index.seed_ids()
-    }
-    return {"version": 1, "flags": flags}
-
-
 @pytest.mark.slow  # OpenMEQ-m1f.6: real STA/LTA over the full synthetic archive, ~34s
 def test_full_pipeline_no_duplicate_event_ids(synthetic_project, tmp_path):
     config_path, truth = synthetic_project
@@ -359,19 +352,12 @@ def test_full_pipeline_no_duplicate_event_ids(synthetic_project, tmp_path):
     paths.ensure()
     build_index(cfg)
 
-    index = DataIndex.load(paths.index_json)
-    dates = ["2025-01-01", "2025-01-02"]
-    flags_dict = _all_ok_flags(index, dates)
-    paths.channel_flags_json.parent.mkdir(parents=True, exist_ok=True)
-    paths.channel_flags_json.write_text(__import__("json").dumps(flags_dict))
-
     windows = build_windows(cfg)
     assert len(windows) == 2  # 2-day synthetic dataset, default chunk_days=1
 
-    flags_path = str(paths.channel_flags_json)
     config_path_str = str(new_config_path)
     per_window_results = [
-        detect_window(w_start, w_end, str(paths.index_json), flags_path, config_path_str)
+        detect_window(w_start, w_end, str(paths.index_json), config_path_str)
         for w_start, w_end in windows
     ]
 

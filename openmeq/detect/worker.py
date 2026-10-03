@@ -5,9 +5,9 @@ ARCHITECTURE.md §2/§4.3, PLAN.md §6 Step 2).
 PLAN.md §4's "Detect" row describes ("day (all stations)"): given one time
 window (usually one calendar day, per ``cfg.parallel.chunk_days``), it reads
 that window's data (plus a symmetric pad, ``cfg.detection.day_overlap_s``,
-so a trigger straddling the window boundary is not lost), excludes any
-channel flagged not-``ok`` for its calendar date in ``qc/channel_flags.json``,
-filters, runs recursive STA/LTA, and returns ObsPy's
+so a trigger straddling the window boundary is not lost) from every indexed
+channel except ``cfg.qc.exclude_channels`` -- QC flags are a report and do
+not gate detection (OpenMEQ-7c4) -- filters, runs recursive STA/LTA, and returns ObsPy's
 :func:`~obspy.signal.trigger.coincidence_trigger` result across stations as a
 list of plain, JSON-serializable dicts.
 
@@ -27,20 +27,13 @@ it is the next task's job).
 
 Design notes
 ------------
-**Per-day flagged-channel exclusion across a possibly multi-day, padded
-read.** A window (plus its pad) can cover more than one calendar date --
-either because ``cfg.parallel.chunk_days > 1``, or simply because the pad
-pushes a few seconds into the previous/next day at the boundary of a
-1-day window. ``qc/channel_flags.json`` (ARCHITECTURE.md §4.2) flags a
-channel *per calendar day*, and a channel bad on one day but good on an
-adjacent day of the same window must still contribute its good day's data
-(this task's design note, ARCHITECTURE.md §4.2: "A channel/day with no
-entry counts as ``ok: false``"). This module resolves that by reading one
-sub-window *per calendar date* covered by the padded read, each with that
-date's own usable-seed_id subset, and concatenating (unioning) the
-resulting per-date streams before merging -- rather than reading one
-superset stream and trying to retroactively cut per-channel per-date
-pieces out of it. See :func:`_read_window` for the implementation.
+**No QC gating (OpenMEQ-7c4).** Detection reads every channel the index
+has data for, across the whole padded window in one
+:meth:`DataIndex.read` call, dropping only ``cfg.qc.exclude_channels``.
+``qc/channel_flags.json`` is a report for the user, not an input here: a
+per-day "ok" gate turned out to drop whole real-network runs when a QC
+threshold didn't suit the data (RK-NM 2026 Q1: every channel-day flagged).
+See :func:`_read_window`.
 
 **Overlap padding size (``cfg.detection.day_overlap_s``, default 60.0 s).**
 Must comfortably exceed ``cfg.detection.lta`` plus a trigger's typical
@@ -189,9 +182,7 @@ list needs no downstream de-duplication.
 
 from __future__ import annotations
 
-import json
 import time
-from datetime import timedelta
 
 import numpy as np
 from obspy import Stream, UTCDateTime
@@ -210,66 +201,24 @@ def _iso_z(t: UTCDateTime) -> str:
     return iso_z(t)
 
 
-def _dates_covered(t1: UTCDateTime, t2: UTCDateTime) -> list[str]:
-    """Every calendar date (``"YYYY-MM-DD"``, UTC) that ``[t1, t2]`` touches."""
-    d = t1.date
-    end_d = t2.date
-    dates = []
-    while d <= end_d:
-        dates.append(d.isoformat())
-        d = d + timedelta(days=1)
-    return dates
-
-
-def _usable_seed_ids(all_seed_ids: list[str], flags: dict, date_str: str) -> list[str]:
-    """Seed ids usable on ``date_str`` per ``channel_flags["flags"]``.
-
-    ARCHITECTURE.md §4.2: "A channel/day with no entry counts as
-    ``ok: false`` (no data)" -- so a seed id absent from ``flags``, or
-    present but missing ``date_str``, or present with ``ok`` anything other
-    than ``True``, is excluded. Sorted for deterministic read order.
-    """
-    usable = [
-        seed_id
-        for seed_id in all_seed_ids
-        if flags.get(seed_id, {}).get(date_str, {}).get("ok") is True
-    ]
-    return sorted(usable)
-
-
 def _read_window(
     index: DataIndex,
-    flags: dict,
+    exclude_channels: list[str],
     t1: UTCDateTime,
     t2: UTCDateTime,
     pad: float,
 ) -> Stream:
-    """Read ``[t1-pad, t2+pad]`` with per-calendar-date flagged-channel exclusion.
+    """Read ``[t1-pad, t2+pad]`` for every indexed channel except ``exclude_channels``.
 
-    See the module docstring's "Per-day flagged-channel exclusion" design
-    note: one :meth:`DataIndex.read` call per calendar date the padded
-    window covers, each restricted to that date's own usable seed ids, then
-    concatenated. A date with zero usable channels contributes nothing (no
-    wasted read).
+    QC flags do not gate detection (OpenMEQ-7c4): every channel with data
+    in the window is used, and only the user's own ``cfg.qc.exclude_channels``
+    list is dropped. Seed ids are sorted for a deterministic read order.
     """
-    read_start = t1 - pad
-    read_end = t2 + pad
-
-    all_seed_ids = index.seed_ids()
-    stream = Stream()
-    for date_str in _dates_covered(read_start, read_end):
-        day_start = UTCDateTime(date_str)
-        day_end = day_start + 86400.0
-        sub_start = max(read_start, day_start)
-        sub_end = min(read_end, day_end)
-        if sub_start >= sub_end:
-            continue
-        usable = _usable_seed_ids(all_seed_ids, flags, date_str)
-        if not usable:
-            continue
-        stream += index.read(usable, sub_start, sub_end, pad=0.0)
-
-    return stream
+    excluded = set(exclude_channels)
+    seed_ids = sorted(sid for sid in index.seed_ids() if sid not in excluded)
+    if not seed_ids:
+        return Stream()
+    return index.read(seed_ids, t1, t2, pad=pad)
 
 
 def _fast_linear_detrend(data: np.ndarray) -> np.ndarray:
@@ -515,7 +464,6 @@ def _detect(
     window_start: str,
     window_end: str,
     index_path: str,
-    flags_path: str,
     cfg_path: str,
     *,
     with_station_triggers: bool,
@@ -530,13 +478,10 @@ def _detect(
     t2 = UTCDateTime(window_end)
 
     index = _cached_index(index_path)
-    with open(flags_path, encoding="utf-8") as f:
-        channel_flags = json.load(f)
-    flags = channel_flags.get("flags", {})
     cfg = _cached_cfg(cfg_path)
     det_cfg = cfg.detection
 
-    stream = _read_window(index, flags, t1, t2, pad=det_cfg.day_overlap_s)
+    stream = _read_window(index, cfg.qc.exclude_channels, t1, t2, pad=det_cfg.day_overlap_s)
     if len(stream) == 0:
         logger.info(
             "detect_window %s..%s: no usable data (%.2fs)",
@@ -582,7 +527,6 @@ def detect_window_with_station_triggers(
     window_start: str,
     window_end: str,
     index_path: str,
-    flags_path: str,
     cfg_path: str,
 ) -> tuple[list[dict], list[dict]]:
     """:func:`detect_window` plus every single-station STA/LTA trigger (extended QAQC).
@@ -592,16 +536,13 @@ def detect_window_with_station_triggers(
     second is :func:`_station_triggers`'s list for the unpadded window (see
     the module docstring's "Per-station triggers" note).
     """
-    return _detect(
-        window_start, window_end, index_path, flags_path, cfg_path, with_station_triggers=True
-    )
+    return _detect(window_start, window_end, index_path, cfg_path, with_station_triggers=True)
 
 
 def detect_window(
     window_start: str,
     window_end: str,
     index_path: str,
-    flags_path: str,
     cfg_path: str,
 ) -> list[dict]:
     """Detect triggers in one time window (top-level, picklable -- ``openmeq.parallel`` worker).
@@ -614,8 +555,6 @@ def detect_window(
         :func:`build_windows` entry.
     index_path : str
         Path to ``inventory/index.json`` (:meth:`DataIndex.load`).
-    flags_path : str
-        Path to ``qc/channel_flags.json`` (ARCHITECTURE.md §4.2).
     cfg_path : str
         Path to the project's YAML config (:func:`openmeq.config.load_config`).
 
@@ -625,12 +564,12 @@ def detect_window(
         One dict per raw trigger (unsorted, undeduplicated across windows --
         that's M2.2's job), each ``{"time": iso_z_string, "duration_s": float,
         "coincidence_sum": float, "n_stations": int, "stations": [...],
-        "trace_ids": [...]}`` (ARCHITECTURE.md §4.3). ``[]`` if no channel is
-        usable for this window (every candidate flagged not-``ok``) or no
-        trigger is found.
+        "trace_ids": [...]}`` (ARCHITECTURE.md §4.3). ``[]`` if no channel has
+        data in this window (or every one is in ``cfg.qc.exclude_channels``)
+        or no trigger is found.
     """
     triggers, _ = _detect(
-        window_start, window_end, index_path, flags_path, cfg_path, with_station_triggers=False
+        window_start, window_end, index_path, cfg_path, with_station_triggers=False
     )
     return triggers
 

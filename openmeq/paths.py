@@ -22,16 +22,24 @@ Design
   :meth:`relocate_cache_file`, :meth:`diagnostics_dir`,
   :meth:`manifest_json`, :meth:`log_file`.
 * :meth:`diagnostics_dir` and :meth:`manifest_json` are generic: every step
-  gets a ``<step>/diagnostics/`` folder and a ``<step>/manifest.json`` file
-  (ARCHITECTURE.md §3's ``# every step`` rows), but ``<step>`` there is the
-  step's own *top-level output folder name* (e.g. ``"qc"``, ``"detections"``,
-  ``"chunks"``, ``"chunks_pn"``, ``"pick"``, ``"locate"``, ``"review"``,
-  ``"magnitude"``, ``"relocate"``), which is not always identical to the CLI
-  subcommand name (the ``detect`` subcommand's outputs live under
-  ``detections/``, and the ``chunk`` subcommand's outputs are split across
-  ``chunks/`` and ``chunks_pn/``). :meth:`log_file`, by contrast, always
-  takes the CLI subcommand's own step name, since ``logs/<step>.log`` is
-  keyed on that name directly (ARCHITECTURE.md §3, PLAN.md §3).
+  gets a ``diagnostics/`` folder and a ``manifest.json`` file in its own
+  output folder (ARCHITECTURE.md §3's ``# every step`` rows). They take the
+  step's *output key* (``"qc"``, ``"detections"``, ``"chunks"``,
+  ``"chunks_pn"``, ``"pick"``, ``"locate"``, ``"review"``, ``"magnitude"``,
+  ``"relocate"``), which is not always identical to the CLI subcommand name
+  (the ``detect`` subcommand's key is ``detections``, and the ``chunk``
+  subcommand's outputs are split across ``chunks`` and ``chunks_pn``).
+  :meth:`log_file`, by contrast, always takes the CLI subcommand's own step
+  name, since ``logs/<step>.log`` is keyed on that name directly
+  (ARCHITECTURE.md §3, PLAN.md §3).
+* Folder names (OpenMEQ-9wj): each output key maps to a numbered folder via
+  :data:`STEP_DIRS`, following the MicroQuake run layout
+  (``projects/RK-NM/run_2024_2026``) so the same stage carries the same
+  number in both tools' runs: ``1_qc``, ``2_detection``, ``4_data_chunks``,
+  ``5_ml_picks``, ``7_location``, ``8_relocation``, ``9_plots``. OpenMEQ has
+  no separate duplicate-removal (3) or pick-refinement (6) stage, so those
+  numbers are unused. Docstrings elsewhere that say e.g. ``qc/availability.csv``
+  mean "the ``qc`` step's folder", not a literal ``qc/`` directory.
 """
 
 from __future__ import annotations
@@ -42,22 +50,32 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from openmeq.config import Config
 
-#: Top-level output folders that get a ``<name>/diagnostics/`` subfolder,
-#: per ARCHITECTURE.md §3's "``<step>/diagnostics/`` # every step" row.
-#: ``qc`` and ``detections`` also get a dedicated named property
-#: (:attr:`RunPaths.qc_diagnostics_dir`, :attr:`RunPaths.detect_diagnostics_dir`);
-#: the rest are reached through :meth:`RunPaths.diagnostics_dir`.
-_STEP_OUTPUT_DIRS = (
-    "qc",
-    "detections",
-    "chunks",
-    "chunks_pn",
-    "pick",
-    "locate",
-    "review",
-    "magnitude",
-    "relocate",
-)
+#: Step output key -> folder (relative to the run root). Every key gets a
+#: ``diagnostics/`` subfolder and a ``manifest.json``, per ARCHITECTURE.md
+#: §3's "every step" rows, so no two keys may share a folder: hence
+#: ``chunks``/``chunks_pn`` as siblings under ``4_data_chunks/``, and
+#: ``magnitude`` in its own subfolder of ``8_relocation/`` (the MicroQuake
+#: layout keeps magnitudes with relocation). ``qc`` and ``detections`` also
+#: get a dedicated named property (:attr:`RunPaths.qc_diagnostics_dir`,
+#: :attr:`RunPaths.detect_diagnostics_dir`); the rest are reached through
+#: :meth:`RunPaths.diagnostics_dir`.
+STEP_DIRS: dict[str, str] = {
+    "qc": "1_qc",
+    "detections": "2_detection",
+    "chunks": "4_data_chunks/chunks",
+    "chunks_pn": "4_data_chunks/chunks_pn",
+    "pick": "5_ml_picks",
+    "locate": "7_location",
+    "nlloc": "7_location/nlloc",
+    "review": "7b_review",
+    "relocate": "8_relocation",
+    "magnitude": "8_relocation/magnitude",
+}
+
+#: Station inventory, file index and metadata report.
+SETUP_DIR = "0_setup"
+#: Run-level (cross-step) diagnostics.
+PLOTS_DIR = "9_plots"
 
 
 class RunPaths:
@@ -77,51 +95,78 @@ class RunPaths:
     def __init__(self, cfg: Config) -> None:
         self.root = Path(cfg.project.output_dir)
 
+    def step_dir(self, step: str) -> Path:
+        """A step's output folder, from its output key (see :data:`STEP_DIRS`).
+
+        An unknown key falls back to a folder of that name, so an ad-hoc
+        ``diagnostics_dir``/``manifest_json`` key never raises.
+        """
+        return self.root / STEP_DIRS.get(step, step)
+
+    @property
+    def setup_dir(self) -> Path:
+        return self.root / SETUP_DIR
+
+    @property
+    def config_snapshot_yaml(self) -> Path:
+        """``config_snapshot.yaml`` -- copy of the config the last step ran with."""
+        return self.root / "config_snapshot.yaml"
+
     # -- inventory (Step 1 / M1) ------------------------------------------------
 
     @property
     def index_json(self) -> Path:
-        return self.root / "inventory" / "index.json"
+        return self.setup_dir / "index.json"
 
     @property
     def stations_xml(self) -> Path:
-        return self.root / "inventory" / "stations.xml"
+        return self.setup_dir / "stations.xml"
 
     @property
     def stations_csv(self) -> Path:
-        return self.root / "inventory" / "stations.csv"
+        return self.setup_dir / "stations.csv"
 
     @property
     def metadata_report_json(self) -> Path:
-        return self.root / "inventory" / "metadata_report.json"
+        return self.setup_dir / "metadata_report.json"
 
     # -- qc (Step 1 / M1) --------------------------------------------------------
 
     @property
     def availability_csv(self) -> Path:
-        return self.root / "qc" / "availability.csv"
+        return self.step_dir("qc") / "availability.csv"
 
     @property
     def daily_stats_csv(self) -> Path:
-        return self.root / "qc" / "daily_stats.csv"
+        return self.step_dir("qc") / "daily_stats.csv"
 
     @property
     def monthly_stats_csv(self) -> Path:
-        return self.root / "qc" / "monthly_stats.csv"
+        return self.step_dir("qc") / "monthly_stats.csv"
 
     @property
     def channel_flags_json(self) -> Path:
-        return self.root / "qc" / "channel_flags.json"
+        return self.step_dir("qc") / "channel_flags.json"
 
     @property
     def qc_diagnostics_dir(self) -> Path:
         return self.diagnostics_dir("qc")
 
+    @property
+    def noise_daily_csv(self) -> Path:
+        """Per channel-day hourly noise statistics with instrument group (OpenMEQ-h8j)."""
+        return self.step_dir("qc") / "noise_daily.csv"
+
+    @property
+    def qc_noise_diagnostics_dir(self) -> Path:
+        """Per-instrument-group noise figures (OpenMEQ-h8j)."""
+        return self.qc_diagnostics_dir / "noise"
+
     # -- detections (Step 2 / M2, ``openmeq detect``) -----------------------------
 
     @property
     def detections_csv(self) -> Path:
-        return self.root / "detections" / "detections.csv"
+        return self.step_dir("detections") / "detections.csv"
 
     @property
     def detect_diagnostics_dir(self) -> Path:
@@ -132,46 +177,46 @@ class RunPaths:
     @property
     def chunk_dir(self) -> Path:
         """Parent of every per-event raw chunk dir (``chunks/<event_id>/``)."""
-        return self.root / "chunks"
+        return self.step_dir("chunks")
 
     @property
     def chunk_completeness_csv(self) -> Path:
-        return self.root / "chunks" / "completeness.csv"
+        return self.chunk_dir / "completeness.csv"
 
     @property
     def chunks_pn_dir(self) -> Path:
         """Parent of every per-event PhaseNet-ready chunk dir (``chunks_pn/<event_id>/``)."""
-        return self.root / "chunks_pn"
+        return self.step_dir("chunks_pn")
 
     @property
     def data_list_csv(self) -> Path:
-        return self.root / "chunks_pn" / "data_list.csv"
+        return self.chunks_pn_dir / "data_list.csv"
 
     @property
     def prep_report_csv(self) -> Path:
         """PhaseNet chunk-prep zero-fill report (M4.2 / OpenMEQ-1m7.2, ARCHITECTURE.md §3)."""
-        return self.root / "chunks_pn" / "prep_report.csv"
+        return self.chunks_pn_dir / "prep_report.csv"
 
     # -- pick (Step 4 / M4) --------------------------------------------------------
 
     @property
     def phasenet_raw_dir(self) -> Path:
-        return self.root / "pick" / "phasenet_raw"
+        return self.step_dir("pick") / "phasenet_raw"
 
     @property
     def catalog_picks_xml(self) -> Path:
-        return self.root / "pick" / "catalog_picks.xml"
+        return self.step_dir("pick") / "catalog_picks.xml"
 
     # -- nlloc setup (M5.2, ``scripts/setup_nlloc.py`` / ``openmeq.nlloc_setup``) ----
     # Not one of the registered pipeline steps in ``openmeq/cli.py`` (it is a
-    # one-off utility script per PLAN.md §7), so these are not part of
-    # ``ensure()``/``_STEP_OUTPUT_DIRS``; ``openmeq.nlloc_setup`` creates its
-    # own directories as needed.
+    # one-off utility script per PLAN.md §7, also run by ``openmeq locate``),
+    # but it keeps its own ``manifest.json``, so it has a ``STEP_DIRS`` key
+    # (``"nlloc"``) placing it inside ``7_location/``.
 
     @property
     def nlloc_dir(self) -> Path:
-        """Top-level NLLoc setup output directory (``nlloc/``)."""
-        return self.root / "nlloc"
+        """NLLoc setup output directory (``nlloc/``, inside the locate step's folder)."""
+        return self.step_dir("nlloc")
 
     @property
     def nlloc_velocity_models_dir(self) -> Path:
@@ -196,37 +241,37 @@ class RunPaths:
 
     @property
     def passA_dir(self) -> Path:
-        return self.root / "locate" / "passA"
+        return self.step_dir("locate") / "passA"
 
     @property
     def passB_dir(self) -> Path:
-        return self.root / "locate" / "passB"
+        return self.step_dir("locate") / "passB"
 
     @property
     def catalog_auto_xml(self) -> Path:
-        return self.root / "locate" / "catalog_auto.xml"
+        return self.step_dir("locate") / "catalog_auto.xml"
 
     @property
     def locate_summary_csv(self) -> Path:
-        return self.root / "locate" / "summary.csv"
+        return self.step_dir("locate") / "summary.csv"
 
     @property
     def removal_log_csv(self) -> Path:
-        return self.root / "locate" / "removal_log.csv"
+        return self.step_dir("locate") / "removal_log.csv"
 
     # -- review (Step 6 / M7) --------------------------------------------------------
 
     @property
     def review_state_json(self) -> Path:
-        return self.root / "review" / "state.json"
+        return self.step_dir("review") / "state.json"
 
     @property
     def review_events_dir(self) -> Path:
-        return self.root / "review" / "events"
+        return self.step_dir("review") / "events"
 
     @property
     def catalog_final_xml(self) -> Path:
-        return self.root / "review" / "catalog_final.xml"
+        return self.step_dir("review") / "catalog_final.xml"
 
     def review_work_dir(self, event_id: str) -> Path:
         """Per-event ObsPyck subprocess working directory
@@ -243,27 +288,27 @@ class RunPaths:
         ``obspyck_*.xml`` files from a previous crashed attempt at the same
         event are removed, and only immediately before relaunching.
         """
-        return self.root / "review" / "work" / event_id
+        return self.step_dir("review") / "work" / event_id
 
     # -- magnitude (Step 7 / M8) -------------------------------------------------------
 
     @property
     def catalog_mag_xml(self) -> Path:
-        return self.root / "magnitude" / "catalog_mag.xml"
+        return self.step_dir("magnitude") / "catalog_mag.xml"
 
     @property
     def station_magnitudes_csv(self) -> Path:
-        return self.root / "magnitude" / "station_magnitudes.csv"
+        return self.step_dir("magnitude") / "station_magnitudes.csv"
 
     # -- relocate / hypoDD (Step 8 / M10) -----------------------------------------------
 
     @property
     def relocate_work_dir(self) -> Path:
-        return self.root / "relocate" / "work"
+        return self.step_dir("relocate") / "work"
 
     @property
     def relocate_cache_dir(self) -> Path:
-        return self.root / "relocate" / "cache"
+        return self.step_dir("relocate") / "cache"
 
     @property
     def dt_ct(self) -> Path:
@@ -295,16 +340,16 @@ class RunPaths:
 
     @property
     def catalog_dd_xml(self) -> Path:
-        return self.root / "relocate" / "catalog_dd.xml"
+        return self.step_dir("relocate") / "catalog_dd.xml"
 
     # -- run-level diagnostics (OpenMEQ-02o.8, ``openmeq.run_diagnostics``) ------------
 
     @property
     def run_diagnostics_dir(self) -> Path:
-        """Top-level ``diagnostics/`` -- cross-step figures (e.g. the event
+        """Run-level ``9_plots/`` -- cross-step figures (e.g. the event
         funnel), as opposed to every step's own :meth:`diagnostics_dir`.
         Not part of :meth:`ensure`; its writer creates it on demand."""
-        return self.root / "diagnostics"
+        return self.root / PLOTS_DIR
 
     # -- per-key helper methods ----------------------------------------------------
 
@@ -353,21 +398,21 @@ class RunPaths:
         return base / event_id
 
     def diagnostics_dir(self, step: str) -> Path:
-        """``<step>/diagnostics/`` -- every step's diagnostics folder.
+        """``diagnostics/`` inside a step's folder -- every step's diagnostics folder.
 
-        ``step`` is that step's own top-level output folder name (see the
-        module docstring), e.g. ``"qc"``, ``"detections"``, ``"chunks"``,
+        ``step`` is that step's output key (see the module docstring and
+        :data:`STEP_DIRS`), e.g. ``"qc"``, ``"detections"``, ``"chunks"``,
         ``"chunks_pn"``, ``"pick"``, ``"locate"``, ``"review"``,
         ``"magnitude"`` or ``"relocate"``.
         """
-        return self.root / step / "diagnostics"
+        return self.step_dir(step) / "diagnostics"
 
     def manifest_json(self, step: str) -> Path:
-        """``<step>/manifest.json`` -- every step's :class:`openmeq.manifest.StepManifest` file.
+        """A step's :class:`openmeq.manifest.StepManifest` file (``manifest.json`` in its folder).
 
         ``step`` follows the same convention as :meth:`diagnostics_dir`.
         """
-        return self.root / step / "manifest.json"
+        return self.step_dir(step) / "manifest.json"
 
     def log_file(self, step: str) -> Path:
         """``logs/<step>.log`` -- the CLI subcommand's log file.
@@ -390,7 +435,7 @@ class RunPaths:
         """
         dirs = [
             self.root,
-            self.root / "inventory",
+            self.setup_dir,
             self.qc_diagnostics_dir,
             self.detect_diagnostics_dir,
             self.chunk_dir,
@@ -411,7 +456,7 @@ class RunPaths:
             self.diagnostics_dir("relocate"),
             self.root / "logs",
         ]
-        for step in _STEP_OUTPUT_DIRS:
-            dirs.append(self.root / step)
+        for step in STEP_DIRS:
+            dirs.append(self.step_dir(step))
         for d in dirs:
             Path(d).mkdir(parents=True, exist_ok=True)

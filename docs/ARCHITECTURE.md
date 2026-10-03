@@ -43,53 +43,67 @@ This document is the **contract between modules**. Every task in the build (see 
 
 ## 3. Run directory layout (`cfg.project.output_dir`)
 
+Step folders are numbered to match the MicroQuake run layout
+(`projects/RK-NM/run_2024_2026`), so the same stage has the same number in
+both tools' runs (OpenMEQ-9wj). OpenMEQ has no separate duplicate-removal (3)
+or pick-refinement (6) stage. Magnitudes live under `8_relocation/magnitude/`
+as in the MicroQuake layout. The mapping from each step's output key to its
+folder is `openmeq.paths.STEP_DIRS`. Docstrings and the rest of this document
+often name a file by its step key (e.g. `qc/channel_flags.json`, `locate/summary.csv`):
+that means the file in that step's folder (`1_qc/channel_flags.json`,
+`7_location/summary.csv`).
+
 ```
-inventory/index.json            # miniSEED index (§4.1)
-inventory/stations.xml          # merged StationXML
-inventory/stations.csv          # station table (§2 station_table columns)
-inventory/metadata_report.json  # {"data_without_metadata": [seed_id], "metadata_without_data": [seed_id]}
-qc/availability.csv             # seed_id,date,coverage_pct,n_gaps,n_overlaps,gap_s
-qc/daily_stats.csv              # seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,longest_flat_run_s,clip_count,npts
-qc/monthly_stats.csv            # seed_id,month,stat,value,network_median,ratio,rank
-qc/channel_flags.json           # (§4.2)
-qc/diagnostics/
-detections/detections.csv       # (§4.3)
-detections/diagnostics/
-chunks/<event_id>/<event_id>.mseed      # raw chunk, all channels, original sampling
-chunks/completeness.csv         # event_id,seed_id,fraction_present
-chunks_pn/<event_id>/<event_id>.mseed   # PhaseNet-ready: 100 Hz, 3-comp per station
-chunks_pn/data_list.csv         # PhaseNet input list
-chunks_pn/prep_report.csv       # event_id,seed_id_base,n_components_found,zero_filled_components (M4.2)
-pick/phasenet_raw/              # PhaseNet native output
-pick/catalog_picks.xml          # events with automatic picks, no origins
-nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.mod.{hdr,buf}        # Vel2Grid 1D velocity grid (M5.2)
-nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.<STA>.time.{hdr,buf} # Grid2Time per-station travel-time grids (M5.2)
-nlloc/manifest.json             # setup_nlloc.py skip-unchanged (M5.2)
-locate/passA/<event_id>/iter_NN/  # NLLoc work per iteration (M6.1): obs.txt (NLLOC_OBS), run.in
+0_setup/index.json            # miniSEED index (§4.1)
+0_setup/stations.xml          # merged StationXML
+0_setup/stations.csv          # station table (§2 station_table columns)
+0_setup/metadata_report.json  # {"data_without_metadata": [seed_id], "metadata_without_data": [seed_id]}
+1_qc/availability.csv             # seed_id,date,coverage_pct,n_gaps,n_overlaps,gap_s
+1_qc/daily_stats.csv              # seed_id,date,rms,mean_abs,spike_count,kurtosis,flat_count,longest_flat_run_s,clip_count,npts
+1_qc/monthly_stats.csv            # seed_id,month,stat,value,network_median,ratio,rank
+1_qc/channel_flags.json           # (§4.2)
+1_qc/noise_daily.csv              # hourly noise stats per channel-day + instrument group, levels in dB re 1 m/s (OpenMEQ-h8j)
+1_qc/diagnostics/
+1_qc/diagnostics/noise/           # <group>_{heatmap,strips,overlay}.png per instrument group, impulsiveness.png
+2_detection/detections.csv       # (§4.3)
+2_detection/diagnostics/
+4_data_chunks/chunks/<event_id>/<event_id>.mseed      # raw chunk, all channels, original sampling
+4_data_chunks/chunks/completeness.csv         # event_id,seed_id,fraction_present
+4_data_chunks/chunks_pn/<event_id>/<event_id>.mseed   # PhaseNet-ready: 100 Hz, 3-comp per station
+4_data_chunks/chunks_pn/data_list.csv         # PhaseNet input list
+4_data_chunks/chunks_pn/prep_report.csv       # event_id,seed_id_base,n_components_found,zero_filled_components (M4.2)
+5_ml_picks/phasenet_raw/              # PhaseNet native output
+5_ml_picks/catalog_picks.xml          # events with automatic picks, no origins
+7_location/nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.mod.{hdr,buf}        # Vel2Grid 1D velocity grid (M5.2)
+7_location/nlloc/VELOCITY_MODELS/layer_time/layer.{P,S}.<STA>.time.{hdr,buf} # Grid2Time per-station travel-time grids (M5.2)
+7_location/nlloc/manifest.json             # setup_nlloc.py skip-unchanged (M5.2)
+7_location/passA/<event_id>/iter_NN/  # NLLoc work per iteration (M6.1): obs.txt (NLLOC_OBS), run.in
                                    # (control file), out.<YYYYMMDD>.<HHMMSS>.grid0.loc.hyp (+ .hdr)
-locate/passB/<event_id>/iter_NN/
-locate/catalog_auto.xml
-locate/summary.csv              # event_id,time,lat,lon,depth_km,rms,gap,n_p,n_s,err_h_km,err_z_km,status,reason
-locate/removal_log.csv          # event_id,pass,iteration,seed_id,phase,residual_s,reason
-review/state.json               # {event_id: "done"|"skipped"|"rejected"} (§3a)
-review/work/<event_id>/         # (M7.3) ObsPyck subprocess cwd; obspyck_*.xml
+7_location/passB/<event_id>/iter_NN/
+7_location/catalog_auto.xml
+7_location/summary.csv              # event_id,time,lat,lon,depth_km,rms,gap,n_p,n_s,err_h_km,err_z_km,status,reason
+7_location/removal_log.csv          # event_id,pass,iteration,seed_id,phase,residual_s,reason
+7b_review/state.json               # {event_id: "done"|"skipped"|"rejected"} (§3a)
+7b_review/work/<event_id>/         # (M7.3) ObsPyck subprocess cwd; obspyck_*.xml
                                  # save-detection scratch; kept, never cleaned
                                  # (except stale obspyck_*.xml from a crashed
                                  # previous attempt at the *same* event, right
                                  # before relaunching it)
-review/events/<event_id>.xml
-review/catalog_final.xml
-magnitude/catalog_mag.xml
-magnitude/station_magnitudes.csv
-relocate/work/                  # hypoDD run folder(s): station.dat, phase.dat, event.dat,
+7b_review/events/<event_id>.xml
+7b_review/catalog_final.xml
+8_relocation/magnitude/catalog_mag.xml
+8_relocation/magnitude/station_magnitudes.csv
+8_relocation/work/                  # hypoDD run folder(s): station.dat, phase.dat, event.dat,
                                  # ph2dt.inp, hypoDD.inp, event.sel/station.sel (ph2dt output),
                                  # dt.ct (ph2dt output, M10.2), dt.cc (M10.3), ...
-relocate/work/event_id_map.csv         # event_id,cuspid -- persisted, append-only (§6c)
-relocate/work/station_label_map.csv    # net_sta,label -- persisted, append-only (§6c)
-relocate/cache/<event_id>.npz   # pre-filtered waveforms for xcorr
-relocate/catalog_dd.xml
-<step>/diagnostics/             # every step
-<step>/manifest.json            # every step
+8_relocation/work/event_id_map.csv         # event_id,cuspid -- persisted, append-only (§6c)
+8_relocation/work/station_label_map.csv    # net_sta,label -- persisted, append-only (§6c)
+8_relocation/cache/<event_id>.npz   # pre-filtered waveforms for xcorr
+8_relocation/catalog_dd.xml
+<step folder>/diagnostics/      # every step
+<step folder>/manifest.json     # every step
+9_plots/                        # run-level diagnostics (event funnel)
+config_snapshot.yaml            # copy of the config the last step ran with
 logs/<step>.log
 ```
 
@@ -256,6 +270,9 @@ Segments are sorted by start time. A file holding several channels appears under
 ```
 
 A channel/day with no entry counts as `ok: false` (no data).
+
+These flags are informational (OpenMEQ-7c4): no pipeline step filters data
+on them. Detection uses every indexed channel except `cfg.qc.exclude_channels`.
 
 `"reasons"` values (`openmeq.qc.flags.compute_channel_flags`): `"availability<{min_availability_pct}"`,
 `"spikes"` (`spike_count/npts > cfg.qc.max_spike_fraction`, §3's isolated-impulse

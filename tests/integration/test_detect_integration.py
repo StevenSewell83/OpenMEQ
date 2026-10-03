@@ -14,7 +14,7 @@ tests (``_detect_result``) now run the real ``openmeq qc`` then ``openmeq
 detect`` CLI commands in sequence, matching this task's own acceptance
 criterion verbatim ("after running openmeq qc then openmeq detect on the
 synthetic_project config"). ``test_skip_unchanged_and_force`` still builds
-``inventory/index.json``/``qc/channel_flags.json`` directly via
+``inventory/index.json`` (and the informational ``qc/channel_flags.json``) directly via
 ``openmeq.index.build_index`` + ``openmeq.qc.flags`` functions (reusing the
 shared, session-scoped ``synthetic_qc_tables`` fixture's already-computed
 QC ``DataFrame``\\ s) rather than running the real, ~30s ``openmeq qc``

@@ -93,12 +93,12 @@ def _require_qc_outputs(paths: RunPaths) -> None:
     """Raise a clear, actionable error if ``openmeq qc``'s outputs are missing.
 
     ``openmeq detect`` reads ``inventory/index.json`` (to find/read the
-    waveform files, :mod:`openmeq.index`) and ``qc/channel_flags.json`` (to
-    exclude bad channel/days, ARCHITECTURE.md §4.2) -- both written by
-    ``openmeq qc`` (M1.7). A fresh run directory with either missing is the
-    expected first-run-out-of-order mistake; this is a deliberate,
-    CLI-level hard dependency check (this task's own design note: "not just
-    an implicit crash if index.json/channel_flags.json happen to be
+    waveform files, :mod:`openmeq.index`), written by ``openmeq qc``
+    (M1.7). ``qc/channel_flags.json`` is not an input: QC flags are a report
+    and do not gate detection (OpenMEQ-7c4). A fresh run directory without
+    the index is the expected first-run-out-of-order mistake; this is a
+    deliberate, CLI-level hard dependency check (this task's own design
+    note: "not just an implicit crash if index.json happens to be
     missing"), not an incidental ``FileNotFoundError`` raised deeper inside
     :func:`~openmeq.detect.worker.detect_window`.
 
@@ -113,19 +113,19 @@ def _require_qc_outputs(paths: RunPaths) -> None:
         plain ``Exception`` subclass any caller (tests, a future ``openmeq
         run``) can catch directly.
     """
-    missing = [p for p in (paths.index_json, paths.channel_flags_json) if not p.is_file()]
+    missing = [p for p in (paths.index_json,) if not p.is_file()]
     if not missing:
         return
     names = ", ".join(str(p) for p in missing)
     message = (
         f"openmeq detect: missing required input(s): {names}. Run `openmeq qc` first "
-        "to build inventory/index.json and qc/channel_flags.json."
+        "to build inventory/index.json."
     )
     logger.error(message)
     raise click.ClickException(message)
 
 
-def _detect_window_item(item: tuple[str, str, str, str, str]) -> list[dict]:
+def _detect_window_item(item: tuple[str, str, str, str]) -> list[dict]:
     """``openmeq.parallel.pmap`` worker: unpack one window's args.
 
     :func:`~openmeq.detect.worker.detect_window` takes five separate
@@ -135,18 +135,16 @@ def _detect_window_item(item: tuple[str, str, str, str, str]) -> list[dict]:
     :mod:`openmeq.pick.prep`'s own ``_prepare_chunk_worker`` uses for the
     same reason.
     """
-    window_start, window_end, index_path, flags_path, cfg_path = item
-    return detect_window(window_start, window_end, index_path, flags_path, cfg_path)
+    window_start, window_end, index_path, cfg_path = item
+    return detect_window(window_start, window_end, index_path, cfg_path)
 
 
 def _detect_window_extended_item(
-    item: tuple[str, str, str, str, str],
+    item: tuple[str, str, str, str],
 ) -> tuple[list[dict], list[dict]]:
     """:func:`_detect_window_item`'s extended-QAQC twin (also returns station triggers)."""
-    window_start, window_end, index_path, flags_path, cfg_path = item
-    return detect_window_with_station_triggers(
-        window_start, window_end, index_path, flags_path, cfg_path
-    )
+    window_start, window_end, index_path, cfg_path = item
+    return detect_window_with_station_triggers(window_start, window_end, index_path, cfg_path)
 
 
 def _rebuild_extended_from_disk(cfg: Config, paths: RunPaths) -> None:
@@ -169,10 +167,10 @@ def run_detect(
 ) -> None:
     """Run network coincidence detection end to end (``openmeq detect``).
 
-    1. Requires ``qc/channel_flags.json``/``inventory/index.json`` to
-       already exist (:func:`_require_qc_outputs`).
-    2. Skips (unless ``force``) if ``cfg.detection`` and both input files'
-       mtimes/sizes match the last recorded fingerprint
+    1. Requires ``inventory/index.json`` to already exist
+       (:func:`_require_qc_outputs`).
+    2. Skips (unless ``force``) if ``cfg.detection``,
+       ``cfg.qc.exclude_channels`` and the index's mtime/size match the last recorded fingerprint
        (:class:`openmeq.manifest.StepManifest`) and ``detections/
        detections.csv`` still exists.
     3. :func:`~openmeq.detect.worker.build_windows`, then
@@ -215,7 +213,7 @@ def run_detect(
 
     _require_qc_outputs(paths)
 
-    fp = fingerprint(cfg.detection, paths.channel_flags_json, paths.index_json)
+    fp = fingerprint(cfg.detection, cfg.qc.exclude_channels, paths.index_json)
     manifest = StepManifest(paths, STEP_NAME)
     extended = cfg.diagnostics.extended_enabled("detect")
     station_csv = station_triggers_csv(paths)
@@ -226,7 +224,7 @@ def run_detect(
         and (not extended or station_csv.is_file())
     ):
         step_logger.info(
-            "detect: unchanged since the last run (cfg.detection, qc/channel_flags.json and "
+            "detect: unchanged since the last run (cfg.detection, cfg.qc.exclude_channels and "
             "inventory/index.json all match the last recorded fingerprint) -- skipping "
             "(use --force to rerun)."
         )
@@ -248,7 +246,6 @@ def run_detect(
             window_start,
             window_end,
             str(paths.index_json),
-            str(paths.channel_flags_json),
             str(config_path),
         )
         for window_start, window_end in windows
