@@ -34,6 +34,19 @@ def _read_omp_num_threads(_x: int) -> str | None:
     return os.environ.get("OMP_NUM_THREADS")
 
 
+def _read_numpy_hugepage(_x: int) -> tuple[str | None, bool]:
+    """(NUMPY_MADVISE_HUGEPAGE env var, whether NumPy is currently madvising hugepages)."""
+    from openmeq.parallel import _disable_numpy_hugepage  # noqa: F401 -- same import path as pmap
+
+    try:
+        from numpy._core.multiarray import _set_madvise_hugepage
+    except ImportError:
+        from numpy.core.multiarray import _set_madvise_hugepage
+    enabled = _set_madvise_hugepage(False)  # returns the previous setting
+    _set_madvise_hugepage(enabled)
+    return os.environ.get("NUMPY_MADVISE_HUGEPAGE"), bool(enabled)
+
+
 def _boom(x: int) -> int:
     if x == 3:
         raise ValueError("boom on 3")
@@ -133,6 +146,45 @@ def test_worker_thread_env_vars_set():
     result = pmap(_read_omp_num_threads, items, pcfg)
 
     assert result == ["3"] * len(items)
+
+
+# ---------------------------------------------------------------------------
+# NumPy transparent-huge-page madvise (OpenMEQ-2rg)
+# ---------------------------------------------------------------------------
+
+
+def test_worker_numpy_hugepage_disabled(monkeypatch):
+    monkeypatch.delenv("NUMPY_MADVISE_HUGEPAGE", raising=False)
+    pcfg = ParallelSettings(n_workers=2, threads_per_worker=1)
+
+    result = pmap(_read_numpy_hugepage, list(range(4)), pcfg)
+
+    assert result == [("0", False)] * 4
+
+
+def test_parent_numpy_hugepage_disabled_after_import(monkeypatch):
+    # NumPy is already imported in the test process, so this exercises the
+    # runtime switch rather than the env var NumPy reads at import.
+    monkeypatch.delenv("NUMPY_MADVISE_HUGEPAGE", raising=False)
+    _, before = _read_numpy_hugepage(0)
+    try:
+        pmap(_read_omp_num_threads, [0], ParallelSettings(n_workers=1, threads_per_worker=1))
+        assert _read_numpy_hugepage(0) == ("0", False)
+    finally:
+        try:
+            from numpy._core.multiarray import _set_madvise_hugepage
+        except ImportError:
+            from numpy.core.multiarray import _set_madvise_hugepage
+        _set_madvise_hugepage(before)
+
+
+def test_numpy_hugepage_user_override_respected(monkeypatch):
+    monkeypatch.setenv("NUMPY_MADVISE_HUGEPAGE", "1")
+    pcfg = ParallelSettings(n_workers=2, threads_per_worker=1)
+
+    result = pmap(_read_numpy_hugepage, list(range(2)), pcfg)
+
+    assert result == [("1", True)] * 2
 
 
 # ---------------------------------------------------------------------------

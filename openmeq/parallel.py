@@ -136,6 +136,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -183,10 +184,52 @@ class ParallelSettings:
 
 
 def _set_thread_env(threads_per_worker: int) -> None:
-    """Set the BLAS/OpenMP thread-count env vars in the *current* process."""
+    """Set the BLAS/OpenMP thread-count env vars in the *current* process.
+
+    Also turns off NumPy's transparent-huge-page madvise
+    (:func:`_disable_numpy_hugepage`), which every caller of this function
+    needs for the same reason it needs thread caps: many workers allocating
+    large arrays at once.
+    """
     value = str(int(threads_per_worker))
     for var in _THREAD_ENV_VARS:
         os.environ[var] = value
+    _disable_numpy_hugepage()
+
+
+def _disable_numpy_hugepage() -> None:
+    """Stop NumPy ``madvise(MADV_HUGEPAGE)``-ing its large array buffers.
+
+    On Linux NumPy marks every large allocation for transparent huge pages
+    by default. With the kernel's THP ``defrag`` setting at ``madvise`` (the
+    Ubuntu default), each of those allocations triggers *synchronous* direct
+    memory compaction. A full 200 Hz channel-day is ~140 MB of float64, and
+    with a dozen workers allocating and freeing such arrays while tens of GB
+    of page cache fragment memory, compaction almost always fails but still
+    stalls each allocation. The kernel counts that stall time as memory
+    pressure, and ``systemd-oomd`` kills the user session's processes
+    (IDE included) at 50% pressure even with most RAM still available --
+    observed on RK-NM QC (OpenMEQ-2rg: ~2.7k compact stalls/s, 65-77%
+    pressure, ~7 GB anon of 94 GB). OpenMEQ's arrays are streamed through
+    once, so huge pages buy nothing here.
+
+    ``NUMPY_MADVISE_HUGEPAGE`` is set with ``setdefault``, so a user who
+    exports ``NUMPY_MADVISE_HUGEPAGE=1`` keeps NumPy's default. The env var
+    alone covers a process (spawned worker, external subprocess) that has
+    not imported NumPy yet; NumPy only reads it at import, so if it is
+    already imported here the setting is applied at runtime too.
+    """
+    os.environ.setdefault("NUMPY_MADVISE_HUGEPAGE", "0")
+    if os.environ["NUMPY_MADVISE_HUGEPAGE"] != "0" or "numpy" not in sys.modules:
+        return
+    try:
+        from numpy._core.multiarray import _set_madvise_hugepage  # NumPy >= 2
+    except ImportError:
+        try:
+            from numpy.core.multiarray import _set_madvise_hugepage  # NumPy 1.x
+        except ImportError:  # private API gone: the env var still covers child processes
+            return
+    _set_madvise_hugepage(False)
 
 
 def _worker_init(threads_per_worker: int) -> None:
