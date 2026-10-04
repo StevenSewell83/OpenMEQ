@@ -42,6 +42,18 @@ pitfall in ``openmeq.review.obspyck_config``'s own module docstring) would
 otherwise silently cut off, and it stays correct even if M3's own
 trigger-time-vs-origin-time windowing convention ever changes.
 
+Stations without a response
+----------------------------
+ObsPyck refuses to start if any trace lacks a response ("Failed to get
+response for ..."), but a station may legitimately have none (RK-NM's
+NS12-14, OpenMEQ-tch). ObsPyck is therefore given
+``paths.review_stations_xml`` (:func:`write_review_inventory`) rather than
+``0_setup/stations.xml`` itself: the same inventory with a unit-sensitivity
+placeholder response, labelled with a channel comment, on every channel that
+has none. Those stations stay visible and pickable; only ObsPyck's own
+amplitudes on them are meaningless -- OpenMEQ's magnitude step recomputes ML
+from the real metadata and skips stations without a response.
+
 Headless operation
 -------------------
 A real manual review session needs the reviewer to actually *see* the
@@ -109,8 +121,9 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from obspy import Catalog
+from obspy import Catalog, read_inventory
 from obspy import read as obspy_read
+from obspy.core.inventory import Comment, InstrumentSensitivity, Response
 
 from openmeq.catalog import accepted, make_event, read_catalog, write_catalog
 from openmeq.catalog import event_id as event_id_of
@@ -170,6 +183,38 @@ class BatchReviewResult:
     skipped: int = 0
     rejected: int = 0
     quit: bool = False
+
+
+#: Channel comment marking :func:`write_review_inventory`'s placeholder responses.
+PLACEHOLDER_RESPONSE_COMMENT = (
+    "OpenMEQ review placeholder: no response in 0_setup/stations.xml; unit sensitivity so "
+    "ObsPyck can load the channel. Amplitudes on it are not physical."
+)
+
+
+def write_review_inventory(paths: RunPaths) -> tuple[Path, list[str]]:
+    """Write ``paths.review_stations_xml`` for ObsPyck; return it and the patched channel ids.
+
+    See the module docstring's "Stations without a response" note.
+    """
+    inv = read_inventory(str(paths.stations_xml))
+    patched: list[str] = []
+    for net in inv:
+        for sta in net:
+            for cha in sta:
+                if cha.response is not None and cha.response.instrument_sensitivity is not None:
+                    continue
+                cha.response = Response(
+                    instrument_sensitivity=InstrumentSensitivity(
+                        value=1.0, frequency=1.0, input_units="M/S", output_units="COUNTS"
+                    )
+                )
+                cha.comments.append(Comment(value=PLACEHOLDER_RESPONSE_COMMENT))
+                patched.append(f"{net.code}.{sta.code}.{cha.location_code}.{cha.code}")
+    out = paths.review_stations_xml
+    out.parent.mkdir(parents=True, exist_ok=True)
+    inv.write(str(out), format="STATIONXML")
+    return out, patched
 
 
 def _load_state(paths: RunPaths) -> dict[str, str]:
@@ -379,6 +424,19 @@ def run_review(
     catalog = accepted(read_catalog(paths.catalog_auto_xml))
     events = sorted(catalog, key=lambda ev: ev.preferred_origin().time)
 
+    if not paths.stations_xml.exists():
+        raise ReviewLaunchError(f"merged StationXML not found: {paths.stations_xml}")
+    stations_xml, patched = write_review_inventory(paths)
+    if patched:
+        stations = sorted({".".join(sid.split(".")[:2]) for sid in patched})
+        logger.info(
+            "review: %d channel(s) without a response get a placeholder in %s so ObsPyck "
+            "can load them (stations: %s)",
+            len(patched),
+            stations_xml,
+            ", ".join(stations),
+        )
+
     result = BatchReviewResult()
 
     for event in events:
@@ -397,10 +455,6 @@ def run_review(
         chunk_mseed = paths.chunk_file(eid)
         if not chunk_mseed.exists():
             raise ReviewLaunchError(f"event {eid}: raw chunk not found: {chunk_mseed}")
-        stations_xml = paths.stations_xml
-        if not stations_xml.exists():
-            raise ReviewLaunchError(f"event {eid}: merged StationXML not found: {stations_xml}")
-
         chunk_start, chunk_duration = _chunk_time_bounds(chunk_mseed)
 
         work_dir = paths.review_work_dir(eid)

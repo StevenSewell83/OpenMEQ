@@ -13,8 +13,17 @@ Design notes
   layers didn't already provide. Two stations sharing ``NET.STA`` (even with
   different location codes) merge into a single `Station` object
   (ARCHITECTURE.md §6: "location codes are ignored when two share a site");
-  channels are de-duplicated by ``(location_code, code)`` so different
-  location codes' channels all survive under that one station. This is a
+  channel *epochs* are de-duplicated by ``(location_code, code,
+  start_date)`` so different location codes' channels, and every epoch of
+  each, all survive under that one station (OpenMEQ-hud: de-duplicating by
+  ``(location_code, code)`` alone kept only the first epoch -- RK-NM's ARAZ
+  lost its 2011-06-> epoch and had no response for 2026).
+* **Overlapping epochs are closed** (:func:`_close_overlapping_epochs`): an
+  epoch with no end date (or one ending after the next epoch of the same
+  ``(location_code, code)`` starts) is ended at that next epoch's start, with
+  a warning. Vendor StationXML often leaves superseded epochs open; obspy
+  and ObsPyck then return the *first* match (RK-NM RT01: the 2008-07
+  LE-3Dlite response instead of the 2008-10-> GS-11D one). This is a
   real merge (walking and extending `Inventory.networks`/`Station.channels`
   in place), not ``Inventory + Inventory`` concatenation, which would create
   duplicate `Network`/`Station` objects for the same codes.
@@ -116,9 +125,11 @@ def load_inventory(stations_cfg: StationsConfig) -> Inventory:
 
     Two stations sharing ``NET.STA`` (regardless of location code) are
     merged into one `Station`; its channels are the union, de-duplicated by
-    ``(location_code, code)``, of every source's channels for that station
-    (ARCHITECTURE.md §6: location codes are ignored when merging duplicate
-    sites -- but no channel is dropped).
+    ``(location_code, code, start_date)``, of every source's channel epochs
+    for that station (ARCHITECTURE.md §6: location codes are ignored when
+    merging duplicate sites -- but no channel or epoch is dropped).
+    Overlapping epochs of one channel are then closed
+    (:func:`_close_overlapping_epochs`).
 
     Parameters
     ----------
@@ -201,9 +212,9 @@ def load_inventory(stations_cfg: StationsConfig) -> Inventory:
                     if existing.elevation is None and sta.elevation is not None:
                         existing.elevation = sta.elevation
 
-                existing_keys = {(c.location_code, c.code) for c in existing.channels}
+                existing_keys = {_epoch_key(c) for c in existing.channels}
                 for cha in sta.channels:
-                    key = (cha.location_code, cha.code)
+                    key = _epoch_key(cha)
                     if key not in existing_keys:
                         existing.channels.append(cha)
                         existing_keys.add(key)
@@ -220,7 +231,52 @@ def load_inventory(stations_cfg: StationsConfig) -> Inventory:
     if stations_cfg.csv:
         _merge_in(_inventory_from_csv(stations_cfg.csv))
 
+    for net in networks_by_code.values():
+        for sta in net.stations:
+            _close_overlapping_epochs(net.code, sta)
+
     return Inventory(networks=list(networks_by_code.values()), source="openmeq merged inventory")
+
+
+def _epoch_key(cha) -> tuple[str, str, int | None]:
+    """``(location_code, code, start_date in ns)`` -- one channel epoch.
+
+    ``UTCDateTime`` itself is not hashable, hence ``.ns``.
+    """
+    return (cha.location_code, cha.code, None if cha.start_date is None else cha.start_date.ns)
+
+
+def _close_overlapping_epochs(network_code: str, station: Station) -> None:
+    """End each channel epoch no later than the next epoch of the same channel starts.
+
+    Epochs of one ``(location_code, code)`` are sorted by start date; an
+    epoch whose ``end_date`` is missing or after the next epoch's
+    ``start_date`` is ended at that start date (logged as a warning). See the
+    module docstring's "Overlapping epochs are closed" note.
+    """
+    by_key: dict[tuple[str, str], list] = defaultdict(list)
+    for cha in station.channels:
+        by_key[(cha.location_code, cha.code)].append(cha)
+    for (loc, code), epochs in by_key.items():
+        epochs = [e for e in epochs if e.start_date is not None]
+        epochs.sort(key=lambda e: e.start_date)
+        for cur, nxt in zip(epochs, epochs[1:], strict=False):
+            if cur.end_date is None or cur.end_date > nxt.start_date:
+                logger.warning(
+                    "%s.%s.%s.%s: epoch starting %s %s overlaps the next epoch "
+                    "(starting %s) -- ending it at %s",
+                    network_code,
+                    station.code,
+                    loc,
+                    code,
+                    cur.start_date,
+                    "has no end date and"
+                    if cur.end_date is None
+                    else f"ends {cur.end_date}, which",
+                    nxt.start_date,
+                    nxt.start_date,
+                )
+                cur.end_date = nxt.start_date
 
 
 def _read_stations_csv(csv_path: str | Path) -> pd.DataFrame:

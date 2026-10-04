@@ -133,7 +133,7 @@ def _coincidence_sum_hist(detections_df: pd.DataFrame, path: str | Path) -> None
         bins: int | list[float] = 10
     else:
         lo, hi = int(np.floor(values.min())), int(np.ceil(values.max()))
-        # Integer-centered bins (coincidence_sum is a station-weight sum,
+        # Integer-centered bins (coincidence_sum is a weighted count of triggering traces,
         # typically small near-integer values) -- falls back to a plain
         # bin count if every value is identical (lo == hi).
         bins = list(np.arange(lo - 0.5, hi + 1.5, 1.0)) if hi > lo else 10

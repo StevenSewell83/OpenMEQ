@@ -294,7 +294,7 @@ Columns:
 - `event_id`
 - `time` (trigger on-time, ISO)
 - `duration_s`
-- `coincidence_sum`
+- `coincidence_sum` (ObsPy's weighted count of triggering *traces*, not stations; compare `detection.min_trace_coincidence`)
 - `n_stations`
 - `stations` (`;`-separated `NET.STA`)
 - `trace_ids` (`;`-separated)
@@ -316,6 +316,7 @@ The chain passes ObsPy `Catalog` objects saved as QuakeML. Every step reads the 
   - PhaseNet probability goes in `extra` (below), key `probability`.
   - **Channel for PhaseNet picks:** PhaseNet picks per station (instrument), not per channel. P picks go on the station's Z channel; S picks go on the first horizontal present, in the order N, E, 1, 2. The original channel code is used.
   - **Deduplication (M4.4 / `OpenMEQ-1m7.4`):** PhaseNet's `picks.csv` can carry several P or several S rows for one station in one event (a real, confirmed behaviour -- e.g. a spurious extra P double-fired near a strong S onset, `docs/phasenet_interface.md` §5). `openmeq.pick.to_quakeml.build_catalog` keeps at most one `Pick` per `(event, station, phase_hint)`: the row with the highest `phase_score` (ties broken by earliest `phase_time`, then input row order). This was the one genuine gap left in this section (the channel-attribution rule above was already fully specified); recorded here in the same commit that implements it.
+  - **Pick window (`OpenMEQ-nzf`):** before that dedup, rows outside `cfg.phasenet.pick_window_s` = `[before, after]` seconds of the detection trigger time (decoded from the event id, `openmeq.catalog.time_from_event_id`) are dropped (default `[-5, 15]`; `null` disables). PhaseNet fires on the start of every processed chunk, and without the window those edge picks out-scored real P picks.
 - **Origins:**
   - `method_id` is `smi:openmeq/nlloc/passA` or `.../passB`, or `smi:openmeq/hypodd` (§6h has the
     full hypoDD-origin contract: field mapping, the `EX`/`EY`/`EZ` -> `origin_uncertainty`/

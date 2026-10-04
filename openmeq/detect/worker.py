@@ -502,13 +502,15 @@ def _detect(
         det_cfg.trigger_on,
         det_cfg.trigger_off,
         stream,
-        det_cfg.coincidence_sum,
+        det_cfg.min_trace_coincidence,
         trace_ids=trace_ids,
         sta=det_cfg.sta,
         lta=det_cfg.lta,
         details=True,
     )
     triggers = [_normalize_trigger(t) for t in raw_triggers]
+    # OpenMEQ-8a0: min_trace_coincidence counts traces; this is the station count.
+    triggers = [t for t in triggers if t["n_stations"] >= det_cfg.min_stations]
     station_triggers = _station_triggers(stream, det_cfg, t1, t2) if with_station_triggers else []
 
     logger.info(

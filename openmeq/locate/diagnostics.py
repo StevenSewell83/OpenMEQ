@@ -16,6 +16,11 @@
   rejected rows, attributed to pass A or pass B by which pass's own status
   is ``"rejected"``).
 
+Plus ``locate/diagnostics/pass_comparison.pdf``: every figure type above
+redrawn with pass A and pass B together on shared axes/bins/colour scale
+(and the accepted events as a third map row), one figure per page --
+:mod:`openmeq.locate.diagnostics_compare`.
+
 Plus ``locate/diagnostics/summary.txt``: events in / accepted / rejected (by
 reason) counts, and each pass's own event/pick counts and mean/median
 residuals -- a flat ``key: value`` per line, parseable by any test or
@@ -437,6 +442,10 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
             result.pass_a,
             stations,
         )
+
+    from openmeq.locate.diagnostics_compare import PASS_COMPARISON_PDF, make_pass_comparison_pdf
+
+    make_pass_comparison_pdf(diag_dir / PASS_COMPARISON_PDF, result, removal_log, stations)
 
     _write_summary_txt(diag_dir / "summary.txt", result, removal_log)
 

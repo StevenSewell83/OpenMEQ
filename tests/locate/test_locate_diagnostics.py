@@ -18,6 +18,7 @@ and asserts every expected PNG + ``summary.txt`` exists and that
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -126,6 +127,14 @@ def locate_diagnostics_result(nlloc_grids):
     return cfg, paths, result
 
 
+def _assert_comparison_pdf(diagnostics_dir):
+    """pass_comparison.pdf exists with its 6 pages (map, quality, residuals,
+    P/S per station, removals)."""
+    pdf = diagnostics_dir / "pass_comparison.pdf"
+    assert pdf.is_file() and pdf.stat().st_size > 0
+    assert len(re.findall(rb"/Type\s*/Page\b(?!s)", pdf.read_bytes())) == 6
+
+
 def test_diagnostics_outputs_and_summary(locate_diagnostics_result):
     cfg, paths, result = locate_diagnostics_result
 
@@ -149,6 +158,9 @@ def test_diagnostics_outputs_and_summary(locate_diagnostics_result):
         p = diagnostics_dir / name
         assert p.is_file(), f"{p} was not created"
         assert p.stat().st_size > 0
+
+    # Pass A vs B comparison (one PDF, one page per figure type).
+    _assert_comparison_pdf(diagnostics_dir)
 
     summary_path = diagnostics_dir / "summary.txt"
     assert summary_path.is_file()
@@ -253,3 +265,4 @@ def test_diagnostics_zero_rejection_does_not_raise(nlloc_grids):
     text = summary_path.read_text()
     assert "events_rejected: 0" in text
     assert "total_picks_removed: 0" in text
+    _assert_comparison_pdf(diagnostics_dir)

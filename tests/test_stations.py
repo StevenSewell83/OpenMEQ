@@ -121,6 +121,65 @@ def test_station_code_too_long_fails_at_load(tmp_path):
         load_inventory(cfg)
 
 
+def _epoch(code, start, end=None, loc="10") -> Channel:
+    return Channel(
+        code=code,
+        location_code=loc,
+        latitude=0.0,
+        longitude=0.0,
+        elevation=0.0,
+        depth=0.0,
+        sample_rate=100.0,
+        start_date=UTCDateTime(start),
+        end_date=None if end is None else UTCDateTime(end),
+    )
+
+
+def test_every_channel_epoch_kept_and_overlaps_closed(tmp_path, caplog):
+    """OpenMEQ-hud: all epochs of one (loc, code) survive the merge, and an
+    epoch left open (or ending after the next one starts) is ended at the
+    next epoch's start, so exactly one epoch is active at any time."""
+    epochs = [
+        _epoch("EHZ", "2007-05-20", "2011-03-06"),
+        _epoch("EHZ", "2011-06-20"),  # current, open
+        _epoch("EHZ", "2008-01-01"),  # superseded but never closed
+        _epoch("EHN", "2009-01-01", "2030-01-01"),  # ends after the next one starts
+        _epoch("EHN", "2012-01-01"),
+    ]
+    inv = Inventory(
+        networks=[
+            Network(
+                code=NETWORK,
+                stations=[
+                    Station(
+                        code="ARAZ", latitude=0.0, longitude=0.0, elevation=0.0, channels=epochs
+                    )
+                ],
+            )
+        ],
+        source="test",
+    )
+    xml_dir = tmp_path / "xml"
+    xml_dir.mkdir()
+    inv.write(str(xml_dir / "ARAZ.xml"), format="STATIONXML")
+
+    merged = load_inventory(StationsConfig(stationxml_dir=xml_dir))
+    channels = merged[0][0].channels
+    assert len(channels) == 5
+
+    def _active(code, t):
+        return [c for c in channels if c.code == code and c.is_active(UTCDateTime(t))]
+
+    (ehz_2026,) = _active("EHZ", "2026-02-15")
+    assert ehz_2026.start_date == UTCDateTime("2011-06-20")
+    (ehz_2010,) = _active("EHZ", "2010-01-01")
+    assert ehz_2010.start_date == UTCDateTime("2008-01-01")
+    assert ehz_2010.end_date == UTCDateTime("2011-06-20")
+    (ehn_2026,) = _active("EHN", "2026-02-15")
+    assert ehn_2026.start_date == UTCDateTime("2012-01-01")
+    assert sum("overlaps the next epoch" in r.getMessage() for r in caplog.records) >= 2
+
+
 def test_station_code_unique_across_networks_fails_at_load(tmp_path):
     inv = Inventory(
         networks=[

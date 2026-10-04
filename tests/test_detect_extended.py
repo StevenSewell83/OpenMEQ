@@ -77,7 +77,7 @@ def _make_project(tmp_path: Path, *, extended: bool) -> tuple[Path, RunPaths]:
         },
         "detection": {
             "filter": {"type": "bandpass", "freqmin": 2.0, "freqmax": 20.0},
-            "coincidence_sum": 3,
+            "min_trace_coincidence": 3,
         },
         "nlloc": {
             "velocity_model": {"type": "1d", "file": "./vel.txt"},

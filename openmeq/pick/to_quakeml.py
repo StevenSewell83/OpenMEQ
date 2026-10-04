@@ -28,6 +28,18 @@ conventions section left genuinely open (the channel-attribution rule below
 was, on inspection, already fully specified there) -- flagged here and in
 the same-commit ARCHITECTURE.md addition.
 
+Pick window around the trigger (``cfg.phasenet.pick_window_s``, OpenMEQ-nzf)
+-----------------------------------------------------------------------------
+Before deduplication, a row is kept only if its ``phase_time`` lies within
+``[trigger + before, trigger + after]``, where ``trigger`` is the detection
+trigger time encoded in the event id (:func:`openmeq.catalog.time_from_event_id`)
+and ``(before, after) = cfg.phasenet.pick_window_s`` (``None`` disables the
+window). PhaseNet fires on the start of every processed chunk (taper +
+zero-phase high-pass): on RK-NM 2026 Q1, 59% of all P rows sat 0.25-1 s into
+the chunk, ~29.5 s before the trigger, at probability ~0.58 -- and since the
+dedup keeps the highest-probability row anywhere in the chunk, they displaced
+the real P picks. Dropped rows are recorded with reason ``"outside window"``.
+
 Channel attribution (P -> Z, S -> first horizontal present)
 ----------------------------------------------------------------
 ARCHITECTURE.md §5 already specifies this rule in full: PhaseNet picks are
@@ -93,7 +105,8 @@ Rejected picks (``rejected=``, extended QAQC only)
 it *drops* to a caller-supplied ``rejected`` list (OpenMEQ-02o.4's
 ``pick_zoom_<event_id>.png`` ``show_rejected`` overlay) -- a pure side
 channel: the catalogue returned is identical whether or not ``rejected``
-is given. Two reasons exist here: ``"duplicate"`` (lost the
+is given. Three reasons exist here: ``"outside window"`` (outside
+``cfg.phasenet.pick_window_s``, see above), ``"duplicate"`` (lost the
 highest-probability dedupe above) and ``"unresolved channel"``. There is no
 probability-threshold reason: ``cfg.phasenet.min_p_prob``/``min_s_prob``
 are applied inside PhaseNet's own ``predict.py``
@@ -118,7 +131,7 @@ import pandas as pd
 from obspy import Stream, UTCDateTime, read
 from obspy.core.event import Catalog, Pick, WaveformStreamID
 
-from openmeq.catalog import make_event, set_extra, write_catalog
+from openmeq.catalog import make_event, set_extra, time_from_event_id, write_catalog
 from openmeq.log import get_logger
 from openmeq.pick.run_phasenet import PICKS_CSV_COLUMNS
 
@@ -154,6 +167,23 @@ def _dedupe_best_per_station_phase(df: pd.DataFrame) -> pd.DataFrame:
         kind="mergesort",  # stable, so equal-score/time ties keep original row order
     )
     return ordered.drop_duplicates(subset=["station_id", "phase_type"], keep="first")
+
+
+def _split_by_pick_window(
+    group: pd.DataFrame, event_id: str, window_s: tuple[float, float] | None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """``(inside, outside)`` rows of one event's picks for ``cfg.phasenet.pick_window_s``.
+
+    See the module docstring's "Pick window around the trigger" note.
+    ``window_s=None`` keeps every row.
+    """
+    if window_s is None:
+        return group, group.iloc[0:0]
+    # PhaseNet writes naive UTC times; utc=True also accepts a "Z" suffix.
+    trigger = pd.Timestamp(time_from_event_id(event_id).datetime, tz="UTC")
+    offset_s = (pd.to_datetime(group["phase_time"], utc=True) - trigger).dt.total_seconds()
+    inside = offset_s.between(window_s[0], window_s[1])
+    return group[inside], group[~inside]
 
 
 def _rejected_record(event_id: str, row: pd.Series, reason: str) -> dict:
@@ -278,7 +308,7 @@ def build_catalog(
         If given, one ``{"event_id", "station_id", "phase_type", "time",
         "probability", "reason"}`` dict is appended per dropped
         ``picks.csv`` row (``reason`` ``"duplicate"`` or ``"unresolved
-        channel"``, see module docstring). Never changes the returned
+        channel"``/``"outside window"``, see module docstring). Never changes the returned
         catalogue.
 
     Returns
@@ -305,9 +335,24 @@ def build_catalog(
     df = df.copy()
     df["event_id"] = df["file_name"].map(_event_id_from_file_name)
 
+    window_s = cfg.phasenet.pick_window_s
     catalog = Catalog()
     n_picks_total = 0
+    n_outside = 0
     for event_id, group in df.groupby("event_id", sort=True):
+        group, outside = _split_by_pick_window(group, event_id, window_s)
+        n_outside += len(outside)
+        if rejected is not None:
+            for _, row in outside.iterrows():
+                rejected.append(_rejected_record(event_id, row, "outside window"))
+        if group.empty:
+            logger.info(
+                "event %s: no picks within phasenet.pick_window_s=%s of the trigger "
+                "-- no Event written for it",
+                event_id,
+                list(window_s),
+            )
+            continue
         stream = _read_chunk_pn_stream(paths, event_id)
         best = _dedupe_best_per_station_phase(group)
         if rejected is not None:
@@ -357,10 +402,13 @@ def build_catalog(
             )
 
     logger.info(
-        "build_catalog: %d event(s), %d pick(s) total from %s",
+        "build_catalog: %d event(s), %d pick(s) total from %s "
+        "(%d row(s) outside phasenet.pick_window_s=%s dropped)",
         len(catalog.events),
         n_picks_total,
         picks_csv,
+        n_outside,
+        None if window_s is None else list(window_s),
     )
     return catalog
 

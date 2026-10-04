@@ -77,7 +77,8 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `detection.filter.type` | 'bandpass' \| 'highpass' \| 'lowpass' \| 'bandstop' | `"bandpass"` | Filter applied before STA/LTA: `bandpass`, `highpass`, `lowpass` or `bandstop`. |
 | `detection.filter.freqmin` | float \| None | `5.0` | Filter low corner frequency (Hz); unused/optional for `lowpass`. |
 | `detection.filter.freqmax` | float \| None | `80.0` | Filter high corner frequency (Hz); unused/optional for `highpass`. |
-| `detection.coincidence_sum` | int | `4` | Minimum number of stations that must trigger "on" together (within `obspy.coincidence_trigger`'s own window) for a detection. |
+| `detection.min_trace_coincidence` | float | `4` | Minimum (weighted) number of *traces* (channels) that must trigger "on" together for a detection -- `obspy` `coincidence_trigger`'s `thr_coincidence_sum`. A 3-component station contributes up to 3, so this is not a station count. Formerly `coincidence_sum` (the old key is rejected). |
+| `detection.min_stations` | int | `1` | Drop a coincidence trigger whose distinct `NET.STA` count is below this (applied after `coincidence_trigger`). `1` disables the filter. |
 | `detection.station_weights` | dict[str, float] | `{}` | `{"NET.STA": weight}` -- optional per-station weights passed to `coincidence_trigger`'s `trace_ids` weighting; a station absent from this map weighs 1.0. |
 | `detection.day_overlap_s` | float | `60.0` | Padding (seconds) read on each side of a per-day detection window so a trigger straddling midnight isn't lost; must comfortably exceed `lta` plus a trigger's typical duration. |
 | `detection.dedup_window_s` | float | `10.0` | Triggers within this many seconds of each other are merged into one detection (STA/LTA often fires separately on P and S); should exceed the network's max S-P time plus trigger length. |
@@ -102,6 +103,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `phasenet.batch_size` | int | `20` | Currently unused: the PhaseNet runner always invokes `predict.py` with `--batch_size=1` regardless of this value, since `predict.py`'s own batching needs equal station counts across events too (docs/phasenet_interface.md §7). Kept as a forward-looking config hook. |
 | `phasenet.max_gap_fill_s` | float | `2.0` | Gaps up to this long (seconds) are zero-filled rather than interpolated during chunk preprocessing; longer gaps are left as real gaps. |
 | `phasenet.pick_uncertainty_s` | float | `0.1` | PhaseNet emits no timing uncertainty (only a probability); this fixed value (seconds) becomes every PhaseNet `Pick.time_errors.uncertainty`. |
+| `phasenet.pick_window_s` | tuple[float, float] \| None | `(-5.0, 15.0)` | `[before, after]` seconds relative to the detection trigger time: PhaseNet picks outside it are dropped before choosing one pick per station and phase (rejected reason `outside window`). PhaseNet fires on the start of every processed chunk (taper + high-pass), and those artefacts can out-score real picks. `null` keeps the whole chunk. |
 
 ## `nlloc` -- NonLinLoc location and filtering (`openmeq locate`, `scripts/setup_nlloc.py`)
 
@@ -184,6 +186,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `magnitude.ml.pre_filt` | tuple[float, float, float, float] | `(0.5, 1.0, 45.0, 49.0)` | 4-corner bandpass `[f1, f2, f3, f4]` (Hz) passed to ObsPy's `remove_response(pre_filt=...)`; conservative broadband default -- **retune once real station response passbands are known.** |
 | `magnitude.min_stations` | int | `2` | Minimum number of station MLs required to compute an event ML. |
 | `magnitude.statistic` | 'median' \| 'mean' | `"median"` | `median` or `mean` -- how station MLs are combined into the event ML. |
+| `magnitude.exclude_stations` | list[str] | `[]` | Stations (`STA` or `NET.STA`) whose amplitudes are still measured and written to `station_magnitudes.csv` (`excluded=True`) but never used in the event magnitude. A station with no instrument response is skipped automatically. |
 
 ## `hypodd` -- hypoDD relocation (`openmeq relocate`, `scripts/setup_hypodd.py`)
 

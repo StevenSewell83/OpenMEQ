@@ -474,6 +474,56 @@ def test_event_ml_is_median_of_station_mls(tmp_path, monkeypatch):
     assert expected_median != pytest.approx(expected_mean, abs=1e-3)  # sanity: not a tie
 
 
+def test_exclude_stations_measured_but_not_in_event_ml(tmp_path, monkeypatch):
+    """OpenMEQ-tch: magnitude.exclude_stations (STA or NET.STA) keeps the
+    station's ML in station_magnitudes.csv but out of the event ML."""
+    magnitude_cfg = MagnitudeConfig(
+        min_stations=2,
+        statistic="median",
+        exclude_stations=["STA4", f"{NETWORK}.STA5"],
+        ml=MlConfig(
+            relation="local",
+            local=LocalMlConfig(coefficients=LocalMlCoefficientsConfig(a=0.0, b=0.0, c=0.0)),
+        ),
+    )
+    cfg = _make_cfg(tmp_path, magnitude=magnitude_cfg)
+    paths = RunPaths(cfg)
+    paths.ensure()
+    _write_inventory(cfg, [_make_station("DUMMY", 0.0, 0.0, 0.0, 2.0e8)])
+
+    event_id = "ev20250101T000005_000"
+    origin_time = UTCDateTime(2025, 1, 1, 0, 0, 5)
+    event, _origin = _make_event_with_origin(event_id, origin_time, 0.0, 0.0)
+    write_catalog(Catalog(events=[event]), paths.catalog_auto_xml)
+    _write_minimal_chunk(paths, event_id)
+
+    target_mls = [1.0, 1.2, 1.4, 3.5, 4.0]  # STA4/STA5 are the outliers
+    fake_amps = [
+        StationAmplitude(
+            net=NETWORK,
+            sta=f"STA{i + 1}",
+            amplitude_m=(10.0**ml) / 1000.0,
+            distance_km=10.0,
+            component_used="HHN",
+            window_start=origin_time,
+            window_end=origin_time + 1.0,
+        )
+        for i, ml in enumerate(target_mls)
+    ]
+    monkeypatch.setattr(magnitude_pipeline, "measure_event_amplitudes", lambda *a, **k: fake_amps)
+
+    run_magnitude(cfg, paths)
+
+    ev = read_catalog(paths.catalog_mag_xml)[0]
+    assert ev.magnitudes[0].mag == pytest.approx(1.2, abs=1e-6)
+    assert ev.magnitudes[0].station_count == 3
+    rows = pd.read_csv(paths.station_magnitudes_csv).set_index("sta")
+    assert list(rows.loc[["STA4", "STA5"], "excluded"]) == [True, True]
+    assert not rows.loc[["STA4", "STA5"], "included"].any()
+    assert rows.loc["STA5", "station_ml"] == pytest.approx(4.0, abs=1e-6)
+    assert not rows.loc[["STA1", "STA2", "STA3"], "excluded"].any()
+
+
 # ---------------------------------------------------------------------------
 # test_diagnostics_written
 # ---------------------------------------------------------------------------

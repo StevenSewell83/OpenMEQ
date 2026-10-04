@@ -156,8 +156,12 @@ MEANINGS: dict[str, str] = {
     "detection.filter.freqmin": "Filter low corner frequency (Hz); unused/optional for `lowpass`.",
     "detection.filter.freqmax": "Filter high corner frequency (Hz); unused/optional for "
     "`highpass`.",
-    "detection.coincidence_sum": 'Minimum number of stations that must trigger "on" together '
-    "(within `obspy.coincidence_trigger`'s own window) for a detection.",
+    "detection.min_trace_coincidence": "Minimum (weighted) number of *traces* (channels) that "
+    'must trigger "on" together for a detection -- `obspy` `coincidence_trigger`\'s '
+    "`thr_coincidence_sum`. A 3-component station contributes up to 3, so this is not a station "
+    "count. Formerly `coincidence_sum` (the old key is rejected).",
+    "detection.min_stations": "Drop a coincidence trigger whose distinct `NET.STA` count is below "
+    "this (applied after `coincidence_trigger`). `1` disables the filter.",
     "detection.station_weights": '`{"NET.STA": weight}` -- optional per-station weights passed to '
     "`coincidence_trigger`'s `trace_ids` weighting; a station absent from this map weighs 1.0.",
     "detection.day_overlap_s": "Padding (seconds) read on each side of a per-day detection window "
@@ -188,6 +192,11 @@ MEANINGS: dict[str, str] = {
     "interpolated during chunk preprocessing; longer gaps are left as real gaps.",
     "phasenet.pick_uncertainty_s": "PhaseNet emits no timing uncertainty (only a probability); "
     "this fixed value (seconds) becomes every PhaseNet `Pick.time_errors.uncertainty`.",
+    "phasenet.pick_window_s": "`[before, after]` seconds relative to the detection trigger time: "
+    "PhaseNet picks outside it are dropped before choosing one pick per station and phase "
+    "(rejected reason `outside window`). PhaseNet fires on the start of every processed chunk "
+    "(taper + high-pass), and those artefacts can out-score real picks. `null` keeps the whole "
+    "chunk.",
     # --- nlloc ---
     "nlloc.velocity_model.type": "`1d` (layer file) or `3d` (user-supplied NLLoc grid).",
     "nlloc.velocity_model.file": "1D: path to the layer file (ARCHITECTURE.md §6a). 3D: root name "
@@ -321,6 +330,9 @@ MEANINGS: dict[str, str] = {
     "station response passbands are known.**",
     "magnitude.min_stations": "Minimum number of station MLs required to compute an event ML.",
     "magnitude.statistic": "`median` or `mean` -- how station MLs are combined into the event ML.",
+    "magnitude.exclude_stations": "Stations (`STA` or `NET.STA`) whose amplitudes are still "
+    "measured and written to `station_magnitudes.csv` (`excluded=True`) but never used in the "
+    "event magnitude. A station with no instrument response is skipped automatically.",
     # --- hypodd ---
     "hypodd.velocity_model.type": "`1d` (layer file) or `3d` (SIMUL2000 `vel3D.dat`).",
     "hypodd.velocity_model.file": "1D: path to the layer file (same format/file as "

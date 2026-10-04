@@ -120,7 +120,8 @@ METHOD_IDS: dict[str, str] = {
 #: ``magnitude/station_magnitudes.csv``'s exact column order (this task's
 #: own design note lists ``event_id,net,sta,amplitude_m,distance_km,
 #: component_used,station_ml,clamped`` plus "an extra included boolean
-#: column" -- ``included``).
+#: column" -- ``included``), plus ``excluded`` (OpenMEQ-tch: the station is in
+#: ``cfg.magnitude.exclude_stations``; its ``station_ml`` is still reported).
 STATION_MAGNITUDES_COLUMNS = [
     "event_id",
     "net",
@@ -131,7 +132,13 @@ STATION_MAGNITUDES_COLUMNS = [
     "station_ml",
     "clamped",
     "included",
+    "excluded",
 ]
+
+
+def _is_excluded(net: str, sta: str, exclude_stations: list[str]) -> bool:
+    """``cfg.magnitude.exclude_stations`` match on ``STA`` or ``NET.STA``."""
+    return sta in exclude_stations or f"{net}.{sta}" in exclude_stations
 
 
 # ---------------------------------------------------------------------------
@@ -419,10 +426,16 @@ def _magnitude_one_event(item: tuple[Event, RunPaths, Config]) -> MagnitudeEvent
             ml_value = float("nan")
             included = False
         clamped = get_clamp_counter() > clamp_before
+        # OpenMEQ-tch: measured and reported, but never in the event ML.
+        excluded = _is_excluded(sa.net, sa.sta, cfg.magnitude.exclude_stations)
+        computed = included
+        included = included and not excluded
 
         amp = _make_amplitude(event_id, sa, location_code, pick, method_id)
         set_extra(amp, "clamped", clamped)
         set_extra(amp, "included_in_event_ml", included)
+        if excluded:
+            set_extra(amp, "excluded_by_config", True)
         event.amplitudes.append(amp)
 
         if included:
@@ -438,9 +451,10 @@ def _magnitude_one_event(item: tuple[Event, RunPaths, Config]) -> MagnitudeEvent
                 "amplitude_m": sa.amplitude_m,
                 "distance_km": sa.distance_km,
                 "component_used": sa.component_used,
-                "station_ml": ml_value if included else float("nan"),
+                "station_ml": ml_value if computed else float("nan"),
                 "clamped": clamped,
                 "included": included,
+                "excluded": excluded,
             }
         )
 

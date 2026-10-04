@@ -45,7 +45,12 @@ from openmeq.catalog import (
 from openmeq.config import load_config
 from openmeq.external import ExternalToolMissing, bin_path
 from openmeq.paths import RunPaths
-from openmeq.review.batch import ReviewLaunchError, run_review
+from openmeq.review.batch import (
+    PLACEHOLDER_RESPONSE_COMMENT,
+    ReviewLaunchError,
+    run_review,
+    write_review_inventory,
+)
 
 pytestmark = pytest.mark.requires_nlloc
 
@@ -313,6 +318,41 @@ def _make_fake_popen(launched: list, *, save: bool = False, returncode: int = 0)
         return _FakeCompletedProcess(returncode)
 
     return _fake_popen
+
+
+def test_review_inventory_placeholders_missing_responses(tmp_path, monkeypatch):
+    """OpenMEQ-tch: ObsPyck gets review/stations_review.xml, where a channel
+    with no response (e.g. a station deliberately stripped of one) carries a
+    labelled unit placeholder -- ObsPyck aborts on any trace without one."""
+    from obspy import read_inventory
+
+    _require_nlloc_tools()
+    cfg, paths, config_path, event_ids = _build_project(tmp_path, n_events=1)
+    inv = read_inventory(str(paths.stations_xml))
+    stripped = inv[0][0]
+    for cha in stripped:
+        cha.response = None
+    inv.write(str(paths.stations_xml), format="STATIONXML")
+
+    out, patched = write_review_inventory(paths)
+    assert sorted(patched) == sorted(f"{NET}.{stripped.code}..{c.code}" for c in stripped)
+    review_inv = read_inventory(str(out))
+    for cha in review_inv[0][0]:
+        assert cha.response.instrument_sensitivity.value == 1.0
+        assert any(PLACEHOLDER_RESPONSE_COMMENT in c.value for c in cha.comments)
+    other = review_inv[0][1][0]
+    assert not any(PLACEHOLDER_RESPONSE_COMMENT in c.value for c in other.comments)
+    # 0_setup/stations.xml itself is untouched.
+    assert read_inventory(str(paths.stations_xml))[0][0][0].response is None
+
+    launched: list = []
+    monkeypatch.setattr(
+        "openmeq.review.batch._launch_obspyck_subprocess", _make_fake_popen(launched, save=False)
+    )
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    run_review(cfg, paths, config_path=str(config_path), non_interactive=True)
+    ((cmd, _cwd),) = launched
+    assert cmd[-1] == str(paths.review_stations_xml)
 
 
 def test_resume_skips_done_events(tmp_path, monkeypatch):

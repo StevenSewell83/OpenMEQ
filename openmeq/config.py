@@ -225,7 +225,13 @@ class DetectionConfig(_StrictModel):
     trigger_on: float = 3.5
     trigger_off: float = 1.5
     filter: DetectionFilterConfig = Field(default_factory=DetectionFilterConfig)
-    coincidence_sum: int = 4
+    # OpenMEQ-8a0: obspy coincidence_trigger's thr_coincidence_sum -- counts
+    # triggering *traces* (channels, weighted by station_weights), not stations:
+    # a 3-C station contributes up to 3. Formerly named coincidence_sum.
+    min_trace_coincidence: float = 4
+    # OpenMEQ-8a0: drop a coincidence trigger whose distinct NET.STA count is
+    # below this. 1 = no station filter.
+    min_stations: int = 1
     station_weights: dict[str, float] = Field(default_factory=dict)
     # M2.1 / OpenMEQ-ujx.1: padding read on each side of a per-day detection
     # window so a trigger isn't lost at a day boundary; must comfortably
@@ -236,6 +242,17 @@ class DetectionConfig(_StrictModel):
     # Must exceed the max S-P time plus trigger length so P and S triggers of one
     # event merge into a single detection (STA/LTA often fires on both).
     dedup_window_s: float = 10.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_renamed_keys(cls, data):
+        if isinstance(data, dict) and "coincidence_sum" in data:
+            raise ValueError(
+                "detection.coincidence_sum was renamed to detection.min_trace_coincidence "
+                "(it counts triggering traces/channels, not stations; a 3-C station counts up "
+                "to 3). Use detection.min_stations for a station-count threshold."
+            )
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +306,21 @@ class PhasenetConfig(_StrictModel):
     # M4.4 / OpenMEQ-1m7.4: PhaseNet emits no timing uncertainty (only a
     # probability); this becomes Pick.time_errors.uncertainty.
     pick_uncertainty_s: float = 0.1
+    # OpenMEQ-nzf: keep only picks within [before, after] seconds of the
+    # detection trigger time (before <= 0 <= after typical); null keeps the
+    # whole chunk. PhaseNet fires on the processed chunk's start (taper +
+    # high-pass), and the per-station dedup keeps the highest-probability
+    # pick anywhere, so without a window those artefacts replace real picks.
+    pick_window_s: tuple[float, float] | None = (-5.0, 15.0)
+
+    @model_validator(mode="after")
+    def _check_pick_window(self) -> PhasenetConfig:
+        if self.pick_window_s is not None and self.pick_window_s[0] >= self.pick_window_s[1]:
+            raise ValueError(
+                f"phasenet.pick_window_s must be [before, after] with before < after, "
+                f"got {list(self.pick_window_s)}"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +603,11 @@ class MagnitudeConfig(_StrictModel):
     ml: MlConfig = Field(default_factory=MlConfig)
     min_stations: int = 2
     statistic: Literal["median", "mean"] = "median"
+    # OpenMEQ-tch: stations ("STA" or "NET.STA") whose amplitudes are still
+    # measured and written to station_magnitudes.csv (excluded=True) but are
+    # never used in the event magnitude -- e.g. a station with a bad or
+    # unknown response.
+    exclude_stations: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

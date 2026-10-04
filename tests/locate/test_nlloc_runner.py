@@ -174,6 +174,26 @@ def test_locate_event_unsolvable_pick_set_raises_nllocfailed(nlloc_grids):
         locate_event(event, picks, paths, cfg, "passA", 4)
 
 
+@pytest.mark.parametrize("n_picks", [0, 3])
+def test_locate_event_too_few_picks_raises_before_subprocess(nlloc_grids, monkeypatch, n_picks):
+    """OpenMEQ-aqe: an empty (e.g. S-only event in P-only pass A) or below-
+    min_number_phases pick set raises NLLocFailed without writing obs.txt or
+    running NLLoc (obspy's NLLOC_OBS writer crashes on zero picks)."""
+    cfg, paths, truth, _table = nlloc_grids
+    ev = _pick_a_well_covered_event(truth)
+    event = make_event(ev["event_id_hint"])
+    picks = _build_clean_picks(ev["arrivals"])[:n_picks]
+    assert cfg.nlloc.locmeth.min_number_phases > n_picks
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("NLLoc subprocess must not run for too few picks")
+
+    monkeypatch.setattr("openmeq.locate.nlloc_runner.run", _boom)
+
+    with pytest.raises(NLLocFailed, match="min_number_phases"):
+        locate_event(event, picks, paths, cfg, "passA", 1)
+
+
 def _locate_one(item):
     """Top-level, picklable ``pmap`` work function (openmeq.parallel's contract)."""
     event, picks, paths, cfg, pass_name, iteration = item

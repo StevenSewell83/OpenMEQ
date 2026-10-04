@@ -402,12 +402,25 @@ def locate_event(
     NLLocFailed
         On a non-zero NLLoc exit, or if NLLoc exited 0 but produced no
         per-event ``.hyp`` file (e.g. too few phases passed ``LOCMETH``'s
-        minimum-phase-count filter -- "0 events located").
+        minimum-phase-count filter -- "0 events located"). Fewer picks than
+        ``cfg.nlloc.locmeth.min_number_phases`` raise it before anything is
+        written or run (OpenMEQ-aqe): NLLoc would locate nothing anyway, and
+        obspy's ``NLLOC_OBS`` writer crashes on an empty pick list.
     """
     eid = get_event_id(event)
 
     _check_no_duplicate_station_phase(picks_to_use, eid)
     _check_uncertainties_set(picks_to_use, eid)
+
+    min_phases = cfg.nlloc.locmeth.min_number_phases
+    if len(picks_to_use) < max(min_phases, 1):
+        raise NLLocFailed(
+            eid,
+            pass_name,
+            iteration,
+            f"{len(picks_to_use)} pick(s), fewer than nlloc.locmeth.min_number_phases="
+            f"{min_phases} -- not run",
+        )
 
     ctx = _get_context(cfg, paths)
     stations_used = {p.waveform_id.station_code for p in picks_to_use}

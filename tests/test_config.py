@@ -46,7 +46,8 @@ def test_load_example_config():
     assert cfg.nlloc.filter.p_only.max_residual_s == pytest.approx(0.10)
     assert cfg.hypodd.xcorr.min_cc == pytest.approx(0.7)
     assert cfg.hypodd.ph2dt.maxngh == 10
-    assert cfg.detection.coincidence_sum == 4
+    assert cfg.detection.min_trace_coincidence == 4
+    assert cfg.detection.min_stations == 1
     assert cfg.detection.trigger_on == pytest.approx(3.5)
     assert cfg.magnitude.ml.hutton_boore.a == pytest.approx(1.110)
     assert cfg.magnitude.statistic == "median"
@@ -110,7 +111,7 @@ def test_example_config_documents_every_plan_sketch_key():
     # sketch (not the keys added ahead of later milestones).
     assert "channel_map" in raw["stations"]
     assert "spike_threshold_mad" in raw["qc"]
-    assert "coincidence_sum" in raw["detection"]
+    assert "min_trace_coincidence" in raw["detection"]
     assert "min_p_prob" in raw["phasenet"]
     assert "grid" in raw["nlloc"]
     assert "events" in raw["nlloc"]["filter"]
@@ -216,6 +217,34 @@ def test_unknown_nested_key_rejected(tmp_path):
     path.write_text(yaml.safe_dump(raw))
 
     with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_renamed_coincidence_sum_key_rejected(tmp_path):
+    """OpenMEQ-8a0: the old detection.coincidence_sum key fails with a pointer to its new name."""
+    raw = _load_example_raw()
+    raw["detection"]["coincidence_sum"] = raw["detection"].pop("min_trace_coincidence")
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(ConfigError, match="min_trace_coincidence"):
+        load_config(path)
+
+
+def test_phasenet_pick_window(tmp_path):
+    """OpenMEQ-nzf: default [-5, 15], null disables, before >= after is rejected."""
+    raw = _load_example_raw()
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert load_config(path).phasenet.pick_window_s == (-5.0, 15.0)
+
+    raw["phasenet"]["pick_window_s"] = None
+    path.write_text(yaml.safe_dump(raw))
+    assert load_config(path).phasenet.pick_window_s is None
+
+    raw["phasenet"]["pick_window_s"] = [5.0, -5.0]
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ConfigError, match="pick_window_s"):
         load_config(path)
 
 

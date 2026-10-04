@@ -116,6 +116,29 @@ def test_recovers_synthetic_events_in_window(synthetic_project, tmp_path):
 
 
 @pytest.mark.slow
+def test_min_stations_filters_triggers(synthetic_project, tmp_path, monkeypatch):
+    """OpenMEQ-8a0: triggers with fewer distinct stations than min_stations are dropped."""
+    cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
+    raw = yaml.safe_load(config_path.read_text())
+    raw.setdefault("detection", {})["min_stations"] = 2
+    config_path.write_text(yaml.safe_dump(raw))
+
+    def _fake(*args, **kwargs):
+        t = UTCDateTime(cfg.data.start) + 3600
+        common = {"time": t, "duration": 1.0, "coincidence_sum": 3.0}
+        return [
+            {**common, "trace_ids": ["XX.STA01..HHZ", "XX.STA01..HHN", "XX.STA01..HHE"]},
+            {**common, "time": t + 60, "trace_ids": ["XX.STA01..HHZ", "XX.STA02..HHZ"]},
+        ]
+
+    monkeypatch.setattr("openmeq.detect.worker.coincidence_trigger", _fake)
+    window_start, window_end = build_windows(cfg)[0]
+    triggers = detect_window(window_start, window_end, str(paths.index_json), str(config_path))
+
+    assert [t["stations"] for t in triggers] == [["XX.STA01", "XX.STA02"]]
+
+
+@pytest.mark.slow
 def test_qc_flagged_channel_still_used(synthetic_project, tmp_path, monkeypatch):
     cfg, paths, truth, config_path = _setup_project(synthetic_project, tmp_path)
     index = DataIndex.load(paths.index_json)
@@ -156,7 +179,7 @@ def test_exclude_channels_dropped(synthetic_project, tmp_path, monkeypatch):
     assert captured_streams, "coincidence_trigger was never called"
     stations_present = _stations(captured_streams[0])
     assert excluded_station not in stations_present
-    assert len(stations_present) >= cfg.detection.coincidence_sum
+    assert len(stations_present) >= cfg.detection.min_stations
 
 
 @pytest.mark.slow

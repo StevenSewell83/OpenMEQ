@@ -273,6 +273,13 @@ class RunPaths:
     def catalog_final_xml(self) -> Path:
         return self.step_dir("review") / "catalog_final.xml"
 
+    @property
+    def review_stations_xml(self) -> Path:
+        """ObsPyck's StationXML (OpenMEQ-tch): ``0_setup/stations.xml`` with a
+        labelled unit-sensitivity placeholder on every channel lacking a
+        response (:func:`openmeq.review.batch.write_review_inventory`)."""
+        return self.step_dir("review") / "stations_review.xml"
+
     def review_work_dir(self, event_id: str) -> Path:
         """Per-event ObsPyck subprocess working directory
         (``review/work/<event_id>/``, ARCHITECTURE.md §3, added by M7.3).

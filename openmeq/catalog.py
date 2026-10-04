@@ -61,6 +61,28 @@ def event_id_from_time(t: UTCDateTime) -> str:
     return f"ev{t.strftime('%Y%m%dT%H%M%S')}_{millis:03d}"
 
 
+def time_from_event_id(event_id: str) -> UTCDateTime:
+    """Inverse of :func:`event_id_from_time`: the detection trigger time an id encodes.
+
+    A ``_dup<n>`` collision suffix (``openmeq.detect.merge``) is ignored, so
+    ``"ev20250101T123456_789_dup1"`` gives the same time as
+    ``"ev20250101T123456_789"``.
+
+    Raises
+    ------
+    ValueError
+        If ``event_id`` does not start with ``evYYYYMMDDTHHMMSS_mmm``.
+    """
+    stem = event_id[2:21]  # YYYYMMDDTHHMMSS_mmm
+    if not event_id.startswith("ev") or len(stem) != 19 or stem[15] != "_":
+        raise ValueError(f"not an OpenMEQ event id: {event_id!r}")
+    try:
+        t = UTCDateTime.strptime(stem[:15], "%Y%m%dT%H%M%S")
+        return t + int(stem[16:]) / 1000.0
+    except ValueError as exc:
+        raise ValueError(f"not an OpenMEQ event id: {event_id!r}") from exc
+
+
 def event_id(event: Event) -> str:
     """Extract the ``ev...``-style event id from an `Event`'s resource id.
 

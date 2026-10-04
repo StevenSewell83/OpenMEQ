@@ -202,7 +202,10 @@ sum, participating stations).
 coincidence-sum histogram, station participation.
 
 Filters each day's data, runs recursive STA/LTA per channel, and applies
-ObsPy's `coincidence_trigger` across stations; day boundaries are padded
+ObsPy's `coincidence_trigger` across all channels. A detection needs at
+least `detection.min_trace_coincidence` triggering **traces** (channels,
+weighted by `station_weights`; a 3-C station counts up to 3) and at least
+`detection.min_stations` distinct stations. Day boundaries are padded
 (`detection.day_overlap_s`) so a trigger isn't lost at midnight, and
 triggers within `detection.dedup_window_s` are merged into one detection
 (STA/LTA commonly fires separately on P and S).
@@ -241,6 +244,9 @@ cross-correlation later -- they are never regenerated once written unless
 - `5_ml_picks/catalog_picks.xml` -- one QuakeML `Event` per detection with
   automatic P/S picks, probabilities and pick uncertainties (no origins
   yet -- that's `locate`'s job).
+  Only picks within `phasenet.pick_window_s` (default `[-5, 15]` s) of the
+  detection trigger are kept -- PhaseNet fires on the start of every chunk
+  -- then one pick per station and phase, the highest-probability one.
 
 **Diagnostics** (`5_ml_picks/diagnostics/`): P/S pick counts per station,
 pick-probability histograms, picks-per-event histogram, and example
@@ -292,7 +298,10 @@ stable or `max_iter` is reached:
 **Diagnostics** (`7_location/diagnostics/`, per pass, `passA_`/`passB_`
 prefixes): P/S residual histograms (overall and per station), an event map +
 E-W/N-S depth-section figure, RMS/gap/error histograms, and pick/event
-removal-by-reason bar charts, plus `summary.txt` with flat
+removal-by-reason bar charts, plus `pass_comparison.pdf` (every one of
+those figures with pass A and pass B together on shared axes, bins and colour
+scale, plus the accepted events as a third map row; one figure per page) and
+`summary.txt` with flat
 `events_in`/`events_accepted`/`events_rejected`/per-pass counts.
 
 ### `scripts/setup_nlloc.py` -- NLLoc grid setup on its own
@@ -414,7 +423,12 @@ Per event: remove instrument response and simulate a Wood-Anderson
 seismograph, measure peak amplitude in a window around the S pick (max of
 horizontals, falls back to Z), convert to ML via the configured relation
 (`hutton_boore` or `local`, `magnitude.ml.relation`), and combine station
-MLs (median by default) into the event ML. `8_relocation/magnitude/catalog_mag.xml` is
+MLs (median by default) into the event ML. Stations listed in
+`magnitude.exclude_stations` are still measured and reported in
+`station_magnitudes.csv` (`excluded=True`) but left out of the event ML;
+stations with no instrument response are skipped (review gives ObsPyck a
+placeholder response for them, `7b_review/stations_review.xml`, so they stay
+pickable). `8_relocation/magnitude/catalog_mag.xml` is
 what `relocate` reads next, so hypoDD's relocated catalogue carries
 magnitudes through too.
 

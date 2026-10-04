@@ -29,7 +29,7 @@ import pytest
 from obspy import Stream, Trace, UTCDateTime
 
 from openmeq.catalog import event_id as get_event_id
-from openmeq.catalog import get_extra, read_catalog
+from openmeq.catalog import get_extra, read_catalog, time_from_event_id
 from openmeq.chunk import write_chunks
 from openmeq.config import load_config
 from openmeq.index import build_index
@@ -110,7 +110,9 @@ def hand_built_project(tmp_path, synthetic_project):
     paths = RunPaths(cfg)
     paths.ensure()
 
-    event_id = "ev20250601T000000_000"
+    # Trigger 20 s into the chunk, so every pick these tests place (0 to +13 s
+    # after it) is inside the default phasenet.pick_window_s.
+    event_id = "ev20250601T000020_000"
     stream = Stream(
         [
             _make_trace("XX", "ORNT", "00", "HHZ"),
@@ -372,3 +374,55 @@ def test_rejected_side_channel(hand_built_project):
     assert dup["time"] == UTCDateTime(_START + 20.0)
     assert dup["event_id"] == event_id
     assert ("XX.GHOST.00.HH", "unresolved channel") in by_reason
+
+
+# ---------------------------------------------------------------------------
+# phasenet.pick_window_s (OpenMEQ-nzf)
+# ---------------------------------------------------------------------------
+
+
+def test_time_from_event_id_round_trip():
+    from openmeq.catalog import event_id_from_time
+
+    t = UTCDateTime(2026, 1, 15, 12, 34, 56, 789000)
+    assert time_from_event_id(event_id_from_time(t)) == t
+    assert time_from_event_id(event_id_from_time(t) + "_dup2") == t
+    with pytest.raises(ValueError):
+        time_from_event_id("not_an_id")
+
+
+def test_pick_window_drops_chunk_edge_picks(hand_built_project):
+    """A high-probability pick at the chunk start (outside the window) neither
+    survives nor displaces the real, lower-probability pick near the trigger."""
+    cfg, paths, event_id = hand_built_project
+    trigger = time_from_event_id(event_id)
+    file_name = f"{event_id}/{event_id}.mseed"
+    rows = [
+        _pick_row("XX.ORNT.00.HH", "P", _START + 0.5, 0.95, file_name),  # chunk-edge artefact
+        _pick_row("XX.ORNT.00.HH", "P", trigger + 0.3, 0.60, file_name),
+        _pick_row("XX.ORNT.00.HH", "S", trigger + 16.0, 0.90, file_name),  # after window
+        _pick_row("XX.UNOR.00.DP", "P", trigger - 5.0, 0.50, file_name),  # on the boundary
+    ]
+    picks_csv = _write_picks_csv(paths, rows)
+
+    rejected: list[dict] = []
+    catalog = build_catalog(picks_csv, paths, cfg, rejected=rejected)
+
+    kept = sorted((p.waveform_id.station_code, p.phase_hint, p.time) for p in catalog[0].picks)
+    assert kept == [("ORNT", "P", trigger + 0.3), ("UNOR", "P", trigger - 5.0)]
+    outside = sorted(r["time"] - trigger for r in rejected if r["reason"] == "outside window")
+    assert outside == pytest.approx([_START + 0.5 - trigger, 16.0])
+
+    cfg_off = cfg.model_copy(deep=True)
+    cfg_off.phasenet.pick_window_s = None
+    off = build_catalog(picks_csv, paths, cfg_off)
+    assert len(off[0].picks) == 3  # whole chunk: edge P wins the ORNT dedup
+
+
+def test_pick_window_no_picks_inside_skips_event(hand_built_project):
+    cfg, paths, event_id = hand_built_project
+    file_name = f"{event_id}/{event_id}.mseed"
+    picks_csv = _write_picks_csv(
+        paths, [_pick_row("XX.ORNT.00.HH", "P", _START + 0.5, 0.95, file_name)]
+    )
+    assert len(build_catalog(picks_csv, paths, cfg)) == 0

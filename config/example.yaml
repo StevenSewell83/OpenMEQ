@@ -85,7 +85,10 @@ detection:
     type: bandpass                      # bandpass | highpass | lowpass | bandstop
     freqmin: 5                          # Hz
     freqmax: 80                         # Hz
-  coincidence_sum: 4                    # min number of stations triggering "on" together
+  min_trace_coincidence: 4              # min (weighted) number of TRACES triggering "on" together
+                                         # (obspy coincidence_trigger's thr_coincidence_sum); a 3-C
+                                         # station counts up to 3, so this is not a station count
+  min_stations: 1                       # drop coincidence triggers with fewer distinct stations (1 = off)
   station_weights: {}                   # optional {"NET.STA": weight} for coincidence_trigger's trace_ids
   # --- M2.1 / OpenMEQ-ujx.1 ---
   day_overlap_s: 60.0                   # pad read on each side of a per-day window so a trigger
@@ -112,6 +115,9 @@ phasenet:
   # --- M4.2 / OpenMEQ-1m7.2 ---
   max_gap_fill_s: 2.0                   # gaps longer than this are zero-filled rather than interpolated
   # --- M4.4 / OpenMEQ-1m7.4 ---
+  pick_window_s: [-5.0, 15.0]           # keep picks within [before, after] s of the detection
+                                         # trigger (null = whole chunk); PhaseNet fires on the
+                                         # chunk start, and those artefacts can out-score real picks
   pick_uncertainty_s: 0.1               # PhaseNet emits no timing uncertainty; used for Pick.time_errors
 
 nlloc:
@@ -214,6 +220,8 @@ magnitude:
     pre_filt: [0.5, 1.0, 45.0, 49.0]
   min_stations: 2
   statistic: median                     # event ML = median of station MLs (median | mean)
+  exclude_stations: []                  # [STA | NET.STA] measured and reported, never used in the
+                                         # event ML (e.g. a station with a bad/unknown response)
 
 hypodd:
   velocity_model:
