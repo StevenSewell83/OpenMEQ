@@ -70,6 +70,7 @@ from openmeq.catalog import event_id as _event_id
 from openmeq.catalog import get_extra, read_catalog
 from openmeq.log import get_logger
 from openmeq.plotting import plot_hist, plot_map_sections, plot_timeseries
+from openmeq.wells import load_wells
 
 if TYPE_CHECKING:
     from openmeq.config import Config
@@ -325,6 +326,10 @@ def write_relocate_diagnostics(
       location, relative shift, and the per-event hypoDD QC extras
       (§6h: ``hypodd_mag``/``hypodd_nccp``/.../``hypodd_cluster_id``).
 
+    If ``cfg`` is given and ``cfg.diagnostics.relocate.xcorr_plots.enabled``,
+    also writes ``diagnostics/xcorr_pairs/`` (obspy ``xcorr_pick_correction``
+    plots for a sample of pairs, `openmeq.relocate.xcorr_plots`).
+
     If ``cfg`` is given and ``cfg.diagnostics.extended_enabled("relocate")``
     is true, also writes ``diagnostics/extended/``
     (`openmeq.relocate.extended_diagnostics.write_relocate_extended_diagnostics`,
@@ -335,7 +340,8 @@ def write_relocate_diagnostics(
     ----------
     paths : openmeq.paths.RunPaths
     cfg : openmeq.config.Config, optional
-        Only needed for the extended set; ``None`` writes the baseline only.
+        Needed for the extended set and the ``diagnostics.wells`` overlay;
+        ``None`` writes the baseline only, without wells.
 
     Returns
     -------
@@ -458,6 +464,8 @@ def write_relocate_diagnostics(
     if paths.stations_csv.exists():
         stations_df = pd.read_csv(paths.stations_csv)
 
+    wells = load_wells(cfg)
+
     before_df = pd.DataFrame(before_rows, columns=["event_id", "lat", "lon", "depth_km"])
     after_df = pd.DataFrame(
         after_rows, columns=["event_id", "lat", "lon", "depth_km", "relative_shift_km"]
@@ -468,6 +476,7 @@ def write_relocate_diagnostics(
         stations_df,
         diagnostics_dir / "locations_before.png",
         title="Pre-hypoDD event locations",
+        wells=wells,
     )
     plot_map_sections(
         after_df,
@@ -476,6 +485,7 @@ def write_relocate_diagnostics(
         color_by="relative_shift_km",
         cbar_label="Relative shift (km)",
         title="Post-hypoDD (relocated) event locations (colour: relative shift)",
+        wells=wells,
     )
 
     cc_values = _read_dt_cc_cc_values(paths.dt_cc)
@@ -600,6 +610,14 @@ def write_relocate_diagnostics(
             )
         except Exception as exc:  # noqa: BLE001 -- extended QAQC must never fail the step
             logger.warning("relocate extended diagnostics failed: %s: %s", type(exc).__name__, exc)
+
+    if cfg is not None and cfg.diagnostics.relocate.xcorr_plots.enabled:
+        from openmeq.relocate.xcorr_plots import write_xcorr_plots
+
+        try:
+            write_xcorr_plots(cfg, paths)
+        except Exception as exc:  # noqa: BLE001 -- optional QC plots must never fail the step
+            logger.warning("relocate xcorr plots failed: %s: %s", type(exc).__name__, exc)
 
     return RelocateDiagnosticsResult(
         diagnostics_dir=diagnostics_dir,

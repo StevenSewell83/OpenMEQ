@@ -41,6 +41,7 @@ from ._save import save_fig
 from ._scatter import plot_scatter
 from ._style import setup_style
 from ._timeseries import plot_timeseries
+from ._wells import Wells, draw_wells_map, draw_wells_section
 
 __all__ = [
     "setup_style",
@@ -53,4 +54,7 @@ __all__ = [
     "plot_bar",
     "plot_scatter",
     "plot_gutenberg_richter",
+    "Wells",
+    "draw_wells_map",
+    "draw_wells_section",
 ]

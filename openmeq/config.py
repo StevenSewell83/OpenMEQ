@@ -675,13 +675,26 @@ class XcorrFilterConfig(_StrictModel):
 
     freqmin: float = 2.0
     freqmax: float = 20.0
+    # OpenMEQ-6y1: formerly hard-coded in openmeq.relocate.waveform_cache.
+    corners: int = Field(default=4, ge=1)
+    zerophase: bool = True
+
+    @model_validator(mode="after")
+    def _check_band(self) -> XcorrFilterConfig:
+        if not 0 < self.freqmin < self.freqmax:
+            raise ValueError("hypodd.xcorr.filter needs 0 < freqmin < freqmax")
+        return self
 
 
 class XcorrConfig(_StrictModel):
-    window_p: tuple[float, float] = (-0.05, 0.2)
-    window_s: tuple[float, float] = (-0.05, 0.3)
-    min_cc: float = 0.7
-    maxlag_s: float = 0.05
+    # [start, end] of the correlation window, seconds relative to the pick
+    # (signed: [-0.1, 0.1] = 100 ms before to 100 ms after). Defaults tuned on
+    # RK-NM 2026 Q1 (OpenMEQ-9fh): most observations at the lowest hypoDD cc
+    # residual among the windows/lags/thresholds compared.
+    window_p: tuple[float, float] = (-0.1, 0.1)
+    window_s: tuple[float, float] = (-0.1, 0.2)
+    min_cc: float = Field(default=0.75, ge=-1.0, le=1.0)
+    maxlag_s: float = Field(default=0.05, gt=0)
     components: dict[str, list[str]] = Field(
         default_factory=lambda: {"P": ["Z"], "S": ["1", "2", "N", "E"]}
     )
@@ -701,6 +714,23 @@ class XcorrConfig(_StrictModel):
     # exceeds twice ``filter.freqmax``'s default (20 Hz) for a project
     # recording at 200 Hz, per ``tests/data/make_synthetic.py``.
     resample_rate_hz: float = 200.0  # typical native rate; do not downsample xcorr data
+    # OpenMEQ-6y1: formerly hard-coded in openmeq.relocate.waveform_cache --
+    # Hann taper fraction (each end) before filtering, and the extra data
+    # (s) cached either side of window +/- maxlag to absorb filter edge effects.
+    taper_pct: float = Field(default=0.05, ge=0.0, le=0.5)
+    filter_edge_margin_s: float = Field(default=0.5, ge=0.0)
+    # OpenMEQ-9fh: drop a channel's measurement when its best lag sits at the
+    # edge of the +/- maxlag_s search (within half a sample): the true peak is
+    # outside the search, so the lag is not a real correlation maximum.
+    reject_edge_lags: bool = True
+
+    @model_validator(mode="after")
+    def _check_windows(self) -> XcorrConfig:
+        for name in ("window_p", "window_s"):
+            start, end = getattr(self, name)
+            if not start < end:
+                raise ValueError(f"hypodd.xcorr.{name} must be [start, end] with start < end")
+        return self
 
 
 class Ph2dtConfig(_StrictModel):
@@ -946,6 +976,41 @@ class PickDiagnosticsConfig(StepDiagnosticsConfig):
     pick_zoom: PickZoomConfig = Field(default_factory=PickZoomConfig)
 
 
+class XcorrPlotsConfig(_StrictModel):
+    # Per-station/phase obspy xcorr_pick_correction plots for every
+    # ``pair_interval``-th ph2dt-linked pair (dt.ct order), at most
+    # ``max_pairs`` pairs -> relocate/diagnostics/xcorr_pairs/.
+    enabled: bool = False
+    pair_interval: int = Field(default=100, ge=1)
+    max_pairs: int = Field(default=20, ge=1)
+
+
+class RelocateDiagnosticsConfig(StepDiagnosticsConfig):
+    xcorr_plots: XcorrPlotsConfig = Field(default_factory=XcorrPlotsConfig)
+
+
+class WellsConfig(_StrictModel):
+    """OpenMEQ-7zt: well heads/tracks overlaid on every map and depth-section
+    diagnostic figure. ``dir`` holds ``<Group>_well_heads.csv``
+    (``name,lon,lat``) and ``<Group>_well_tracks.csv`` (``name,lon,lat,
+    elevation_m``, elevation positive up relative to sea level), headerless
+    -- see :mod:`openmeq.wells`."""
+
+    enabled: bool = False
+    dir: Path | None = None
+    # [] = every group found in ``dir``; otherwise only these group prefixes.
+    groups: list[str] = Field(default_factory=list)
+    # {group: matplotlib colour}; unset groups get openmeq.wells' defaults.
+    colors: dict[str, str] = Field(default_factory=dict)
+    labels: bool = False
+
+    @model_validator(mode="after")
+    def _require_dir(self) -> WellsConfig:
+        if self.enabled and self.dir is None:
+            raise ValueError("diagnostics.wells.enabled is true but diagnostics.wells.dir is unset")
+        return self
+
+
 class DiagnosticsConfig(_StrictModel):
     """Opt-in extended QAQC figures, on top of every step's always-on
     baseline ``<step>/diagnostics/`` set. Extended figures go to
@@ -953,12 +1018,13 @@ class DiagnosticsConfig(_StrictModel):
 
     extended: bool = False
     n_examples: int = Field(default=10, ge=1)
+    wells: WellsConfig = Field(default_factory=WellsConfig)
     detect: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
     chunk: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
     pick: PickDiagnosticsConfig = Field(default_factory=PickDiagnosticsConfig)
     locate: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
     magnitude: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
-    relocate: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
+    relocate: RelocateDiagnosticsConfig = Field(default_factory=RelocateDiagnosticsConfig)
     run: StepDiagnosticsConfig = Field(default_factory=StepDiagnosticsConfig)
 
     def extended_enabled(self, step: str) -> bool:
@@ -1023,6 +1089,7 @@ class Config(_StrictModel):
                 self.magnitude.ml.station_corrections, base_dir
             )
         self.hypodd.velocity_model.file = _resolve(self.hypodd.velocity_model.file, base_dir)
+        self.diagnostics.wells.dir = _resolve(self.diagnostics.wells.dir, base_dir)
         return self
 
 

@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from openmeq.log import get_logger
-from openmeq.plotting import save_fig, setup_style
+from openmeq.plotting import Wells, draw_wells_map, save_fig, setup_style
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -189,6 +189,7 @@ def plot_station_res_map(
     epicentres: pd.DataFrame,
     pass_label: str,
     path: Path,
+    wells: Wells | None = None,
 ) -> None:
     """Station map coloured by mean residual (per phase), sized by count."""
     setup_style()
@@ -257,6 +258,8 @@ def plot_station_res_map(
                     textcoords="offset points",
                     fontsize=6,
                 )
+        if draw_wells_map(ax, wells):
+            ax.legend(fontsize=6, loc="lower right")
         ax.set_xlabel("Longitude")
         ax.set_ylabel("Latitude")
         ax.set_title(f"{phase}: mean residual per station")
@@ -369,6 +372,7 @@ def make_locate_extended_diagnostics(
     cfg: Config,
     result: LocateRunResult,
     stations: pd.DataFrame | None = None,
+    wells: Wells | None = None,
 ) -> Path:
     """Write ``locate/diagnostics/extended/`` for both passes (module docstring).
 
@@ -383,6 +387,8 @@ def make_locate_extended_diagnostics(
     stations : pandas.DataFrame, optional
         ``openmeq.stations.station_table``-shaped; ``None`` skips the station
         map's stations (a "No data" panel) and uses the default grid top.
+    wells : openmeq.plotting.Wells, optional
+        Well overlay for the station map (``openmeq.wells.load_wells``).
 
     Returns
     -------
@@ -415,7 +421,7 @@ def make_locate_extended_diagnostics(
         _safe(
             f"{prefix}_station_res_map",
             lambda t=table, e=epicentres, p=pass_label, pre=prefix: plot_station_res_map(
-                t, stations, e, p, out_dir / f"{pre}_station_res_map.png"
+                t, stations, e, p, out_dir / f"{pre}_station_res_map.png", wells
             ),
         )
         _safe(

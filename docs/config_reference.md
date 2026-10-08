@@ -204,14 +204,19 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `hypodd.velocity_model.simul2000.xfac` | float | `1.35` | SIMUL2000 `XFAC` ray-tracing expansion factor (unitless). |
 | `hypodd.velocity_model.simul2000.tlim` | float | `0.0005` | SIMUL2000 `TLIM` ray-tracing convergence limit (seconds). |
 | `hypodd.velocity_model.simul2000.nitpb` | int | `50` | SIMUL2000 `NITPB` maximum ray-tracing iterations per ray. |
-| `hypodd.xcorr.window_p` | tuple[float, float] | `(-0.05, 0.2)` | `[before, after]` (seconds, relative to the P pick) cross-correlation window for P. |
-| `hypodd.xcorr.window_s` | tuple[float, float] | `(-0.05, 0.3)` | `[before, after]` (seconds, relative to the S pick) cross-correlation window for S. |
-| `hypodd.xcorr.min_cc` | float | `0.7` | Minimum cross-correlation coefficient (unitless, 0-1) for a lag measurement to be kept in `dt.cc`. |
-| `hypodd.xcorr.maxlag_s` | float | `0.05` | Maximum lag (seconds) searched during cross-correlation. |
+| `hypodd.xcorr.window_p` | tuple[float, float] | `(-0.1, 0.1)` | `[start, end]` of the P cross-correlation window, signed seconds relative to the P pick (`[-0.1, 0.1]` = 100 ms before to 100 ms after); `start < end`. Start early enough to include the onset when a pick is late (about the typical pick error); end after the first 1-2 cycles of P. Longer windows add coda and lower cc; windows under ~2 cycles correlate by chance. |
+| `hypodd.xcorr.window_s` | tuple[float, float] | `(-0.1, 0.2)` | As `window_p`, for S, relative to the S pick. S is lower frequency with a less sharp onset, so allow more time after the pick than for P. |
+| `hypodd.xcorr.min_cc` | float | `0.75` | Minimum correlation coefficient (0-1) for a lag measurement to be kept in `dt.cc`. Raise it if hypoDD's cc residual grows or the `diagnostics.relocate.xcorr_plots` figures show poor alignments being kept. Shorter windows reach high cc more easily and warrant a higher threshold; lower it (to ~0.7) if too few pairs link. |
+| `hypodd.xcorr.maxlag_s` | float | `0.05` | Maximum lag (seconds) searched. Must cover real pick errors but stay below one cycle of the dominant frequency, or the correlation can lock onto the wrong cycle (cycle skipping) and still pass `min_cc`; about half to two-thirds of a period. |
 | `hypodd.xcorr.components` | dict[str, list[str]] | `{'P': ['Z'], 'S': ['1', '2', 'N', 'E']}` | `{"P": [...], "S": [...]}` -- which mapped component code(s) to cross-correlate P and S on (e.g. `Z` for P; every configured horizontal tried independently for S, keeping only the best-correlating one). |
-| `hypodd.xcorr.filter.freqmin` | float | `2.0` | Bandpass low corner (Hz) applied once when building the cross-correlation waveform cache. Chosen from this project's own **synthetic** P/S pulse spectra (ARCHITECTURE.md §6g) -- **retune against real event spectra** before relying on it for a real dataset. |
-| `hypodd.xcorr.filter.freqmax` | float | `20.0` | Bandpass high corner (Hz), same cache/tuning note as `freqmin` above. |
-| `hypodd.xcorr.resample_rate_hz` | float | `200.0` | Common sampling rate (Hz) every cached cross-correlation window is resampled to, regardless of native rate, so pairs from different events' caches always share one rate (ARCHITECTURE.md §6f). |
+| `hypodd.xcorr.filter.freqmin` | float | `2.0` | Bandpass low corner (Hz) applied once when building the cross-correlation waveform cache. Choose the band where P and S stand above the noise from event spectra; raise it if long-period noise dominates. The 2-20 Hz default was checked against this project's **synthetic** P/S spectra (ARCHITECTURE.md §6g) -- **retune against real event spectra**. |
+| `hypodd.xcorr.filter.freqmax` | float | `20.0` | Bandpass high corner (Hz), same note as `freqmin`; keep it below `resample_rate_hz / 2`. |
+| `hypodd.xcorr.filter.corners` | int | `4` | Bandpass filter order (obspy `corners`) for the cross-correlation waveform cache; 4 is standard, higher orders ring more. |
+| `hypodd.xcorr.filter.zerophase` | bool | `True` | Zero-phase (forward-backward) bandpass for the cache (boolean). Keep true: a causal filter shifts waveforms in time. |
+| `hypodd.xcorr.resample_rate_hz` | float | `200.0` | Common sampling rate (Hz) every cached cross-correlation window is resampled to, regardless of native rate, so pairs from different events' caches always share one rate (ARCHITECTURE.md §6f). Use the native rate of most stations; keep it at least ~2.5x `filter.freqmax`. |
+| `hypodd.xcorr.taper_pct` | float | `0.05` | Hann taper fraction applied to each end of the chunk segment before the cache's bandpass filter (0-0.5); only limits filter edge artefacts. |
+| `hypodd.xcorr.filter_edge_margin_s` | float | `0.5` | Extra data (seconds) cached either side of each window +/- `maxlag_s`, to keep the bandpass filter's edge effects out of the window. About 2-3 cycles at `freqmin`; raise it if `freqmin` is lowered. |
+| `hypodd.xcorr.reject_edge_lags` | bool | `True` | Drop a channel's lag measurement when its best lag is at the edge of the `+/- maxlag_s` search (within half a sample) -- the true correlation peak lies outside the search, so the lag is unreliable (boolean). Keep true. |
 | `hypodd.ph2dt.maxsep_km` | float | `10.0` | ph2dt `MAXSEP` -- max. hypocentral separation (km) between a candidate event pair. See docs/hypodd_tuning.md for how this and the other ph2dt/hypoDD distance fields below were scaled for this project's own ~15 km-aperture synthetic network, and how to rescale them for a different network. |
 | `hypodd.ph2dt.maxngh` | int | `10` | ph2dt `MAXNGH` -- max. number of neighbours per event. |
 | `hypodd.ph2dt.minlnk` | int | `8` | ph2dt `MINLNK` -- min. phase observations for a neighbour to count as "strong"; should stay `>= hypodd.clustering.obsct` below. |
@@ -239,6 +244,11 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 |---|---|---|---|
 | `diagnostics.extended` | bool | `False` | Default for every step's opt-in extended QAQC figures (written to `<step>/diagnostics/extended/`); the always-on baseline diagnostics are unaffected. |
 | `diagnostics.n_examples` | int | `10` | Number of sample events for per-event waveform QAQC figures. |
+| `diagnostics.wells.enabled` | bool | `False` | Overlay well heads/tracks on every map and depth-section figure (locate pass maps and comparison PDF, extended station-residual map, relocate before/after, review shift map); requires `diagnostics.wells.dir`. |
+| `diagnostics.wells.dir` | path \| None | `None` | Directory of headerless `<Group>_well_heads.csv` (`name,lon,lat`) and `<Group>_well_tracks.csv` (`name,lon,lat,elevation_m`, m above sea level) files. |
+| `diagnostics.wells.groups` | list[str] | `[]` | Well groups (file prefixes, e.g. `Production`) to draw; empty = every group found in `dir`. |
+| `diagnostics.wells.colors` | dict[str, str] | `{}` | `{group: matplotlib colour}` overrides; defaults are Production vermillion, Injection sky blue, Other grey. |
+| `diagnostics.wells.labels` | bool | `False` | Annotate well names on map panels (boolean). |
 | `diagnostics.detect.extended` | bool \| None | `None` | Extended-QAQC override for `detect` (STA/LTA characteristic-function examples, per-station trigger-rate heatmap); unset = inherit `diagnostics.extended`. |
 | `diagnostics.chunk.extended` | bool \| None | `None` | Extended-QAQC override for `chunk` (component coverage matrix, raw vs PhaseNet-prepped chunk examples); unset = inherit `diagnostics.extended`. |
 | `diagnostics.pick.extended` | bool \| None | `None` | Extended-QAQC override for `pick` (zoomed pick panels, pre-location Wadati diagram, pick offset from detection time); unset = inherit `diagnostics.extended`. |
@@ -248,4 +258,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `diagnostics.locate.extended` | bool \| None | `None` | Extended-QAQC override for `locate` (residual vs distance, station mean-residual map, depth histogram vs grid/model); unset = inherit `diagnostics.extended`. |
 | `diagnostics.magnitude.extended` | bool \| None | `None` | Extended-QAQC override for `magnitude` (station ML residual vs distance, GR with Mc/b-value, Wood-Anderson amplitude windows); unset = inherit `diagnostics.extended`. |
 | `diagnostics.relocate.extended` | bool \| None | `None` | Extended-QAQC override for `relocate` (dt.cc - dt.ct histogram, hypoDD.res residuals by data type, per-iteration mean shifts); unset = inherit `diagnostics.extended`. |
+| `diagnostics.relocate.xcorr_plots.enabled` | bool | `False` | Write obspy `xcorr_pick_correction` alignment/correlation plots for a sample of event pairs to `relocate/diagnostics/xcorr_pairs/` (also: `openmeq diagnostics xcorr`). |
+| `diagnostics.relocate.xcorr_plots.pair_interval` | int | `100` | Plot every Nth ph2dt-linked event pair, in `dt.ct` order (1 = every pair). |
+| `diagnostics.relocate.xcorr_plots.max_pairs` | int | `20` | Maximum number of event pairs to plot. |
 | `diagnostics.run.extended` | bool \| None | `None` | Extended-QAQC override for `run` (event-count funnel across every stage of `openmeq run`); unset = inherit `diagnostics.extended`. |

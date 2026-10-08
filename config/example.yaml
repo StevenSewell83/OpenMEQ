@@ -241,24 +241,62 @@ hypodd:
       xfac: 1.35
       tlim: 0.0005
       nitpb: 50
+  # ---------------------------------------------------------------------------
+  # Cross-correlation (dt.cc) settings. Values below are the code defaults,
+  # tuned on RK-NM (local events, P/S energy ~10-15 Hz, 200 Hz data); tune
+  # them per network. Check any change with the xcorr plots
+  # (diagnostics.relocate.xcorr_plots) and hypoDD's cc residual. Changing
+  # anything here makes the next `openmeq relocate` recompute every pair.
+  # Useful numbers to have first: the dominant frequency of P and S (one cycle
+  # = 1 / f) and the typical pick error.
+  # ---------------------------------------------------------------------------
   xcorr:
-    window_p: [-0.05, 0.2]
-    window_s: [-0.05, 0.3]
-    min_cc: 0.7
+    # window_p: [start, end] of the P correlation window, seconds relative to
+    # the P pick (signed: -0.1 = 100 ms before the pick). Start early enough
+    # to include the onset even when the pick is late (about the typical pick
+    # error); end after the first 1-2 cycles of P, the part that looks alike
+    # between neighbouring events. Longer windows add coda (lower cc); windows
+    # under ~2 cycles correlate by chance.
+    window_p: [-0.1, 0.1]
+    # window_s: as window_p, for S. S is lower frequency with a less sharp
+    # onset, so allow more time after the pick than for P.
+    window_s: [-0.1, 0.2]
+    # min_cc: minimum correlation coefficient (0-1) for a measurement to go into
+    # dt.cc. Raise it if hypoDD's cc residual grows or the plots show poor
+    # alignments being kept; lower it (to ~0.7) if too few pairs link. Shorter
+    # windows reach high cc more easily, so they warrant a higher threshold.
+    min_cc: 0.75
+    # maxlag_s: largest time shift (s) searched. Must cover real pick errors
+    # but stay below one cycle of the dominant frequency, or the correlation
+    # can lock onto the wrong cycle ("cycle skipping") and still pass min_cc.
+    # About half to two-thirds of a period is a good default.
     maxlag_s: 0.05
+    # components: channels to correlate per phase, by the last letter of the
+    # (mapped) channel code. P on the vertical; S on every horizontal, keeping
+    # only the best-correlating one.
     components: {P: [Z], S: ["1", "2", N, E]}
-    # --- M10.1 / OpenMEQ-16d.1, resolved by M10.3 / OpenMEQ-16d.3 ---
-    # Kept at 2-20 Hz rather than a 5-40 Hz alternative: an empirical check
-    # against this project's own synthetic P/S pulse spectra found no
-    # accuracy benefit from the narrower band, and 5-40 Hz would risk
-    # attenuating a real S arrival with a similarly low corner frequency.
-    # See openmeq.relocate.xcorr's module docstring for the full analysis.
-    filter: {freqmin: 2.0, freqmax: 20.0}
-    # Common target sampling rate (Hz) for the pre-filtered xcorr waveform
-    # cache (relocate/cache/<event_id>.npz) -- every cached window is
-    # resampled to this one rate project-wide (docs/ARCHITECTURE.md §6f),
-    # so that cross-correlated pairs drawn from different events' caches
-    # never hit a sampling-rate mismatch (docs/hypoddpy_audit.md defect #8).
+    # filter: bandpass applied once to the cached waveforms before correlation.
+    filter:
+      # freqmin/freqmax (Hz): the band where P and S stand above the noise --
+      # check event spectra. 2-20 Hz suits local events with energy around
+      # 5-15 Hz; raise freqmin if long-period noise dominates, and keep freqmax
+      # below resample_rate_hz / 2. (The 2-20 Hz default was checked against
+      # synthetic P/S spectra -- see openmeq.relocate.xcorr's docstring.)
+      freqmin: 2.0
+      freqmax: 20.0
+      corners: 4                        # filter order (steepness); 4 is standard, higher rings more
+      zerophase: true                   # keep true: a causal filter shifts waveforms in time
+    taper_pct: 0.05                     # taper at each end of the cached segment before filtering
+    # filter_edge_margin_s: extra data (s) kept either side of each window +
+    # maxlag so filter edge effects stay out of the window. ~2-3 cycles at
+    # freqmin (0.5 s covers 2 Hz); raise it if freqmin is lowered.
+    filter_edge_margin_s: 0.5
+    # reject_edge_lags: drop a measurement whose best lag sits at +/- maxlag_s
+    # (the real peak is outside the search, so the lag is unreliable). Keep true.
+    reject_edge_lags: true
+    # resample_rate_hz: every cached waveform is resampled to this one rate so
+    # any two events correlate sample-for-sample (docs/ARCHITECTURE.md §6f).
+    # Use the native rate of most stations; keep it >= ~2.5x freqmax.
     resample_rate_hz: 200.0
   # --- OpenMEQ-16d.6: ph2dt/hypoDD defaults for a small-aperture (~10-15 km)
   # microseismic array, not example1's ~100+ km regional network or ph2dt's
@@ -358,6 +396,14 @@ diagnostics:
   # every step's always-on baseline diagnostics. Per-step `extended` overrides this.
   extended: false
   n_examples: 10                        # sample events for per-event waveform figures
+  # --- OpenMEQ-7zt: well overlay on every map + depth-section figure ---
+  wells:
+    enabled: false
+    dir: null                           # dir of <Group>_well_heads.csv (name,lon,lat) and
+                                         # <Group>_well_tracks.csv (name,lon,lat,elevation_m), no header
+    groups: []                          # [] = every group in dir, e.g. [Production, Injection]
+    colors: {}                          # {group: colour}, e.g. {Production: red}
+    labels: false                       # annotate well names on map panels
   detect: {extended: null}              # null = inherit diagnostics.extended
   chunk: {extended: null}
   pick:
@@ -368,5 +414,10 @@ diagnostics:
       show_rejected: false              # also draw picks dropped by probability/duplicate filtering
   locate: {extended: null}
   magnitude: {extended: null}
-  relocate: {extended: null}
+  relocate:
+    extended: null
+    xcorr_plots:                        # obspy xcorr_pick_correction plots (relocate/diagnostics/xcorr_pairs/)
+      enabled: false
+      pair_interval: 100                # plot every Nth ph2dt-linked event pair (dt.ct order)
+      max_pairs: 20                     # stop after this many pairs
   run: {extended: null}                 # event-count funnel across the whole run

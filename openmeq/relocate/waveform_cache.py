@@ -35,15 +35,15 @@ Window sizing
 For a station with a P and/or S pick in the event, the cached window for
 each relevant channel is the union, over every applicable pick, of::
 
-    [pick_time + window[0] - maxlag_s - _FILTER_EDGE_MARGIN_S,
-     pick_time + window[1] + maxlag_s + _FILTER_EDGE_MARGIN_S]
+    [pick_time + window[0] - maxlag_s - filter_edge_margin_s,
+     pick_time + window[1] + maxlag_s + filter_edge_margin_s]
 
 using ``cfg.hypodd.xcorr.window_p``/``window_s`` (each an already-signed
 ``(before, after)`` offset pair relative to the pick, e.g. ``(-0.05, 0.2)``
 -- ``openmeq.config.XcorrConfig``'s literal convention, matching
 ``config/example.yaml``'s sketch) for whichever phase(s) apply, plus
 ``cfg.hypodd.xcorr.maxlag_s`` (room for M10.3's own lag search) and a small
-fixed edge-effect margin, :data:`_FILTER_EDGE_MARGIN_S` (0.5 s), for the
+edge-effect margin, ``cfg.hypodd.xcorr.filter_edge_margin_s`` (default 0.5 s), for the
 bandpass filter applied in this same step. Which channel(s) a phase applies
 to comes from ``cfg.hypodd.xcorr.components`` (``{"P": [...], "S": [...]}``,
 matched against the channel's *mapped* last character, after
@@ -59,8 +59,8 @@ note's own "Pitfalls": caching more than necessary defeats the purpose).
 Processing order (once per event, not once per pair)
 -----------------------------------------------------
 For each channel that has at least one applicable window: demean, detrend
-(linear), taper (:data:`_TAPER_MAX_PERCENTAGE`), bandpass filter
-(``cfg.hypodd.xcorr.filter``, :data:`_FILTER_CORNERS` corners, zero-phase --
+(linear), taper (``cfg.hypodd.xcorr.taper_pct``), bandpass filter
+(``cfg.hypodd.xcorr.filter``: band, ``corners``, ``zerophase`` --
 preserves the pick-time alignment M10.3's lag search depends on) -- all
 applied to the *whole* available chunk segment first, then resampled to
 ``cfg.hypodd.xcorr.resample_rate_hz`` (skipped if already at that rate), and
@@ -154,18 +154,6 @@ if TYPE_CHECKING:
     from openmeq.paths import RunPaths
 
 logger = get_logger("relocate.waveform_cache")
-
-#: Taper applied (each end) before filtering, on the whole available chunk
-#: segment -- see the module docstring's "Processing order" section.
-_TAPER_MAX_PERCENTAGE = 0.05
-
-#: Bandpass filter steepness (``obspy.Trace.filter``'s ``corners``).
-_FILTER_CORNERS = 4
-
-#: Extra fixed padding (seconds), on each side of the configured
-#: window_p/window_s + maxlag_s range, for the bandpass filter's own
-#: edge effects (module docstring's "Window sizing" section).
-_FILTER_EDGE_MARGIN_S = 0.5
 
 #: Manifest step name (``relocate/manifest.json``,
 #: ``docs/ARCHITECTURE.md`` §6c-2: shared with M9.5's ``"hypodd_setup"``
@@ -295,7 +283,7 @@ def _applicable_windows(
     maxlag = xcorr_cfg.maxlag_s
     p_components = set(xcorr_cfg.components.get("P", []))
     s_components = set(xcorr_cfg.components.get("S", []))
-    pad = maxlag + _FILTER_EDGE_MARGIN_S
+    pad = maxlag + xcorr_cfg.filter_edge_margin_s
     if comp in p_components:
         for t in station_picks.get("P", []):
             before, after = xcorr_cfg.window_p
@@ -322,13 +310,13 @@ def _process_and_slice(
     try:
         proc.detrend("demean")
         proc.detrend("linear")
-        proc.taper(max_percentage=_TAPER_MAX_PERCENTAGE, type="hann")
+        proc.taper(max_percentage=xcorr_cfg.taper_pct, type="hann")
         proc.filter(
             "bandpass",
             freqmin=xcorr_cfg.filter.freqmin,
             freqmax=xcorr_cfg.filter.freqmax,
-            corners=_FILTER_CORNERS,
-            zerophase=True,
+            corners=xcorr_cfg.filter.corners,
+            zerophase=xcorr_cfg.filter.zerophase,
         )
         if abs(proc.stats.sampling_rate - xcorr_cfg.resample_rate_hz) > 1e-6:
             proc.resample(xcorr_cfg.resample_rate_hz)

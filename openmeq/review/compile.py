@@ -90,7 +90,8 @@ from openmeq.catalog import event_id as event_id_of
 from openmeq.catalog import make_event, read_catalog, reject_event, set_extra, write_catalog
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
-from openmeq.plotting import plot_hist, plot_map_sections
+from openmeq.plotting import Wells, plot_hist, plot_map_sections
+from openmeq.wells import load_wells
 
 if TYPE_CHECKING:
     from openmeq.config import Config
@@ -324,7 +325,9 @@ def _pick_time_diffs(auto_event: Event, reviewed_event: Event) -> dict[str, list
     return diffs
 
 
-def _write_diagnostics(diag_rows: list[_EventDiag], paths: RunPaths) -> None:
+def _write_diagnostics(
+    diag_rows: list[_EventDiag], paths: RunPaths, wells: Wells | None = None
+) -> None:
     """Write ``review/diagnostics/`` (PLAN.md §5): pick-time-difference and
     location-shift plots, plus ``summary.csv``."""
     diagnostics_dir = paths.diagnostics_dir("review")
@@ -387,6 +390,7 @@ def _write_diagnostics(diag_rows: list[_EventDiag], paths: RunPaths) -> None:
         color_by="horizontal_shift_km",
         cbar_label="Horizontal shift (km)",
         title="Reviewed event locations (colour: horizontal shift, auto -> manual)",
+        wells=wells,
     )
 
     df.to_csv(diagnostics_dir / "summary.csv", index=False, columns=_SUMMARY_COLUMNS)
@@ -427,10 +431,8 @@ def compile_review(cfg: Config, paths: RunPaths) -> Catalog:
     Parameters
     ----------
     cfg : openmeq.config.Config
-        Unused directly (accepted for the same reason every other
-        ``compile_*``/``setup_*`` top-level orchestrator in this project
-        takes ``cfg`` even when it only reads paths -- consistency, and
-        headroom for a future config-driven diagnostic option).
+        Only ``diagnostics.wells`` is read (the location-shift map's well
+        overlay).
     paths : openmeq.paths.RunPaths
 
     Returns
@@ -450,8 +452,6 @@ def compile_review(cfg: Config, paths: RunPaths) -> Catalog:
         than one `Event` (the design section's own "Pitfalls" note: read
         defensively rather than silently pick the wrong event).
     """
-    del cfg  # not currently used; kept for the orchestration-function contract, see docstring
-
     _require_catalog_auto(paths)
 
     events_dir = paths.review_events_dir
@@ -497,7 +497,7 @@ def compile_review(cfg: Config, paths: RunPaths) -> Catalog:
         description=auto_catalog.description,
     )
     write_catalog(final_catalog, paths.catalog_final_xml)
-    _write_diagnostics(diag_rows, paths)
+    _write_diagnostics(diag_rows, paths, load_wells(cfg))
 
     manifest.mark_done("compile", fp)
     logger.info(

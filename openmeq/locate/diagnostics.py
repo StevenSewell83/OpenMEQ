@@ -53,7 +53,15 @@ import numpy as np
 import pandas as pd
 
 from openmeq.log import get_logger
-from openmeq.plotting import plot_bar, plot_hist, plot_map_sections, save_fig, setup_style
+from openmeq.plotting import (
+    Wells,
+    plot_bar,
+    plot_hist,
+    plot_map_sections,
+    save_fig,
+    setup_style,
+)
+from openmeq.wells import load_wells
 
 if TYPE_CHECKING:
     from openmeq.config import Config
@@ -208,7 +216,13 @@ def _plot_residuals_per_station(sub: pd.DataFrame, phase: str, pass_label: str, 
     save_fig(fig, path)
 
 
-def _plot_map(df: pd.DataFrame, stations: pd.DataFrame | None, pass_label: str, path: Path) -> None:
+def _plot_map(
+    df: pd.DataFrame,
+    stations: pd.DataFrame | None,
+    pass_label: str,
+    path: Path,
+    wells: Wells | None = None,
+) -> None:
     map_df = df.dropna(subset=["lat", "lon", "depth_km"]) if not df.empty else df
     color_by = "rms" if "rms" in map_df.columns and map_df["rms"].notna().any() else None
     plot_map_sections(
@@ -218,6 +232,7 @@ def _plot_map(df: pd.DataFrame, stations: pd.DataFrame | None, pass_label: str, 
         color_by=color_by,
         cbar_label="RMS (s)",
         title=f"Pass {pass_label}: event locations",
+        wells=wells,
     )
 
 
@@ -293,6 +308,7 @@ def _make_one_pass_diagnostics(
     summary_rows,
     pass_a_diag: dict[str, PassDiagnostics],
     stations: pd.DataFrame | None,
+    wells: Wells | None = None,
 ) -> None:
     df = _pass_dataframe(diag_map)
 
@@ -307,7 +323,7 @@ def _make_one_pass_diagnostics(
             diag_dir / f"pass{pass_label}_residuals_{phase}_per_station.png",
         )
 
-    _plot_map(df, stations, pass_label, diag_dir / f"pass{pass_label}_map_sections.png")
+    _plot_map(df, stations, pass_label, diag_dir / f"pass{pass_label}_map_sections.png", wells)
 
     _plot_scalar_hist(df, "rms", "RMS (s)", pass_label, diag_dir / f"pass{pass_label}_rms_hist.png")
     _plot_scalar_hist(
@@ -428,6 +444,7 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
     diag_dir.mkdir(parents=True, exist_ok=True)
 
     stations = _load_station_table(cfg)
+    wells = load_wells(cfg)
     removal_log = _read_removal_log(paths.removal_log_csv)
 
     for pass_label, diag_map in (("A", result.pass_a), ("B", result.pass_b)):
@@ -441,11 +458,12 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
             result.summary_rows,
             result.pass_a,
             stations,
+            wells,
         )
 
     from openmeq.locate.diagnostics_compare import PASS_COMPARISON_PDF, make_pass_comparison_pdf
 
-    make_pass_comparison_pdf(diag_dir / PASS_COMPARISON_PDF, result, removal_log, stations)
+    make_pass_comparison_pdf(diag_dir / PASS_COMPARISON_PDF, result, removal_log, stations, wells)
 
     _write_summary_txt(diag_dir / "summary.txt", result, removal_log)
 
@@ -453,7 +471,7 @@ def make_locate_diagnostics(paths: RunPaths, cfg: Config, result: LocateRunResul
         try:
             from openmeq.locate.diagnostics_extended import make_locate_extended_diagnostics
 
-            make_locate_extended_diagnostics(paths, cfg, result, stations)
+            make_locate_extended_diagnostics(paths, cfg, result, stations, wells)
         except Exception as exc:  # noqa: BLE001 - extended QAQC must never fail the step
             logger.warning("extended locate diagnostics failed: %s", exc)
 

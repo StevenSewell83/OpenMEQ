@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from openmeq.log import get_logger
-from openmeq.plotting import setup_style
+from openmeq.plotting import Wells, setup_style
 from openmeq.plotting._maps import _plot_map_panel, _plot_section_panel
 from openmeq.plotting._style import COLORBLIND_PALETTE, SEQUENTIAL_CMAP
 from openmeq.plotting._util import auto_scale
@@ -83,7 +83,12 @@ def _overlay_hist(ax, data: dict[str, np.ndarray], bins: np.ndarray | None) -> N
         ax.legend(fontsize=8)
 
 
-def _page_map(pdf, frames: dict[str, pd.DataFrame], stations: pd.DataFrame | None) -> None:
+def _page_map(
+    pdf,
+    frames: dict[str, pd.DataFrame],
+    stations: pd.DataFrame | None,
+    wells: Wells | None = None,
+) -> None:
     import matplotlib.pyplot as plt
 
     located = {k: v.dropna(subset=["lat", "lon", "depth_km"]) for k, v in frames.items()}
@@ -104,8 +109,9 @@ def _page_map(pdf, frames: dict[str, pd.DataFrame], stations: pd.DataFrame | Non
             lat_col="lat",
             station_lon_col="longitude",
             station_lat_col="latitude",
-            marker_size=18.0,
+            marker_size=8.0,
             station_marker_size=50.0,
+            wells=wells,
             **common,
         )
         mappable = mappable or m
@@ -118,7 +124,10 @@ def _page_map(pdf, frames: dict[str, pd.DataFrame], stations: pd.DataFrame | Non
             "longitude",
             xlabel="Longitude (deg)",
             title="E-W section",
-            marker_size=18.0,
+            marker_size=8.0,
+            station_marker_size=27.0,
+            wells=wells,
+            wells_x_col="lon",
             **common,
         )
         _plot_section_panel(
@@ -130,7 +139,10 @@ def _page_map(pdf, frames: dict[str, pd.DataFrame], stations: pd.DataFrame | Non
             "latitude",
             xlabel="Latitude (deg)",
             title="N-S section",
-            marker_size=18.0,
+            marker_size=8.0,
+            station_marker_size=27.0,
+            wells=wells,
+            wells_x_col="lat",
             **common,
         )
         axes[row][0].set_title(f"{label} ({len(df)} events): map view")
@@ -283,6 +295,7 @@ def make_pass_comparison_pdf(
     result: LocateRunResult,
     removal_log: pd.DataFrame,
     stations: pd.DataFrame | None,
+    wells: Wells | None = None,
 ) -> Path:
     """Write :data:`PASS_COMPARISON_PDF`-style multi-page A-vs-B comparison to ``path``."""
     from matplotlib.backends.backend_pdf import PdfPages
@@ -314,7 +327,7 @@ def make_pass_comparison_pdf(
     path.parent.mkdir(parents=True, exist_ok=True)
     with PdfPages(path) as pdf:
         try:
-            _page_map(pdf, map_frames, stations)
+            _page_map(pdf, map_frames, stations, wells)
             _page_quality(pdf, frames)
             _page_residuals(pdf, residuals)
             for phase in ("P", "S"):

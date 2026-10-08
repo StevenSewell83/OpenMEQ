@@ -14,6 +14,7 @@ import pandas as pd
 from ._save import save_fig
 from ._style import SEQUENTIAL_CMAP, setup_style
 from ._util import auto_scale
+from ._wells import Wells, draw_wells_map, draw_wells_section
 
 
 def _station_xy(stations: pd.DataFrame | None, lon_col: str, lat_col: str) -> pd.DataFrame | None:
@@ -35,6 +36,18 @@ def _station_xy(stations: pd.DataFrame | None, lon_col: str, lat_col: str) -> pd
     return sta
 
 
+def _station_depth_km(stations: pd.DataFrame) -> np.ndarray:
+    """Station depth on the event-depth axis (km below sea level): the
+    ARCHITECTURE.md §6 effective elevation ``elevation_m - depth_m``, negated,
+    as NLLoc uses it. Missing columns/values fall back to 0 (sea level)."""
+    elev = stations.get("elevation_m", pd.Series(0.0, index=stations.index))
+    burial = stations.get("depth_m", pd.Series(0.0, index=stations.index))
+    eff = pd.to_numeric(elev, errors="coerce").fillna(0.0) - pd.to_numeric(
+        burial, errors="coerce"
+    ).fillna(0.0)
+    return -eff.to_numpy(dtype=float) / 1000.0
+
+
 def _plot_map_panel(
     ax,
     df: pd.DataFrame,
@@ -50,6 +63,7 @@ def _plot_map_panel(
     vmax: float | None,
     marker_size: float,
     station_marker_size: float,
+    wells: Wells | None = None,
 ):
     mappable = None
     if not df.empty:
@@ -77,6 +91,8 @@ def _plot_map_panel(
             zorder=2,
             label="station",
         )
+    if draw_wells_map(ax, wells):
+        ax.legend(fontsize=7, loc="best")
     ax.set_xlabel("Longitude (deg)")
     ax.set_ylabel("Latitude (deg)")
     ax.set_title("Map view")
@@ -99,6 +115,9 @@ def _plot_section_panel(
     vmin: float | None,
     vmax: float | None,
     marker_size: float,
+    wells: Wells | None = None,
+    wells_x_col: str | None = None,
+    station_marker_size: float = 37.5,
 ):
     if not df.empty:
         c = color_values if color_values is not None else "#0072B2"
@@ -116,16 +135,18 @@ def _plot_section_panel(
         )
     if stations is not None and isinstance(stations, pd.DataFrame) and not stations.empty:
         if station_x_col in stations.columns:
-            xs = stations[station_x_col].dropna()
-            if not xs.empty:
+            sta = stations[stations[station_x_col].notna()]
+            if not sta.empty:
                 ax.scatter(
-                    xs,
-                    np.zeros(len(xs)),
+                    sta[station_x_col],
+                    _station_depth_km(sta),
                     marker="v",
                     c="black",
-                    s=marker_size * 1.5,
+                    s=station_marker_size,
                     zorder=2,
                 )
+    if wells_x_col is not None:
+        draw_wells_section(ax, wells, wells_x_col)
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Depth (km)")
     ax.set_title(title)
@@ -142,7 +163,7 @@ def plot_map_sections(
     vmin: float | None = None,
     vmax: float | None = None,
     cbar_label: str | None = None,
-    marker_size: float = 25.0,
+    marker_size: float = 10.0,
     station_marker_size: float = 60.0,
     title: str | None = None,
     lon_col: str = "lon",
@@ -150,14 +171,16 @@ def plot_map_sections(
     depth_col: str = "depth_km",
     station_lon_col: str = "longitude",
     station_lat_col: str = "latitude",
+    wells: Wells | None = None,
 ) -> None:
     """Draw a 3-panel map + E-W/N-S depth-section diagnostic figure.
 
     Panel 1 is a map view (longitude vs. latitude). Panel 2 is the E-W
     depth section (longitude vs. depth). Panel 3 is the N-S depth section
     (latitude vs. depth). Depth increases downward on both section panels.
-    Stations are overlaid on the map panel (as black triangles) and, at the
-    surface, on the two section panels.
+    Stations are overlaid on the map panel (as black triangles) and, at
+    their elevation (``elevation_m - depth_m`` when the station frame has
+    those columns, else sea level), on the two section panels.
 
     Parameters
     ----------
@@ -194,6 +217,9 @@ def plot_map_sections(
         Column names in ``df`` (defaults match ``locate/summary.csv``).
     station_lon_col, station_lat_col : str, optional
         Column names in ``stations`` (defaults match ``station_table``).
+    wells : openmeq.plotting.Wells, optional
+        Well heads/tracks to overlay (tracks on all three panels, heads on
+        the map); ``None`` (default) draws none.
     """
     setup_style()
     import matplotlib.pyplot as plt
@@ -221,6 +247,7 @@ def plot_map_sections(
         vmax=vmax,
         marker_size=marker_size,
         station_marker_size=station_marker_size,
+        wells=wells,
     )
     _plot_section_panel(
         ax_ew,
@@ -236,6 +263,8 @@ def plot_map_sections(
         vmin=vmin,
         vmax=vmax,
         marker_size=marker_size,
+        wells=wells,
+        wells_x_col="lon",
     )
     _plot_section_panel(
         ax_ns,
@@ -251,6 +280,8 @@ def plot_map_sections(
         vmin=vmin,
         vmax=vmax,
         marker_size=marker_size,
+        wells=wells,
+        wells_x_col="lat",
     )
 
     if mappable is not None and color_values is not None:

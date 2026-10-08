@@ -696,5 +696,39 @@ def diagnostics_funnel(config_path: str) -> None:
     click.echo(f"wrote {png} and {png.with_suffix('.csv')}")
 
 
+@diagnostics.command("xcorr")
+@_CONFIG_OPTION
+@click.option(
+    "--pair-interval",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Plot every Nth linked pair (default: diagnostics.relocate.xcorr_plots.pair_interval).",
+)
+@click.option(
+    "--max-pairs",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum pairs to plot (default: diagnostics.relocate.xcorr_plots.max_pairs).",
+)
+def diagnostics_xcorr(config_path: str, pair_interval: int | None, max_pairs: int | None) -> None:
+    """obspy xcorr_pick_correction plots for a sample of relocate event pairs
+    -> relocate/diagnostics/xcorr_pairs/ (from an existing relocate run).
+
+    Always written when asked for here (``diagnostics.relocate.xcorr_plots.enabled``
+    only gates the automatic copy at the end of ``openmeq relocate``).
+    """
+    from openmeq.relocate.xcorr_plots import write_xcorr_plots
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    configure_logging(paths, "relocate")
+    summary = write_xcorr_plots(cfg, paths, pair_interval=pair_interval, max_pairs=max_pairs)
+    if summary is None:
+        raise click.ClickException(
+            "openmeq diagnostics xcorr: relocate outputs missing "
+            f"(see {paths.log_file('relocate')})"
+        )
+    click.echo(f"wrote {summary.parent}/ ({summary.name} + per-pair PNGs)")
+
+
 if __name__ == "__main__":
     main()

@@ -44,7 +44,7 @@ def test_load_example_config():
     # Spot-check nested values, matching PLAN.md §3's literal sketch values.
     assert cfg.nlloc.filter.p_only.max_iter == 5
     assert cfg.nlloc.filter.p_only.max_residual_s == pytest.approx(0.10)
-    assert cfg.hypodd.xcorr.min_cc == pytest.approx(0.7)
+    assert cfg.hypodd.xcorr.min_cc == pytest.approx(0.75)
     assert cfg.hypodd.ph2dt.maxngh == 10
     assert cfg.detection.min_trace_coincidence == 4
     assert cfg.detection.min_stations == 1

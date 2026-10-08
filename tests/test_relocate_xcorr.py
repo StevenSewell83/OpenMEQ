@@ -17,6 +17,7 @@ its own function-scoped ``tmp_path``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -58,6 +59,7 @@ from openmeq.relocate.xcorr import (
     DtccLine,
     PairXcorrParams,
     cross_correlate_pair,
+    obspy_window,
     parse_dt_ct_detail,
     run_xcorr,
     write_dt_cc,
@@ -629,6 +631,8 @@ def test_resume_skips_completed_pairs(tmp_path, monkeypatch):
     pre_done_line = {"sta": "STA1", "dt_s": 0.0, "cc": 0.99, "phase": "P"}
     pre_done = {"key": f"{pair_01[0]}_{pair_01[1]}", "result": {"lines": [pre_done_line]}}
     paths.xcorr_results_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    # Stamp it as written with these same settings (as a previous run would).
+    xcorr_module._reset_stale_results(paths.xcorr_results_jsonl, cfg.hypodd.xcorr)
     paths.xcorr_results_jsonl.write_text(json.dumps(pre_done) + "\n")
 
     call_count = 0
@@ -828,3 +832,108 @@ def test_synthetic_project_xcorr_and_hypodd_smoke(synthetic_project, tmp_path, m
     reloc_path = paths.relocate_work_dir / "hypoDD.reloc"
     assert reloc_path.is_file(), "hypoDD smoke check: expected hypoDD.reloc to be produced"
     assert reloc_path.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# OpenMEQ-6y1: window_p/window_s are signed [start, end] offsets from the pick
+# ---------------------------------------------------------------------------
+
+
+def test_obspy_window_negates_signed_start():
+    assert obspy_window((-0.05, 0.2)) == (0.05, 0.2)
+    assert obspy_window((0.01, 0.2)) == (-0.01, 0.2)
+
+
+def test_window_starts_before_pick(tmp_path):
+    """A short pulse entirely *before* the pick must be inside the correlated
+    window for window_p=(-0.1, 0.15). The pre-fix code started the window
+    after the pick (pick+0.08 s here), saw only zeros and wrote no line."""
+    n = int(4.0 * SR)
+    start_i = UTCDateTime(2020, 1, 1)
+    start_j = UTCDateTime(2020, 1, 1, 0, 5)
+    pick_i, pick_j = start_i + 2.0, start_j + 2.0
+    rel = np.arange(n) * DT
+    data_i = _template(rel - (pick_i - 0.04 - start_i), freq=20.0, half_width_s=0.04)
+    data_j = _template(rel - (pick_j - 0.04 - start_j), freq=20.0, half_width_s=0.04)
+    seed_id = "XX.STA1.00.HHZ"
+    cache_dir = tmp_path / "cache"
+    _write_npz_cache(cache_dir, "evt_i", {seed_id: (data_i, start_i)})
+    _write_npz_cache(cache_dir, "evt_j", {seed_id: (data_j, start_j)})
+    picks_by_event = {
+        "evt_i": _pick_data(pick_i - 1.0, {"XX.STA1": {"P": pick_i}}),
+        "evt_j": _pick_data(pick_j - 1.0, {"XX.STA1": {"P": pick_j}}),
+    }
+    params = _params(
+        min_cc=0.9,
+        maxlag_s=0.04,
+        window_p=(-0.1, 0.15),
+        station_phase_list=[("STA1", "P")],
+        cuspid_to_event_id={1: "evt_i", 2: "evt_j"},
+    )
+    lines = cross_correlate_pair((1, 2), str(cache_dir), picks_by_event, params)
+    assert len(lines) == 1
+    assert lines[0].cc > 0.99
+    assert lines[0].dt_s == pytest.approx(0.0, abs=DT)
+
+
+def test_stale_xcorr_results_discarded_on_settings_change(tmp_path):
+    from openmeq.config import XcorrConfig
+    from openmeq.relocate.xcorr import _reset_stale_results
+
+    out = tmp_path / "xcorr_results.jsonl"
+    out.write_text('{"key": "1_2", "result": {"lines": []}}\n')
+    _reset_stale_results(out, XcorrConfig())  # no stamp yet -> pre-fix results, discarded
+    assert not out.exists()
+    out.write_text('{"key": "1_2", "result": {"lines": []}}\n')
+    _reset_stale_results(out, XcorrConfig())  # same settings -> kept for resume
+    assert out.exists()
+    _reset_stale_results(out, XcorrConfig(min_cc=0.8))  # changed -> discarded
+    assert not out.exists()
+
+
+def test_xcorr_config_validation():
+    from pydantic import ValidationError
+
+    from openmeq.config import XcorrConfig
+
+    with pytest.raises(ValidationError, match="start < end"):
+        XcorrConfig(window_p=(0.2, -0.05))
+    with pytest.raises(ValidationError, match="freqmin < freqmax"):
+        XcorrConfig(filter={"freqmin": 20.0, "freqmax": 2.0})
+    cfg = XcorrConfig(filter={"corners": 2, "zerophase": False}, taper_pct=0.1)
+    assert (cfg.filter.corners, cfg.filter.zerophase, cfg.taper_pct) == (2, False, 0.1)
+
+
+@pytest.mark.parametrize("reject", [True, False])
+def test_edge_lags_rejected(tmp_path, reject):
+    """OpenMEQ-9fh: a true shift (0.06 s) beyond maxlag_s (0.03 s) pins the
+    best lag to the search edge -- dropped when reject_edge_lags is on."""
+    n = int(4.0 * SR)
+    start_i = UTCDateTime(2020, 1, 1)
+    start_j = UTCDateTime(2020, 1, 1, 0, 5)
+    pick_i, pick_j = start_i + 2.0, start_j + 2.0
+    data_i = _make_window(start_i, n, peak_time=pick_i, freq=4.0)
+    data_j = _make_window(start_j, n, peak_time=pick_j + 0.06, freq=4.0)
+    seed_id = "XX.STA1.00.HHZ"
+    cache_dir = tmp_path / "cache"
+    _write_npz_cache(cache_dir, "evt_i", {seed_id: (data_i, start_i)})
+    _write_npz_cache(cache_dir, "evt_j", {seed_id: (data_j, start_j)})
+    picks_by_event = {
+        "evt_i": _pick_data(pick_i - 1.0, {"XX.STA1": {"P": pick_i}}),
+        "evt_j": _pick_data(pick_j - 1.0, {"XX.STA1": {"P": pick_j}}),
+    }
+    params = dataclasses.replace(
+        _params(
+            maxlag_s=0.03,
+            station_phase_list=[("STA1", "P")],
+            cuspid_to_event_id={1: "evt_i", 2: "evt_j"},
+        ),
+        reject_edge_lags=reject,
+    )
+    lines = cross_correlate_pair((1, 2), str(cache_dir), picks_by_event, params)
+    if reject:
+        assert lines == []
+    else:
+        assert len(lines) == 1
+        # Pinned at the edge: |correction| == maxlag, not the true 0.06 s.
+        assert abs(lines[0].dt_s - (1.0 - 1.0)) == pytest.approx(0.03, abs=DT)

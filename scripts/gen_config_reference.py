@@ -356,25 +356,47 @@ MEANINGS: dict[str, str] = {
     "(seconds).",
     "hypodd.velocity_model.simul2000.nitpb": "SIMUL2000 `NITPB` maximum ray-tracing iterations per "
     "ray.",
-    "hypodd.xcorr.window_p": "`[before, after]` (seconds, relative to the P pick) cross-"
-    "correlation window for P.",
-    "hypodd.xcorr.window_s": "`[before, after]` (seconds, relative to the S pick) cross-"
-    "correlation window for S.",
-    "hypodd.xcorr.min_cc": "Minimum cross-correlation coefficient (unitless, 0-1) for a lag "
-    "measurement to be kept in `dt.cc`.",
-    "hypodd.xcorr.maxlag_s": "Maximum lag (seconds) searched during cross-correlation.",
+    "hypodd.xcorr.window_p": "`[start, end]` of the P cross-correlation window, signed seconds "
+    "relative to the P pick (`[-0.1, 0.1]` = 100 ms before to 100 ms after); `start < end`. "
+    "Start early enough to include the onset when a pick is late (about the typical pick "
+    "error); end after the first 1-2 cycles of P. Longer windows add coda and lower cc; "
+    "windows under ~2 cycles correlate by chance.",
+    "hypodd.xcorr.window_s": "As `window_p`, for S, relative to the S pick. S is lower "
+    "frequency with a less sharp onset, so allow more time after the pick than for P.",
+    "hypodd.xcorr.min_cc": "Minimum correlation coefficient (0-1) for a lag measurement to be "
+    "kept in `dt.cc`. Raise it if hypoDD's cc residual grows or the "
+    "`diagnostics.relocate.xcorr_plots` figures show poor alignments being kept. Shorter "
+    "windows reach high cc more easily and warrant a higher threshold; lower it (to ~0.7) if "
+    "too few pairs link.",
+    "hypodd.xcorr.maxlag_s": "Maximum lag (seconds) searched. Must cover real pick errors but "
+    "stay below one cycle of the dominant frequency, or the correlation can lock onto the wrong "
+    "cycle (cycle skipping) and still pass `min_cc`; about half to two-thirds of a period.",
     "hypodd.xcorr.components": '`{"P": [...], "S": [...]}` -- which mapped component code(s) to '
     "cross-correlate P and S on (e.g. `Z` for P; every configured horizontal tried independently "
     "for S, keeping only the best-correlating one).",
     "hypodd.xcorr.filter.freqmin": "Bandpass low corner (Hz) applied once when building the "
-    "cross-correlation waveform cache. Chosen from this project's own **synthetic** P/S pulse "
-    "spectra (ARCHITECTURE.md §6g) -- **retune against real event spectra** before relying on it "
-    "for a real dataset.",
-    "hypodd.xcorr.filter.freqmax": "Bandpass high corner (Hz), same cache/tuning note as "
-    "`freqmin` above.",
+    "cross-correlation waveform cache. Choose the band where P and S stand above the noise from "
+    "event spectra; raise it if long-period noise dominates. The 2-20 Hz default was checked "
+    "against this project's **synthetic** P/S spectra (ARCHITECTURE.md §6g) -- **retune against "
+    "real event spectra**.",
+    "hypodd.xcorr.filter.freqmax": "Bandpass high corner (Hz), same note as `freqmin`; keep it "
+    "below `resample_rate_hz / 2`.",
+    "hypodd.xcorr.filter.corners": "Bandpass filter order (obspy `corners`) for the "
+    "cross-correlation waveform cache; 4 is standard, higher orders ring more.",
+    "hypodd.xcorr.filter.zerophase": "Zero-phase (forward-backward) bandpass for the cache "
+    "(boolean). Keep true: a causal filter shifts waveforms in time.",
+    "hypodd.xcorr.taper_pct": "Hann taper fraction applied to each end of the chunk segment "
+    "before the cache's bandpass filter (0-0.5); only limits filter edge artefacts.",
+    "hypodd.xcorr.filter_edge_margin_s": "Extra data (seconds) cached either side of each "
+    "window +/- `maxlag_s`, to keep the bandpass filter's edge effects out of the window. "
+    "About 2-3 cycles at `freqmin`; raise it if `freqmin` is lowered.",
+    "hypodd.xcorr.reject_edge_lags": "Drop a channel's lag measurement when its best lag is at "
+    "the edge of the `+/- maxlag_s` search (within half a sample) -- the true correlation peak "
+    "lies outside the search, so the lag is unreliable (boolean). Keep true.",
     "hypodd.xcorr.resample_rate_hz": "Common sampling rate (Hz) every cached cross-correlation "
     "window is resampled to, regardless of native rate, so pairs from different events' caches "
-    "always share one rate (ARCHITECTURE.md §6f).",
+    "always share one rate (ARCHITECTURE.md §6f). Use the native rate of most stations; keep it "
+    "at least ~2.5x `filter.freqmax`.",
     "hypodd.ph2dt.maxsep_km": "ph2dt `MAXSEP` -- max. hypocentral separation (km) between a "
     "candidate event pair. See docs/hypodd_tuning.md for how this and the other ph2dt/hypoDD "
     "distance fields below were scaled for this project's own ~15 km-aperture synthetic network, "
@@ -429,6 +451,16 @@ MEANINGS: dict[str, str] = {
     "diagnostics.extended": "Default for every step's opt-in extended QAQC figures (written to "
     "`<step>/diagnostics/extended/`); the always-on baseline diagnostics are unaffected.",
     "diagnostics.n_examples": "Number of sample events for per-event waveform QAQC figures.",
+    "diagnostics.wells.enabled": "Overlay well heads/tracks on every map and depth-section "
+    "figure (locate pass maps and comparison PDF, extended station-residual map, relocate "
+    "before/after, review shift map); requires `diagnostics.wells.dir`.",
+    "diagnostics.wells.dir": "Directory of headerless `<Group>_well_heads.csv` (`name,lon,lat`) "
+    "and `<Group>_well_tracks.csv` (`name,lon,lat,elevation_m`, m above sea level) files.",
+    "diagnostics.wells.groups": "Well groups (file prefixes, e.g. `Production`) to draw; "
+    "empty = every group found in `dir`.",
+    "diagnostics.wells.colors": "`{group: matplotlib colour}` overrides; defaults are "
+    "Production vermillion, Injection sky blue, Other grey.",
+    "diagnostics.wells.labels": "Annotate well names on map panels (boolean).",
     "diagnostics.detect.extended": "Extended-QAQC override for `detect` "
     "(STA/LTA characteristic-function examples, per-station trigger-rate heatmap); "
     "unset = inherit `diagnostics.extended`.",
@@ -444,6 +476,12 @@ MEANINGS: dict[str, str] = {
     "diagnostics.magnitude.extended": "Extended-QAQC override for `magnitude` "
     "(station ML residual vs distance, GR with Mc/b-value, Wood-Anderson amplitude windows); "
     "unset = inherit `diagnostics.extended`.",
+    "diagnostics.relocate.xcorr_plots.enabled": "Write obspy `xcorr_pick_correction` "
+    "alignment/correlation plots for a sample of event pairs to "
+    "`relocate/diagnostics/xcorr_pairs/` (also: `openmeq diagnostics xcorr`).",
+    "diagnostics.relocate.xcorr_plots.pair_interval": "Plot every Nth ph2dt-linked event pair, "
+    "in `dt.ct` order (1 = every pair).",
+    "diagnostics.relocate.xcorr_plots.max_pairs": "Maximum number of event pairs to plot.",
     "diagnostics.relocate.extended": "Extended-QAQC override for `relocate` "
     "(dt.cc - dt.ct histogram, hypoDD.res residuals by data type, per-iteration mean shifts); "
     "unset = inherit `diagnostics.extended`.",

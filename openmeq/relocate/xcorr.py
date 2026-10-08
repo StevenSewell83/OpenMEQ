@@ -143,7 +143,7 @@ large, and ``dt.cc``'s ``WGHT`` column is documented (user guide §B.3.2,
 ``docs/hypoddpy_audit.md`` §2.5) as a non-negative coherency-like weight in
 ``[0, 1]`` -- picking a large-magnitude anti-correlation would both violate
 that convention and select a nonsensical (opposite-polarity) lag. In
-practice ``cfg.hypodd.xcorr.min_cc`` (default 0.7) filters out any low or
+practice ``cfg.hypodd.xcorr.min_cc`` (default 0.75) filters out any low or
 negative-cc result either way.
 
 The xcorr filter band (``cfg.hypodd.xcorr.filter``): kept at 2-20 Hz
@@ -218,6 +218,24 @@ logger = get_logger("relocate.xcorr")
 #: Origin-time correction written in every dt.cc header -- always 0.0. See
 #: the module docstring's "Origin-time correction (OTC)" section.
 _OTC = 0.0
+
+#: Bumped whenever the correlation itself changes, so results resumed from an
+#: older ``xcorr_results.jsonl`` are discarded (see :func:`_reset_stale_results`).
+#: 2 = OpenMEQ-6y1 window fix.
+XCORR_ALGORITHM_VERSION = 2
+
+
+def obspy_window(window: tuple[float, float]) -> tuple[float, float]:
+    """``cfg.hypodd.xcorr.window_p``/``window_s`` (signed ``[start, end]``
+    seconds relative to the pick, e.g. ``(-0.05, 0.2)``) as
+    ``xcorr_pick_correction``'s ``(t_before, t_after)``, where ``t_before``
+    counts *backwards* from the pick (``0.05``).
+
+    OpenMEQ-6y1: the start offset used to be passed through unnegated, so the
+    window began after the pick (pick + 0.025 s for the defaults) and missed
+    the onset.
+    """
+    return -window[0], window[1]
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +347,7 @@ class PairXcorrParams:
     label_to_net_sta: dict[str, str]
     station_phase_list: list[tuple[str, str]]
     cuspid_to_event_id: dict[int, str]
+    reject_edge_lags: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +444,15 @@ def _extract_window(
     if i0 < 0 or i1 > len(data):
         return None
     return data[i0:i1]
+
+
+def _at_lag_edge(pick2_corr: float, maxlag_s: float, sr: float) -> bool:
+    """Whether a lag sits within half a sample of the ``+/- maxlag_s`` search
+    edge (``shift = round(maxlag_s * sr)`` samples, as in :func:`_lag_and_cc`)
+    -- i.e. the correlation maximum is at, or fitted onto, the boundary rather
+    than at an interior peak (OpenMEQ-9fh)."""
+    shift = int(round(maxlag_s * sr))
+    return abs(pick2_corr) * sr >= shift - 0.5
 
 
 def _lag_and_cc(
@@ -560,7 +588,7 @@ def cross_correlate_pair(
 
         pick_i_t = UTCDateTime(pick_i_iso)
         pick_j_t = UTCDateTime(pick_j_iso)
-        t_before, t_after = cfg.window_p if phase == "P" else cfg.window_s
+        t_before, t_after = obspy_window(cfg.window_p if phase == "P" else cfg.window_s)
         comps = cfg.components.get(phase, [])
 
         best: tuple[float, float, float] | None = None  # (cc, pick2_corr, sr)
@@ -594,6 +622,10 @@ def cross_correlate_pair(
             if result is None:
                 continue
             pick2_corr, coeff = result
+            if cfg.reject_edge_lags and _at_lag_edge(pick2_corr, cfg.maxlag_s, sr):
+                # Best lag pinned to the search edge: not a real peak. Another
+                # channel (S) may still give an interior one.
+                continue
             if best is None or coeff > best[0]:
                 best = (coeff, pick2_corr, sr)
 
@@ -762,6 +794,35 @@ def write_dt_cc(
 # ---------------------------------------------------------------------------
 
 
+def _reset_stale_results(out_path: Path, xcorr_cfg) -> None:
+    """Delete ``xcorr_results.jsonl`` if it was computed with different
+    ``hypodd.xcorr`` settings or an older :data:`XCORR_ALGORITHM_VERSION`.
+
+    ``pmap_incremental`` resumes by pair key alone, so without this a settings
+    change (or the OpenMEQ-6y1 window fix) would silently reuse old per-pair
+    results. The stamp lives next to the results file
+    (``xcorr_results.settings.json``); a results file with no stamp predates
+    it and is treated as stale.
+    """
+    import json
+
+    stamp_path = out_path.with_name(out_path.stem + ".settings.json")
+    stamp = {"version": XCORR_ALGORITHM_VERSION, "xcorr": xcorr_cfg.model_dump(mode="json")}
+    try:
+        old = json.loads(stamp_path.read_text()) if stamp_path.is_file() else None
+    except (OSError, ValueError):
+        old = None
+    if old != stamp:
+        if out_path.is_file():
+            logger.info(
+                "xcorr: settings/algorithm changed since %s was written; recomputing every pair.",
+                out_path,
+            )
+        out_path.unlink(missing_ok=True)
+        stamp_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp_path.write_text(json.dumps(stamp, indent=1))
+
+
 def run_xcorr(
     cfg: Config,
     paths: RunPaths,
@@ -861,6 +922,7 @@ def run_xcorr(
             label_to_net_sta=label_to_net_sta,
             station_phase_list=pair_detail.get(pair, []),
             cuspid_to_event_id={cuspid_i: event_i, cuspid_j: event_j},
+            reject_edge_lags=xcorr_cfg.reject_edge_lags,
         )
         picks_subset: dict[str, dict[str, Any]] = {}
         if event_i in event_pick_data:
@@ -872,6 +934,7 @@ def run_xcorr(
     out_path = paths.xcorr_results_jsonl
     if force:
         Path(out_path).unlink(missing_ok=True)
+    _reset_stale_results(Path(out_path), xcorr_cfg)
 
     t0 = time.monotonic()
     raw_results = pmap_incremental(
