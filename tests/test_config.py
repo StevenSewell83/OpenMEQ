@@ -163,6 +163,86 @@ hypodd:
     assert cfg.hypodd.velocity_model.file == (config_dir / "vel1d.txt").resolve()
 
 
+_BASE_DIR_CONFIG = """
+project:
+  name: test
+  output_dir: ./runs/out
+  base_dir: {base_dir}
+data:
+  waveform_dirs: [./mseed, /abs/mseed]
+  start: 2025-01-01
+  end: 2025-01-02
+stations:
+  csv: ./meta/stations.csv
+nlloc:
+  velocity_model:
+    type: 1d
+    file: ./models/vel1d.txt
+  grid:
+    origin: [0.0, 0.0]
+    size_km: [10, 10, 10]
+    spacing_km: 0.1
+hypodd:
+  velocity_model:
+    type: 1d
+    file: ./models/vel1d.txt
+"""
+
+
+def test_absolute_base_dir_overrides_config_dir(tmp_path):
+    """OpenMEQ-e8x: relative paths resolve against project.base_dir, not the
+    config file's directory; absolute paths are untouched."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    base = tmp_path / "survey"
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(_BASE_DIR_CONFIG.format(base_dir=base))
+
+    cfg = load_config(config_path)
+
+    assert cfg.project.base_dir == base
+    assert cfg.project.output_dir == (base / "runs" / "out").resolve()
+    assert cfg.data.waveform_dirs == [(base / "mseed").resolve(), Path("/abs/mseed")]
+    assert cfg.stations.csv == (base / "meta" / "stations.csv").resolve()
+    assert cfg.nlloc.velocity_model.file == (base / "models" / "vel1d.txt").resolve()
+    assert cfg.hypodd.velocity_model.file == (base / "models" / "vel1d.txt").resolve()
+
+
+def test_relative_base_dir_resolves_against_config_dir(tmp_path):
+    config_dir = tmp_path / "survey" / "configs"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "config.yaml"
+    config_path.write_text(_BASE_DIR_CONFIG.format(base_dir=".."))
+
+    cfg = load_config(config_path)
+
+    base = (tmp_path / "survey").resolve()
+    assert cfg.project.base_dir == base
+    assert cfg.project.output_dir == base / "runs" / "out"
+    assert cfg.stations.csv == base / "meta" / "stations.csv"
+
+
+def test_base_dir_expands_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_BASE_DIR_CONFIG.format(base_dir="~/survey"))
+
+    cfg = load_config(config_path)
+
+    assert cfg.project.base_dir == tmp_path / "survey"
+    assert cfg.project.output_dir == (tmp_path / "survey" / "runs" / "out").resolve()
+
+
+def test_null_base_dir_falls_back_to_config_dir(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(_BASE_DIR_CONFIG.format(base_dir="null"))
+
+    cfg = load_config(config_path)
+
+    assert cfg.project.base_dir is None
+    assert cfg.project.output_dir == (tmp_path / "runs" / "out").resolve()
+
+
 def test_absolute_paths_left_unchanged(tmp_path):
     config_dir = tmp_path / "project2"
     config_dir.mkdir()

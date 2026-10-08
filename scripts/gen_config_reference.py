@@ -75,7 +75,11 @@ MEANINGS: dict[str, str] = {
     # --- project ---
     "project.name": "Project/survey name, used only for display and logging.",
     "project.output_dir": "Directory every pipeline step writes under (ARCHITECTURE.md §3's run "
-    "directory layout). Relative paths resolve against this config file's own directory.",
+    "directory layout). Relative paths resolve against `project.base_dir`.",
+    "project.base_dir": "Root directory every relative path in the config resolves against "
+    "(`output_dir`, `waveform_dirs`, station files, velocity models, ...). `null` = the config "
+    "file's own directory; a relative value is itself resolved against the config file's "
+    "directory. A leading `~` is expanded.",
     # --- parallel ---
     "parallel.n_workers": '`"auto"` (all physical cores) or an integer worker-process count for '
     "`openmeq.parallel.pmap`'s `ProcessPoolExecutor`.",
@@ -389,7 +393,8 @@ MEANINGS: dict[str, str] = {
     "before the cache's bandpass filter (0-0.5); only limits filter edge artefacts.",
     "hypodd.xcorr.filter_edge_margin_s": "Extra data (seconds) cached either side of each "
     "window +/- `maxlag_s`, to keep the bandpass filter's edge effects out of the window. "
-    "About 2-3 cycles at `freqmin`; raise it if `freqmin` is lowered.",
+    "At least one cycle at `freqmin` (0.5 s = one cycle at 2 Hz); raise it if `freqmin` is "
+    "lowered.",
     "hypodd.xcorr.reject_edge_lags": "Drop a channel's lag measurement when its best lag is at "
     "the edge of the `+/- maxlag_s` search (within half a sample) -- the true correlation peak "
     "lies outside the search, so the lag is unreliable (boolean). Keep true.",
@@ -646,8 +651,9 @@ def build_reference() -> str:
         "",
         'Every section is `extra="forbid"`: a misspelled or unknown key in your config '
         "raises a validation error naming the bad path, rather than being silently ignored. "
-        "Any relative path value is resolved against *this config file's own directory*, "
-        "not the process's current working directory.",
+        "Any relative path value is resolved against `project.base_dir` if set, otherwise "
+        "against *this config file's own directory* -- never the process's current working "
+        "directory.",
         "",
         "A field's default is shown as `*(required)*` if the YAML must supply it explicitly "
         "(no schema default).",

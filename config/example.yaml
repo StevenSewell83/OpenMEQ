@@ -7,8 +7,12 @@
 # rather than being silently ignored.
 #
 # Paths: any relative path in this file (e.g. "./data/mseed") is resolved
-# against *this file's own directory*, not the current working directory
-# (ARCHITECTURE.md §2). Absolute paths are used as-is.
+# against project.base_dir if set, otherwise against *this file's own
+# directory* -- never the current working directory (ARCHITECTURE.md §2).
+# Absolute paths are used as-is; a leading ~ is expanded.
+#
+# How to choose each value: docs/parameter_guide.md. Every key with its type
+# and default: docs/config_reference.md.
 #
 # Units: distances are km in the location/hypoDD sections and metres for
 # station elevation/depth in metadata (ARCHITECTURE.md §1). Times are UTC.
@@ -16,6 +20,8 @@
 project:
   name: my_survey
   output_dir: ./runs/my_survey          # everything this run produces lands under here
+  base_dir: null                        # root for every relative path in this file; null = this file's
+                                        # directory. A relative base_dir is taken from this file's directory.
 
 parallel:
   n_workers: auto                       # auto = all physical cores; or an integer
@@ -288,8 +294,8 @@ hypodd:
       zerophase: true                   # keep true: a causal filter shifts waveforms in time
     taper_pct: 0.05                     # taper at each end of the cached segment before filtering
     # filter_edge_margin_s: extra data (s) kept either side of each window +
-    # maxlag so filter edge effects stay out of the window. ~2-3 cycles at
-    # freqmin (0.5 s covers 2 Hz); raise it if freqmin is lowered.
+    # maxlag so filter edge effects stay out of the window. At least one cycle
+    # at freqmin (0.5 s = one cycle at 2 Hz); raise it if freqmin is lowered.
     filter_edge_margin_s: 0.5
     # reject_edge_lags: drop a measurement whose best lag sits at +/- maxlag_s
     # (the real peak is outside the search, so the lag is unreliable). Keep true.

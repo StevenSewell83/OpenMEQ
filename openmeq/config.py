@@ -14,8 +14,10 @@ Design notes
   a typo'd or renamed YAML key raises a validation error instead of being
   silently ignored.
 * **Path resolution:** any relative path in the YAML is resolved against the
-  *config file's own directory* (not the process CWD), per ARCHITECTURE.md
-  §2. This is implemented in one place: :meth:`Config._resolve_relative_paths`,
+  project base directory: ``project.base_dir`` if set (itself resolved
+  against the config file's directory when relative), otherwise the
+  *config file's own directory* (never the process CWD), per ARCHITECTURE.md
+  §2. A leading ``~`` is expanded in every path. This is implemented in one place: :meth:`Config._resolve_relative_paths`,
   a top-level ``model_validator(mode="after")`` that receives the config
   file's directory via pydantic's validation ``context`` (see
   :func:`load_config`) and walks every known path-like field. Do not add
@@ -80,12 +82,13 @@ class _StrictModel(BaseModel):
 def _resolve(path: Path | None, base_dir: Path) -> Path | None:
     """Resolve ``path`` against ``base_dir`` if it is relative.
 
-    An absolute path is returned unchanged. ``None`` passes through
-    unchanged (many path fields are optional).
+    A leading ``~`` is expanded first. An absolute path is returned
+    unchanged. ``None`` passes through unchanged (many path fields are
+    optional).
     """
     if path is None:
         return None
-    path = Path(path)
+    path = Path(path).expanduser()
     if path.is_absolute():
         return path
     return (base_dir / path).resolve()
@@ -99,6 +102,10 @@ def _resolve(path: Path | None, base_dir: Path) -> Path | None:
 class ProjectConfig(_StrictModel):
     name: str
     output_dir: Path
+    # OpenMEQ-e8x: root every other relative path in the config resolves
+    # against. Relative base_dir resolves against the config file's
+    # directory; None = the config file's directory itself.
+    base_dir: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1060,20 +1067,36 @@ class Config(_StrictModel):
 
     @model_validator(mode="after")
     def _resolve_relative_paths(self, info) -> Config:
-        """Resolve every relative path field against the config file's
-        directory (ARCHITECTURE.md §2), supplied via ``model_validate``'s
-        ``context={"base_dir": ...}`` (see :func:`load_config`).
+        """Resolve every relative path field against the project base
+        directory (ARCHITECTURE.md §2).
+
+        The base is ``project.base_dir`` when set, else the config file's
+        directory, which arrives via ``model_validate``'s
+        ``context={"base_dir": ...}`` (see :func:`load_config`). A relative
+        ``project.base_dir`` is itself resolved against the config file's
+        directory.
 
         This is the single place that knows every path-like field in the
         schema, per this task's design decision (see module docstring).
-        When no ``base_dir`` is in context (e.g. constructing a ``Config``
-        directly in a test without going through ``load_config``), paths are
-        left exactly as given.
+        When there is no config directory in context (e.g. constructing a
+        ``Config`` directly in a test without going through
+        ``load_config``), only an absolute ``project.base_dir`` is applied;
+        otherwise paths are left exactly as given.
         """
-        base_dir = info.context.get("base_dir") if isinstance(info.context, dict) else None
-        if base_dir is None:
+        config_dir = info.context.get("base_dir") if isinstance(info.context, dict) else None
+        project_base = self.project.base_dir
+        if project_base is not None:
+            project_base = project_base.expanduser()
+            if not project_base.is_absolute():
+                if config_dir is None:
+                    return self
+                project_base = (Path(config_dir) / project_base).resolve()
+            self.project.base_dir = project_base
+            base_dir = project_base
+        elif config_dir is None:
             return self
-        base_dir = Path(base_dir)
+        else:
+            base_dir = Path(config_dir)
 
         self.project.output_dir = _resolve(self.project.output_dir, base_dir)
         self.data.waveform_dirs = [_resolve(p, base_dir) for p in self.data.waveform_dirs]
@@ -1096,8 +1119,9 @@ class Config(_StrictModel):
 def load_config(path: str | Path) -> Config:
     """Load and validate a YAML config file, returning a typed :class:`Config`.
 
-    Relative paths in the YAML are resolved against ``path``'s own directory
-    (ARCHITECTURE.md §2), not the process's current working directory.
+    Relative paths in the YAML are resolved against ``project.base_dir`` if
+    set, else ``path``'s own directory (ARCHITECTURE.md §2), never the
+    process's current working directory.
 
     Raises
     ------
