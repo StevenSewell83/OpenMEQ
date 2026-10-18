@@ -27,35 +27,49 @@ alongside the plots.
    stat names from ``cfg.qc.daily_stats``, the loaded DataFrames/dict).
 
 Every figure goes through :mod:`openmeq.plotting`'s helpers (``setup_style``,
-``plot_heatmap``, ``plot_timeseries``, ``plot_boxplot``, ``save_fig``) --
-nothing here imports ``matplotlib``/``matplotlib.pyplot`` directly, so
-styling stays consistent with every other step's diagnostics.
+``plot_grouped_heatmap``) -- nothing here imports ``matplotlib`` directly,
+so styling stays consistent with every other step's diagnostics.
+
+Rows, labels and instrument groups (OpenMEQ-gyb)
+-------------------------------------------------
+Every figure is a heatmap with one labelled row per channel (``STA.CHA``,
+or ``STA.LOC.CHA`` when a station has several location codes), rows grouped
+by instrument group (``instruments``: the per-channel ``group`` and
+``sensitivity`` from :func:`openmeq.qc.noise_plots.noise_table`, i.e. the
+StationXML sensor model or ``cfg.qc.instrument_groups``), with a white line
+and the group name between groups. Without ``instruments`` every channel is
+in one ``all`` group.
+
+Statistics whose value scales with the instrument's gain
+(:data:`GAIN_DEPENDENT_STATS`: ``rms``, ``mean_abs``) are never put on one
+colour scale across instruments:
+
+- they get no ``daily_<stat>.png`` -- the per-group, sensitivity-corrected
+  noise heatmaps in ``diagnostics/noise/`` already show amplitude per day;
+- their monthly ratio is computed on ``value / sensitivity`` against the
+  median of the channel's own instrument group; a group with a single
+  station (no peers) is compared with its own median over the run instead
+  (rows marked ``*``).
+
+Gain-independent statistics (kurtosis, spike fraction, flat/clip counts)
+share one figure across every instrument, with network-wide ratios.
 
 Outputs (``qc/diagnostics/``, ARCHITECTURE.md §3)
 --------------------------------------------------
-- ``availability_heatmap.png``: ``seed_id`` x ``date`` matrix of
-  ``coverage_pct`` (0-100), from ``availability_df``.
-- ``daily_<stat>.png``: one time series per stat (default: every column of
-  ``daily_stats_df`` other than ``seed_id``/``date``/``npts``, or the
-  ``stats`` argument if given), one line per ``seed_id``.
-- ``monthly_<stat>_boxplot.png``: one box plot per stat (default: every
-  ``stat`` value present in ``monthly_df``, or ``stats`` if given), one box
-  per station of that station's monthly ``ratio`` (value / network median)
-  across every month in ``monthly_df``. **Rankings are folded into this
-  same plot** (per the beads issue's design note: "don't over-engineer
-  this into a separate table format") via the box plots' left-to-right
-  *order*: stations are ordered by their most recent month's ``rank``
-  (rank 1, the most anomalous station that month, drawn first), not
-  alphabetically -- so the figure shows both the distribution (box plot)
-  and the current ranking (x-axis order) in one image. A station with no
-  row in the latest month is placed after every ranked station, in
-  ``seed_id`` order.
-- ``flag_overview.png``: ``seed_id`` x ``date`` matrix of ``ok`` (1.0) /
-  flagged (0.0) from ``flags`` -- a companion to the availability heatmap
-  that reflects *every* flag reason (availability, spikes, flat, clipped,
-  excluded-by-config, network-outlier), not just raw coverage.
+- ``availability_heatmap.png``: channel x date ``coverage_pct`` (0-100).
+- ``daily_<stat>.png``: channel x date, one per gain-independent stat;
+  ``spike_count`` is shown as the spike *fraction* (``spike_count / npts``)
+  and ``kurtosis`` as Pearson kurtosis (excess + 3; Gaussian = 3), both on
+  log colour scales.
+- ``monthly_<stat>.png``: channel x month ratio to the median (log colour
+  scale centred on 1x, value written in each cell), see above.
+- ``flag_overview.png``: channel x date, each day coloured by its
+  highest-priority flag reason (:data:`FLAG_CATEGORIES`) or ok.
 - ``summary.csv``: ``seed_id, pct_days_ok, worst_reason, n_days_flagged``,
   one row per ``seed_id`` present in ``flags``.
+
+:func:`make_qc_diagnostics` returns the PNG paths it wrote, so the caller can
+remove figures an earlier version wrote (e.g. ``daily_rms.png``).
 
 Tolerance to changing stat columns
 -----------------------------------
@@ -74,19 +88,40 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from openmeq.log import get_logger
-from openmeq.plotting import plot_boxplot, plot_heatmap, plot_timeseries, setup_style
+from openmeq.plotting import plot_grouped_heatmap, setup_style
 
 logger = get_logger("qc.plots")
 
 #: Columns of ``qc/daily_stats.csv`` that are never themselves a "stat" to
-#: plot a time series of (ARCHITECTURE.md §3).
+#: plot (ARCHITECTURE.md §3).
 _DAILY_STATS_NON_STAT_COLUMNS = frozenset({"seed_id", "date", "npts"})
 
 #: ``qc/diagnostics/summary.csv``'s exact column order.
 SUMMARY_COLUMNS = ["seed_id", "pct_days_ok", "worst_reason", "n_days_flagged"]
+
+#: Daily stats whose value scales with instrument gain (module docstring).
+GAIN_DEPENDENT_STATS = frozenset({"rms", "mean_abs"})
+
+#: Flag overview categories ``(value, colour, label, reason prefix)``,
+#: highest priority first after ``ok``; a day with several reasons shows
+#: the first match.
+FLAG_CATEGORIES = [
+    (0, "#a1d99b", "ok", None),
+    (1, "#252525", "excluded by config", "excluded_by_config"),
+    (2, "#3182bd", "low availability", "availability"),
+    (3, "#756bb1", "flat", "flat"),
+    (4, "#e7298a", "clipped", "clipped"),
+    (5, "#de2d26", "spikes", "spikes"),
+    (6, "#fdae6b", "network outlier", "network_outlier"),
+    (7, "#969696", "other", ""),
+]
+
+#: Monthly ratio colour range: log10(ratio) in [-1, 1] = 0.1x .. 10x.
+_RATIO_TICKS = {-1.0: "0.1×", -0.5: "0.3×", 0.0: "1×", 0.5: "3×", 1.0: "10×"}
 
 
 def _default_daily_stats(daily_stats_df: pd.DataFrame) -> list[str]:
@@ -101,140 +136,188 @@ def _default_monthly_stats(monthly_df: pd.DataFrame) -> list[str]:
     return sorted(monthly_df["stat"].dropna().unique().tolist())
 
 
-def _availability_heatmap(availability_df: pd.DataFrame, out_dir: Path) -> None:
-    path = out_dir / "availability_heatmap.png"
-    if availability_df is None or availability_df.empty:
-        pivot = pd.DataFrame()
-    else:
-        pivot = availability_df.pivot_table(
-            index="seed_id", columns="date", values="coverage_pct", aggfunc="mean"
-        ).sort_index()
-        pivot = pivot[sorted(pivot.columns)]
-    plot_heatmap(
-        pivot,
+def _row_table(seed_ids, instruments: pd.DataFrame | None) -> pd.DataFrame:
+    """One row per channel in display order: ``seed_id, station, group,
+    sensitivity, label`` (module docstring's "Rows, labels and instrument
+    groups"). Groups are ordered largest first, then by name."""
+    columns = ["seed_id", "station", "location", "channel", "group", "sensitivity", "label"]
+    if not seed_ids:
+        return pd.DataFrame(columns=columns)
+    rows = pd.DataFrame({"seed_id": sorted({str(s) for s in seed_ids})})
+    parts = rows["seed_id"].str.split(".", expand=True).reindex(columns=range(4))
+    rows["station"], rows["location"], rows["channel"] = parts[1], parts[2].fillna(""), parts[3]
+    rows["group"], rows["sensitivity"] = "all", np.nan
+    if instruments is not None and not instruments.empty and "group" in instruments:
+        meta = instruments.drop_duplicates("seed_id").set_index("seed_id")
+        rows["group"] = rows["seed_id"].map(meta["group"]).fillna("unknown").astype(str)
+        if "sensitivity" in meta:
+            rows["sensitivity"] = rows["seed_id"].map(meta["sensitivity"]).astype(float)
+    multi_loc = rows.groupby("station")["location"].transform("nunique") > 1
+    rows["label"] = np.where(
+        multi_loc,
+        rows["station"] + "." + rows["location"] + "." + rows["channel"],
+        rows["station"] + "." + rows["channel"],
+    )
+    size = rows.groupby("group")["seed_id"].transform("size")
+    rows = rows.assign(_size=-size).sort_values(
+        ["_size", "group", "station", "location", "channel"]
+    )
+    return rows.drop(columns="_size").reset_index(drop=True)
+
+
+def _title(prefix: str, text: str) -> str:
+    return f"{prefix} — {text}" if prefix else text
+
+
+def _date_pivot(df: pd.DataFrame, value: str, rows: pd.DataFrame) -> pd.DataFrame:
+    """``rows`` x every date in ``df`` (a ``DatetimeIndex``) matrix of ``value``."""
+    sub = df[["seed_id", "date", value]].copy()
+    sub["date"] = pd.to_datetime(sub["date"])
+    pivot = sub.pivot_table(index="seed_id", columns="date", values=value, aggfunc="mean")
+    dates = pd.date_range(sub["date"].min(), sub["date"].max(), freq="D")
+    return pivot.reindex(index=rows["seed_id"], columns=dates)
+
+
+def _heatmap(matrix: pd.DataFrame, rows: pd.DataFrame, path: Path, labels=None, **kwargs) -> None:
+    plot_grouped_heatmap(
+        matrix,
         path,
-        xlabel="Date",
-        ylabel="Seed ID",
-        title="QC availability (% coverage)",
-        cbar_label="Coverage (%)",
+        row_labels=list(rows["label"]) if labels is None else labels,
+        row_groups=list(rows["group"]),
+        **kwargs,
+    )
+
+
+def _availability_heatmap(availability_df, rows, out_dir: Path, title: str) -> Path:
+    path = out_dir / "availability_heatmap.png"
+    _heatmap(
+        _date_pivot(availability_df, "coverage_pct", rows),
+        rows,
+        path,
+        title=_title(title, "data availability per channel-day"),
+        cmap="viridis",
         vmin=0.0,
         vmax=100.0,
+        cbar_label="coverage (%)",
     )
+    return path
 
 
-def _daily_stat_timeseries(
-    daily_stats_df: pd.DataFrame, stats: Sequence[str], out_dir: Path
-) -> None:
-    for stat in stats:
-        path = out_dir / f"daily_{stat}.png"
-        if daily_stats_df is None or daily_stats_df.empty or stat not in daily_stats_df.columns:
-            logger.warning(
-                "qc.plots: stat %r not present in daily_stats_df -- writing an empty "
-                "'daily_%s.png' rather than skipping it (a concurrently-changing M1.4/M1.8/"
-                "M1.9 daily_stats.csv may legitimately omit or rename it).",
-                stat,
-                stat,
-            )
-            plot_timeseries(pd.DataFrame(columns=["date", stat]), path, x="date", y=stat)
-            continue
-        sub = daily_stats_df[["seed_id", "date", stat]].copy()
-        # A true datetime x-axis (rather than one categorical tick per
-        # ISO-string date) is what keeps this legible at e.g. 365 days --
-        # matplotlib's date locator thins ticks automatically, whereas the
-        # shared plot_timeseries primitive does not thin a categorical axis.
-        sub["date"] = pd.to_datetime(sub["date"])
-        plot_timeseries(
-            sub,
-            path,
-            x="date",
-            y=stat,
-            group_by="seed_id",
-            xlabel="Date",
-            ylabel=stat,
-            title=f"Daily {stat} per channel",
-            marker=None,
-        )
-
-
-def _monthly_rank_order(sub: pd.DataFrame) -> list[str]:
-    """Station order for a stat's box plot: most anomalous (lowest ``rank``
-    in the most recent month) first -- see the module docstring's "Rankings
-    are folded into this same plot" note. Stations absent from the latest
-    month are appended afterwards, in ``seed_id`` order.
-    """
-    all_seed_ids = sorted(sub["seed_id"].dropna().unique().tolist())
-    if sub.empty or "month" not in sub.columns or "rank" not in sub.columns:
-        return all_seed_ids
-    latest_month = sub["month"].max()
-    latest_rank = sub.loc[sub["month"] == latest_month].set_index("seed_id")["rank"]
-
-    def sort_key(seed_id: str) -> tuple:
-        rank = latest_rank.get(seed_id) if seed_id in latest_rank.index else None
-        if rank is None or pd.isna(rank):
-            return (1, 0, seed_id)
-        return (0, float(rank), seed_id)
-
-    return sorted(all_seed_ids, key=sort_key)
-
-
-def _monthly_stat_boxplots(monthly_df: pd.DataFrame, stats: Sequence[str], out_dir: Path) -> None:
-    for stat in stats:
-        path = out_dir / f"monthly_{stat}_boxplot.png"
-        if monthly_df is None or monthly_df.empty or "stat" not in monthly_df.columns:
-            plot_boxplot(
-                pd.DataFrame(columns=["seed_id", "ratio"]), path, by="seed_id", column="ratio"
-            )
-            continue
-        sub = monthly_df[monthly_df["stat"] == stat]
-        if sub.empty:
-            logger.warning(
-                "qc.plots: stat %r not present in monthly_df -- writing an empty "
-                "'monthly_%s_boxplot.png' rather than skipping it.",
-                stat,
-                stat,
-            )
-            plot_boxplot(
-                pd.DataFrame(columns=["seed_id", "ratio"]), path, by="seed_id", column="ratio"
-            )
-            continue
-        order = _monthly_rank_order(sub)
-        plot_boxplot(
-            sub,
-            path,
-            by="seed_id",
-            column="ratio",
-            order=order,
-            xlabel="Station (ranked: most anomalous first)",
-            ylabel=f"{stat} ratio to network median",
-            title=f"Monthly {stat}: station ratio to network median",
-        )
-
-
-def _flag_overview(flags: dict, out_dir: Path) -> None:
-    path = out_dir / "flag_overview.png"
-    rows = [
-        {"seed_id": seed_id, "date": date, "ok": 1.0 if info.get("ok") else 0.0}
-        for seed_id, days in (flags or {}).items()
-        for date, info in days.items()
-    ]
-    if not rows:
-        pivot = pd.DataFrame()
-    else:
-        long_df = pd.DataFrame(rows)
-        pivot = long_df.pivot_table(
-            index="seed_id", columns="date", values="ok", aggfunc="mean"
-        ).sort_index()
-        pivot = pivot[sorted(pivot.columns)]
-    plot_heatmap(
-        pivot,
+def _daily_stat_heatmap(daily_stats_df, stat: str, rows, out_dir: Path, title: str) -> Path:
+    path = out_dir / f"daily_{stat}.png"
+    df = daily_stats_df.copy()
+    log, label, text = False, stat, f"daily {stat}"
+    if stat == "spike_count" and "npts" in df.columns:
+        df[stat] = df[stat] / df["npts"].where(df["npts"] > 0)
+        log, label = True, "spike fraction (log scale)"
+        text = "daily spike fraction (spike_count / samples)"
+    elif stat == "kurtosis":
+        df[stat] = df[stat] + 3.0
+        log, label = True, "kurtosis (log scale)"
+        text = "daily kurtosis (Pearson; Gaussian noise = 3)"
+    _heatmap(
+        _date_pivot(df, stat, rows),
+        rows,
         path,
-        xlabel="Date",
-        ylabel="Seed ID",
-        title="QC flag overview (1 = ok, 0 = flagged)",
-        cbar_label="OK",
-        vmin=0.0,
-        vmax=1.0,
+        title=_title(title, text),
+        note="gain-independent: one scale for all instruments",
+        cmap="magma_r" if log else "viridis",
+        log=log,
+        cbar_label=label,
     )
+    return path
+
+
+def _monthly_ratios(monthly_df: pd.DataFrame, stat: str, rows: pd.DataFrame):
+    """``(seed_id x month ratio matrix, own-history seed ids)`` for one stat."""
+    sub = monthly_df[monthly_df["stat"] == stat][["seed_id", "month", "value", "ratio"]].copy()
+    sub["month"] = sub["month"].astype(str)
+    own = set()
+    if stat in GAIN_DEPENDENT_STATS:
+        meta = rows.set_index("seed_id")
+        sens = sub["seed_id"].map(meta["sensitivity"]).astype(float)
+        sub["corr"] = sub["value"] / sens.where(sens > 0, 1.0)
+        sub["group"] = sub["seed_id"].map(meta["group"]).fillna("unknown")
+        n_sta = rows.groupby("group")["station"].nunique()
+        peers = sub["group"].map(n_sta).fillna(0) >= 2
+        group_median = sub.groupby(["group", "month"])["corr"].transform("median")
+        own_median = sub.groupby("seed_id")["corr"].transform("median")
+        sub["ratio"] = sub["corr"] / group_median.where(peers, own_median)
+        own = set(sub.loc[~peers, "seed_id"])
+    matrix = sub.pivot_table(index="seed_id", columns="month", values="ratio", aggfunc="mean")
+    return matrix.reindex(index=rows["seed_id"], columns=sorted(matrix.columns)), own
+
+
+def _monthly_stat_heatmap(monthly_df, stat: str, rows, out_dir: Path, title: str) -> Path:
+    path = out_dir / f"monthly_{stat}.png"
+    if monthly_df is None or monthly_df.empty or "stat" not in monthly_df.columns:
+        ratio, own = pd.DataFrame(index=rows["seed_id"]), set()
+    else:
+        ratio, own = _monthly_ratios(monthly_df, stat, rows)
+    values = ratio.to_numpy(dtype=float)
+    log_ratio = np.log10(np.where(values > 0, values, np.nan))
+    annotate = [[f"{v:.2g}" if np.isfinite(v) and v > 0 else "" for v in row] for row in values]
+    labels = [
+        f"{lab} *" if s in own else lab
+        for s, lab in zip(rows["seed_id"], rows["label"], strict=True)
+    ]
+    if stat in GAIN_DEPENDENT_STATS:
+        text = f"monthly {stat} (sensitivity-corrected) vs instrument-group median"
+        note = "* single-station group: vs its own median over the run"
+    else:
+        text = f"monthly {stat} vs network median"
+        note = "gain-independent: all instruments compared"
+    _heatmap(
+        pd.DataFrame(log_ratio, index=ratio.index, columns=ratio.columns),
+        rows,
+        path,
+        labels=labels,
+        title=_title(title, text),
+        note=note if own or stat not in GAIN_DEPENDENT_STATS else None,
+        cmap="coolwarm",
+        vmin=-1.0,
+        vmax=1.0,
+        cbar_label="ratio to median (log scale)",
+        cbar_ticks=_RATIO_TICKS,
+        annotate=annotate,
+    )
+    return path
+
+
+def _flag_category(info: dict) -> int:
+    if info.get("ok"):
+        return 0
+    reasons = info.get("reasons", [])
+    for value, _colour, _label, prefix in FLAG_CATEGORIES[1:-1]:
+        if any(r.startswith(prefix) for r in reasons):
+            return value
+    return FLAG_CATEGORIES[-1][0]
+
+
+def _flag_overview(flags: dict, rows, out_dir: Path, title: str) -> Path:
+    path = out_dir / "flag_overview.png"
+    long_df = pd.DataFrame(
+        [
+            {"seed_id": seed_id, "date": date, "category": _flag_category(info)}
+            for seed_id, days in (flags or {}).items()
+            for date, info in days.items()
+        ],
+        columns=["seed_id", "date", "category"],
+    )
+    matrix = (
+        _date_pivot(long_df, "category", rows)
+        if not long_df.empty
+        else pd.DataFrame(index=rows["seed_id"])
+    )
+    _heatmap(
+        matrix,
+        rows,
+        path,
+        title=_title(title, "QC flags per channel-day"),
+        note="colour = highest-priority reason; counts in summary.csv",
+        categories=[(v, c, lab) for v, c, lab, _p in FLAG_CATEGORIES],
+    )
+    return path
 
 
 def summarize_flags(flags: dict) -> pd.DataFrame:
@@ -306,7 +389,9 @@ def make_qc_diagnostics(
     out_dir: str | Path,
     *,
     stats: Sequence[str] | None = None,
-) -> None:
+    instruments: pd.DataFrame | None = None,
+    title: str = "",
+) -> list[Path]:
     """Render every QC diagnostic plot plus ``summary.csv`` into ``out_dir``.
 
     Parameters
@@ -328,16 +413,21 @@ def make_qc_diagnostics(
         Output directory (``qc/diagnostics/``, ARCHITECTURE.md §3). Created
         if missing.
     stats : sequence of str, optional
-        Which daily/monthly statistics to render ``daily_<stat>.png`` /
-        ``monthly_<stat>_boxplot.png`` for (e.g. a plain list built from
-        ``cfg.qc.daily_stats`` by the caller -- this module takes no
-        ``openmeq.config.Config``). Defaults to every stat column present
-        in ``daily_stats_df`` (for the daily plots) / every ``stat`` value
-        present in ``monthly_df`` (for the monthly plots) -- see the
-        module docstring's "Tolerance to changing stat columns". A stat
-        named here but absent from a given DataFrame is still rendered as
-        an empty placeholder PNG (logged as a warning) rather than being
-        silently dropped, so the expected file always exists.
+        Which statistics to render ``daily_<stat>.png`` (gain-independent
+        stats only) and ``monthly_<stat>.png`` for (e.g. ``cfg.qc.daily_stats``).
+        Defaults to every stat column in ``daily_stats_df`` / every ``stat``
+        in ``monthly_df``. A stat missing from a DataFrame is skipped with a
+        warning.
+    instruments : pandas.DataFrame, optional
+        Per-channel ``seed_id``, ``group`` and ``sensitivity`` (e.g.
+        ``noise_daily.csv``), for the instrument grouping (module docstring).
+    title : str, optional
+        Prefix for every figure title (the project name).
+
+    Returns
+    -------
+    list of pathlib.Path
+        The PNGs written.
     """
     setup_style()
     out_dir = Path(out_dir)
@@ -345,15 +435,42 @@ def make_qc_diagnostics(
 
     daily_stats = list(stats) if stats is not None else _default_daily_stats(daily_stats_df)
     monthly_stats = list(stats) if stats is not None else _default_monthly_stats(monthly_df)
+    seed_ids = set()
+    for df in (availability_df, daily_stats_df):
+        if df is not None and not df.empty:
+            seed_ids |= set(df["seed_id"].astype(str))
+    seed_ids |= set(flags or {})
+    rows = _row_table(seed_ids, instruments)
 
-    _availability_heatmap(availability_df, out_dir)
-    _daily_stat_timeseries(daily_stats_df, daily_stats, out_dir)
-    _monthly_stat_boxplots(monthly_df, monthly_stats, out_dir)
-    _flag_overview(flags, out_dir)
+    written = []
+    if availability_df is not None and not availability_df.empty:
+        written.append(_availability_heatmap(availability_df, rows, out_dir, title))
+    for stat in daily_stats:
+        if stat in GAIN_DEPENDENT_STATS:
+            logger.info("qc.plots: no daily_%s.png (gain-dependent; see diagnostics/noise/)", stat)
+        elif daily_stats_df is None or stat not in getattr(daily_stats_df, "columns", []):
+            logger.warning("qc.plots: stat %r not in daily_stats_df -- daily plot skipped", stat)
+        elif not daily_stats_df.empty:
+            written.append(_daily_stat_heatmap(daily_stats_df, stat, rows, out_dir, title))
+    present = set(_default_monthly_stats(monthly_df))
+    for stat in monthly_stats:
+        if stat not in present:
+            logger.warning("qc.plots: stat %r not in monthly_df -- monthly plot skipped", stat)
+            continue
+        written.append(_monthly_stat_heatmap(monthly_df, stat, rows, out_dir, title))
+    if flags:
+        written.append(_flag_overview(flags, rows, out_dir, title))
 
     summary_df = summarize_flags(flags)
     summary_path = out_dir / "summary.csv"
     summary_df.to_csv(summary_path, index=False, columns=SUMMARY_COLUMNS)
+    return written
 
 
-__all__ = ["make_qc_diagnostics", "summarize_flags", "SUMMARY_COLUMNS"]
+__all__ = [
+    "FLAG_CATEGORIES",
+    "GAIN_DEPENDENT_STATS",
+    "SUMMARY_COLUMNS",
+    "make_qc_diagnostics",
+    "summarize_flags",
+]

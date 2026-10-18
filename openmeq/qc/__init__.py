@@ -143,14 +143,22 @@ def _make_plots(
             n_before - availability_df["seed_id"].nunique(),
             n_before,
         )
-    make_qc_diagnostics(
+    written = make_qc_diagnostics(
         availability_df,
         daily_stats_df,
         monthly_df,
         flags,
         paths.qc_diagnostics_dir,
         stats=cfg.qc.daily_stats,
+        instruments=noise_df,
+        title=cfg.project.name,
     )
+    # Figures an earlier version or setting wrote (e.g. daily_rms.png,
+    # monthly_*_boxplot.png) would otherwise sit next to the new set.
+    keep = {Path(w).name for w in written}
+    for old in Path(paths.qc_diagnostics_dir).glob("*.png"):
+        if old.name not in keep:
+            old.unlink()
     if noise_df is None:
         return
     try:

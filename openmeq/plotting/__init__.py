@@ -34,6 +34,7 @@ from __future__ import annotations
 from ._bar import plot_bar
 from ._boxplot import plot_boxplot
 from ._gr import plot_gutenberg_richter
+from ._grouped_heatmap import plot_grouped_heatmap
 from ._heatmap import plot_heatmap
 from ._hist import plot_hist
 from ._maps import plot_map_sections
@@ -49,6 +50,7 @@ __all__ = [
     "plot_map_sections",
     "plot_hist",
     "plot_heatmap",
+    "plot_grouped_heatmap",
     "plot_timeseries",
     "plot_boxplot",
     "plot_bar",

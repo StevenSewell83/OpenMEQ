@@ -138,9 +138,11 @@ def test_expected_files_created(tmp_path):
     )
 
     _png_ok(out_dir / "availability_heatmap.png")
+    # rms is gain-dependent: monthly (group-relative) only, no daily plot.
+    assert not (out_dir / "daily_rms.png").exists()
+    _png_ok(out_dir / "daily_spike_count.png")
     for stat in DAILY_STATS:
-        _png_ok(out_dir / f"daily_{stat}.png")
-        _png_ok(out_dir / f"monthly_{stat}_boxplot.png")
+        _png_ok(out_dir / f"monthly_{stat}.png")
     _png_ok(out_dir / "flag_overview.png")
 
     summary_path = out_dir / "summary.csv"
@@ -157,10 +159,12 @@ def test_expected_files_created_with_default_stats(tmp_path):
     # daily_stats_df has 6 stat columns (rms, mean_abs, spike_count,
     # kurtosis, flat_count, clip_count); monthly_df only has the 2 in
     # DAILY_STATS -- both should be picked up automatically.
-    for stat in ["rms", "mean_abs", "spike_count", "kurtosis", "flat_count", "clip_count"]:
+    for stat in ["spike_count", "kurtosis", "flat_count", "clip_count"]:
         _png_ok(out_dir / f"daily_{stat}.png")
+    for stat in ["rms", "mean_abs"]:
+        assert not (out_dir / f"daily_{stat}.png").exists()
     for stat in DAILY_STATS:
-        _png_ok(out_dir / f"monthly_{stat}_boxplot.png")
+        _png_ok(out_dir / f"monthly_{stat}.png")
     _png_ok(out_dir / "availability_heatmap.png")
     _png_ok(out_dir / "flag_overview.png")
 
@@ -251,8 +255,7 @@ def test_tolerates_missing_stat_column(tmp_path):
     make_qc_diagnostics(
         _availability_df(), daily_df, _monthly_df(), _flags(), out_dir, stats=DAILY_STATS
     )
-    _png_ok(out_dir / "daily_rms.png")
-    _png_ok(out_dir / "daily_spike_count.png")  # placeholder, still written
+    assert not (out_dir / "daily_spike_count.png").exists()  # skipped, logged
 
 
 def test_tolerates_extra_stat_column(tmp_path):
@@ -270,8 +273,8 @@ def test_tolerates_missing_monthly_stat(tmp_path):
     make_qc_diagnostics(
         _availability_df(), _daily_stats_df(), monthly_df, _flags(), out_dir, stats=DAILY_STATS
     )
-    _png_ok(out_dir / "monthly_rms_boxplot.png")
-    _png_ok(out_dir / "monthly_spike_count_boxplot.png")  # placeholder, still written
+    _png_ok(out_dir / "monthly_rms.png")
+    assert not (out_dir / "monthly_spike_count.png").exists()  # skipped, logged
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +317,7 @@ def test_single_station(tmp_path):
     flags = {seed_id: {d: {"ok": True, "reasons": []} for d in DATES}}
     make_qc_diagnostics(avail, daily, monthly, flags, out_dir, stats=["rms"])
     _png_ok(out_dir / "availability_heatmap.png")
-    _png_ok(out_dir / "daily_rms.png")
-    _png_ok(out_dir / "monthly_rms_boxplot.png")
+    _png_ok(out_dir / "monthly_rms.png")
     _png_ok(out_dir / "flag_overview.png")
 
 
@@ -326,11 +328,10 @@ def test_empty_inputs(tmp_path):
     empty_monthly = pd.DataFrame(
         columns=["seed_id", "month", "stat", "value", "network_median", "ratio", "rank"]
     )
-    make_qc_diagnostics(empty_avail, empty_daily, empty_monthly, {}, out_dir, stats=["rms"])
-    _png_ok(out_dir / "availability_heatmap.png")
-    _png_ok(out_dir / "daily_rms.png")
-    _png_ok(out_dir / "monthly_rms_boxplot.png")
-    _png_ok(out_dir / "flag_overview.png")
+    written = make_qc_diagnostics(
+        empty_avail, empty_daily, empty_monthly, {}, out_dir, stats=["rms"]
+    )
+    assert written == []  # nothing to draw; summary.csv is still written
     df = pd.read_csv(out_dir / "summary.csv")
     assert len(df) == 0
     assert list(df.columns) == SUMMARY_COLUMNS
@@ -365,9 +366,102 @@ def test_integration_reads_hand_built_csvs_and_json(tmp_path):
     )
 
     _png_ok(out_dir / "availability_heatmap.png")
+    _png_ok(out_dir / "daily_spike_count.png")
     for stat in DAILY_STATS:
-        _png_ok(out_dir / f"daily_{stat}.png")
-        _png_ok(out_dir / f"monthly_{stat}_boxplot.png")
+        _png_ok(out_dir / f"monthly_{stat}.png")
     _png_ok(out_dir / "flag_overview.png")
     summary_df = pd.read_csv(out_dir / "summary.csv")
     assert set(summary_df["seed_id"]) == set(SEED_IDS)
+
+
+# ---------------------------------------------------------------------------
+# Instrument groups, labels and flag categories (OpenMEQ-gyb)
+# ---------------------------------------------------------------------------
+
+
+def _grouped_instruments() -> pd.DataFrame:
+    # S01/S02 share a group with 4x different sensitivities; S03 is alone.
+    return pd.DataFrame(
+        {
+            "seed_id": SEED_IDS,
+            "group": ["GS-11D", "GS-11D", "L4C"],
+            "sensitivity": [1.0, 4.0, 1.0],
+        }
+    )
+
+
+def test_row_table_labels_and_group_order():
+    from openmeq.qc.plots import _row_table
+
+    rows = _row_table(SEED_IDS, _grouped_instruments())
+    assert list(rows["group"]) == ["GS-11D", "GS-11D", "L4C"]  # largest group first
+    assert list(rows["label"]) == ["S01.HHZ", "S02.HHZ", "S03.HHZ"]
+    # Without instruments everything is one group.
+    assert set(_row_table(SEED_IDS, None)["group"]) == {"all"}
+    # Several location codes at one station -> STA.LOC.CHA labels.
+    two_locs = _row_table(["XX.S01.00.HHZ", "XX.S01.10.HHZ"], None)
+    assert list(two_locs["label"]) == ["S01.00.HHZ", "S01.10.HHZ"]
+
+
+def test_gain_dependent_monthly_ratio_is_group_relative_and_sensitivity_corrected():
+    from openmeq.qc.plots import _monthly_ratios, _row_table
+
+    rows = _row_table(SEED_IDS, _grouped_instruments())
+    monthly = pd.DataFrame(
+        {
+            "seed_id": SEED_IDS * 2,
+            "month": ["2025-01"] * 3 + ["2025-02"] * 3,
+            "stat": "rms",
+            # S02 reads 4x S01 in counts but has 4x the sensitivity: same ground motion.
+            "value": [1.0, 4.0, 50.0, 1.0, 4.0, 150.0],
+            "network_median": 4.0,
+            "ratio": 1.0,
+            "rank": 1,
+        }
+    )
+    ratio, own = _monthly_ratios(monthly, "rms", rows)
+    assert ratio.loc["XX.S01..HHZ"].tolist() == pytest.approx([1.0, 1.0])
+    assert ratio.loc["XX.S02..HHZ"].tolist() == pytest.approx([1.0, 1.0])
+    # Single-station group: against its own median over the run (100).
+    assert own == {"XX.S03..HHZ"}
+    assert ratio.loc["XX.S03..HHZ"].tolist() == pytest.approx([0.5, 1.5])
+
+
+def test_flag_category_priority():
+    from openmeq.qc.plots import FLAG_CATEGORIES, _flag_category
+
+    value = {label: v for v, _c, label, _p in FLAG_CATEGORIES}
+    assert _flag_category({"ok": True, "reasons": []}) == value["ok"]
+    assert (
+        _flag_category({"ok": False, "reasons": ["network_outlier", "spikes"]}) == value["spikes"]
+    )
+    assert (
+        _flag_category({"ok": False, "reasons": ["spikes", "availability<80"]})
+        == value["low availability"]
+    )
+    assert _flag_category({"ok": False, "reasons": ["something_new"]}) == value["other"]
+
+
+def test_grouped_run_writes_expected_set(tmp_path):
+    out_dir = tmp_path / "diag"
+    written = make_qc_diagnostics(
+        _availability_df(),
+        _daily_stats_df(),
+        _monthly_df(),
+        _flags(),
+        out_dir,
+        stats=["rms", "spike_count", "kurtosis"],
+        instruments=_grouped_instruments(),
+        title="proj",
+    )
+    names = sorted(p.name for p in written)
+    assert names == [
+        "availability_heatmap.png",
+        "daily_kurtosis.png",
+        "daily_spike_count.png",
+        "flag_overview.png",
+        "monthly_rms.png",
+        "monthly_spike_count.png",
+    ]
+    for p in written:
+        _png_ok(p)

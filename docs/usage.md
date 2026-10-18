@@ -156,9 +156,23 @@ file/folder and/or CSV).
   you to review: no later step drops data because of it. To keep a channel
   out of processing, list it in `qc.exclude_channels`.
 
-**Diagnostics** (`1_qc/diagnostics/`): an availability heatmap, daily RMS/mean-
-abs/spike-count/kurtosis time series per channel, monthly box plots and
-rankings per statistic, and a flag overview plot. `qc.plot_exclude_stations`
+**Diagnostics** (`1_qc/diagnostics/`): heatmaps with one labelled row per
+channel (`STA.CHA`), grouped by instrument type (the StationXML sensor model,
+or `qc.instrument_groups`) with the group name beside each block:
+
+- `availability_heatmap.png`: % coverage per channel-day.
+- `daily_spike_count.png` (as spike fraction) and `daily_kurtosis.png`:
+  these don't depend on gain, so all instruments share one scale.
+- `monthly_<stat>.png`: each channel's monthly value as a ratio to the median
+  (log colour scale centred on 1×, value in each cell). For `rms`/`mean_abs`
+  the values are divided by sensitivity and compared only within the
+  channel's instrument group; a group with one station (marked `*`) is
+  compared with its own median over the run. Daily RMS isn't plotted here:
+  the noise heatmaps below show it per instrument group.
+- `flag_overview.png`: each channel-day coloured by its highest-priority flag
+  reason (low availability, flat, clipped, spikes, network outlier) or ok.
+
+`qc.plot_exclude_stations`
 leaves stations out of every QC plot (the tables keep them), and
 `openmeq diagnostics qc -c config.yaml` redraws all of `1_qc/diagnostics/`
 from the existing tables without re-reading any waveforms.

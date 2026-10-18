@@ -147,6 +147,31 @@ def _unit_label(sub: pd.DataFrame) -> str:
     return units[0] if len(units) == 1 else " / ".join(sorted(units))
 
 
+def _date_axis(ax) -> None:
+    """Concise date ticks, with just the year as the axis offset (the default
+    offset names the last month, e.g. "2026-Mar", which reads as a label)."""
+    locator = ax.xaxis.get_major_locator()
+    ax.xaxis.set_major_formatter(
+        mdates.ConciseDateFormatter(
+            locator, offset_formats=["", "%Y", "%Y", "%Y", "%Y", "%Y-%b-%d"]
+        )
+    )
+
+
+def _spread_labels(ys: list[float], min_gap: float) -> list[float]:
+    """Label y positions nudged apart by at least ``min_gap``, keeping order
+    and staying as close to the originals as possible (centred on them)."""
+    order = np.argsort(ys)
+    placed = np.asarray(ys, dtype=float)[order]
+    for i in range(1, len(placed)):
+        placed[i] = max(placed[i], placed[i - 1] + min_gap)
+    # Shift the whole stack back so it is centred on the original positions.
+    placed -= (placed - np.asarray(ys, dtype=float)[order]).mean()
+    out = np.empty_like(placed)
+    out[order] = placed
+    return out.tolist()
+
+
 def _heatmap_panel(ax, fig, mat, dates, labels, *, cmap, label, title, norm=None, vrange=None):
     ax.set_facecolor(_MISSING_GREY)
     ax.grid(False)  # the shared style's grid would draw over the grey missing cells
@@ -159,7 +184,7 @@ def _heatmap_panel(ax, fig, mat, dates, labels, *, cmap, label, title, norm=None
     ax.set_yticks(np.arange(len(labels)), labels=labels, fontsize=8)
     ax.set_ylim(len(labels) - 0.5, -0.5)
     ax.set_title(title, loc="left", fontsize=11)
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+    _date_axis(ax)
 
 
 def _plot_group_heatmap(sub, seed_ids, label_of, dates, group, title, out_path, noise_cfg) -> None:
@@ -235,9 +260,7 @@ def _plot_group_strips(sub, seed_ids, label_of, dates, group, title, out_path, n
             ax = axes[row, col]
             if ax.get_visible():
                 ax.tick_params(labelbottom=True)
-                ax.xaxis.set_major_formatter(
-                    mdates.ConciseDateFormatter(ax.xaxis.get_major_locator())
-                )
+                _date_axis(ax)
                 break
     band = f"{noise_cfg.core_band[0]:g}–{noise_cfg.core_band[1]:g} Hz"
     fig.suptitle(
@@ -259,24 +282,30 @@ def _plot_group_overlay(sub, seed_ids, label_of, dates, group, title, out_path, 
         last = d.dropna()
         if len(last):
             ends.append((last.index[-1], float(last.iloc[-1]), label_of[seed_id], colour))
-    for x, y, text, colour in ends:
-        ax.plot([x], [y], "o", color=colour, ms=4)
-        ax.annotate(
-            text,
-            (x, y),
-            xytext=(6, 0),
-            textcoords="offset points",
-            fontsize=8,
-            va="center",
-            color=colour,
-        )
     yrange = _robust_range(sub["rms_db_median"].to_numpy(dtype=float), 0.5, 99.5)
     if yrange:
         ax.set_ylim(yrange[0] - 3, yrange[1] + 3)
+    if ends:
+        lo, hi = ax.get_ylim()
+        label_ys = _spread_labels([e[1] for e in ends], 0.028 * (hi - lo))
+        dx = (dates[-1] - dates[0]) * 0.008 if len(dates) > 1 else pd.Timedelta(days=1)
+        for (x, y, text, colour), ly in zip(ends, label_ys, strict=True):
+            ax.plot([x], [y], "o", color=colour, ms=4)
+            ax.annotate(
+                text,
+                (x, y),
+                xytext=(x + dx, ly),
+                textcoords="data",
+                fontsize=8,
+                va="center",
+                color=colour,
+                arrowprops={"arrowstyle": "-", "color": colour, "lw": 0.5, "alpha": 0.6},
+                annotation_clip=False,
+            )
     band = f"{noise_cfg.core_band[0]:g}–{noise_cfg.core_band[1]:g} Hz"
     ax.set_ylabel(f"median hourly RMS {band} ({_unit_label(sub)})")
     ax.grid(alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+    _date_axis(ax)
     if len(seed_ids) > 1:
         ax.legend(
             loc="upper center",
