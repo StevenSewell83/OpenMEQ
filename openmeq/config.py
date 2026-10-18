@@ -213,6 +213,13 @@ class QcConfig(_StrictModel):
     # the noise plots. Overrides the sensor model read from StationXML; any
     # station not listed keeps its StationXML group.
     instrument_groups: dict[str, list[str]] = Field(default_factory=dict)
+    # OpenMEQ-v3i: stations ("STA" or "NET.STA") left out of the
+    # 1_qc/diagnostics/ plots only; the QC tables still include them. The
+    # plots' monthly network comparison and flags are recomputed without
+    # them. exclude=True keeps it out of model_dump, so the qc step's
+    # skip-unchanged fingerprint ignores it (re-plot with `openmeq
+    # diagnostics qc` instead of recomputing QC).
+    plot_exclude_stations: list[str] = Field(default_factory=list, exclude=True)
 
 
 # ---------------------------------------------------------------------------

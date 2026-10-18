@@ -17,6 +17,23 @@
 # Units: distances are km in the location/hypoDD sections and metres for
 # station elevation/depth in metadata (ARCHITECTURE.md §1). Times are UTC.
 
+# To run the pipeline:
+# openmeq qc -c config.yaml           # 1
+# openmeq detect -c config.yaml       # 2
+# openmeq chunk -c config.yaml        # 3
+# openmeq pick -c config.yaml         # 4
+# openmeq locate -c config.yaml       # 5
+# openmeq review -c config.yaml       # 6 (interactive; --compile only rebuilds the catalogue)
+# openmeq magnitude -c config.yaml    # 7
+# openmeq relocate -c config.yaml     # 8
+
+# Each one accepts --force.
+
+# To run a range of stages:
+# openmeq run -c config.yaml                          # all stages
+# openmeq run -c config.yaml --from pick --to locate  # only stages 4-5
+# openmeq run -c config.yaml --from locate --skip-review
+
 project:
   name: my_survey
   output_dir: ./runs/my_survey          # everything this run produces lands under here
@@ -56,7 +73,7 @@ qc:
   # and ARCHITECTURE.md §3 for the full definition and docs/performance.md for the benchmark.
   spike_threshold_mad: 10               # a sample is a spike if |r| > this * MAD(r)
   spike_median_window: 7                # running-median window (samples, odd) the residual is taken against
-  min_availability_pct: 80              # a channel/day below this coverage is flagged not-ok
+  min_availability_pct: 50              # a channel/day below this coverage is flagged not-ok
   exclude_channels: []                  # seed_ids to leave out of detection (and flag not-ok), e.g. ["XX.STA01..HHZ"]
   # --- M1.4 / OpenMEQ-5nl.4: daily noise-statistics run-length thresholds ---
   flat_run_min_samples: 50              # >= this many identical consecutive samples counts as "flat"
@@ -81,6 +98,8 @@ qc:
     dead_rms_counts: 0.5                # core-band RMS (counts) below this = dead/flatlined window
   instrument_groups: {}                 # {group: [STA | NET.STA | seed_id]} overrides the
                                          # StationXML sensor model, e.g. {"GS-11D": ["RT05"]}
+  plot_exclude_stations: []             # [STA | NET.STA] left out of 1_qc/diagnostics plots only
+                                         # (tables keep them); apply with `openmeq diagnostics qc`
 
 detection:
   sta: 0.05                             # STA/LTA short-term average window, s

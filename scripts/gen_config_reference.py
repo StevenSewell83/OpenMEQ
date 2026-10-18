@@ -150,6 +150,10 @@ MEANINGS: dict[str, str] = {
     "dead/flatlined hardware.",
     "qc.instrument_groups": "Instrument group -> stations (`STA`, `NET.STA` or seed id) for the "
     "per-instrument noise plots; overrides the StationXML sensor model for the stations listed.",
+    "qc.plot_exclude_stations": "Stations (`STA` or `NET.STA`) left out of the `1_qc/diagnostics/` "
+    "plots and `summary.csv` only; the QC tables keep them. The plots' monthly network comparison "
+    "and flags are recomputed without them. Not part of the qc step's skip-unchanged check: apply "
+    "a change with `openmeq diagnostics qc` (redraws from the existing tables).",
     # --- detection ---
     "detection.sta": "STA/LTA short-term-average window (seconds).",
     "detection.lta": "STA/LTA long-term-average window (seconds).",

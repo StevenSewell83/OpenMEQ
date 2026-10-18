@@ -200,3 +200,45 @@ def test_qc_command_force_reruns(qc_first_run):
     mtimes_after = {path: path.stat().st_mtime_ns for path in watched}
     changed = [path for path in watched if mtimes_after[path] == mtimes_before[path]]
     assert not changed, f"--force did not rewrite: {changed}"
+
+
+def test_diagnostics_qc_plot_exclude_stations(qc_first_run):
+    """``qc.plot_exclude_stations`` + ``openmeq diagnostics qc`` (OpenMEQ-v3i):
+    the station leaves the plots, the QC tables are untouched, and the qc step
+    still skips (the option isn't part of its fingerprint).
+    """
+    import pandas as pd
+    import yaml
+
+    result, config_path, output_dir, _truth, _elapsed = qc_first_run
+    assert result.exit_code == 0, result.output
+    qc_dir = output_dir / "1_qc"
+    summary = qc_dir / "diagnostics" / "summary.csv"
+    seed_ids = sorted(pd.read_csv(summary)["seed_id"])
+    station = seed_ids[0].split(".")[1]
+
+    raw = yaml.safe_load(config_path.read_text())
+    raw.setdefault("qc", {})["plot_exclude_stations"] = [station]
+    excl_config = config_path.with_name("config_plot_exclude.yaml")
+    # sort_keys=False: dict order (e.g. stations.channel_map) is part of the qc fingerprint.
+    excl_config.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    tables = [qc_dir / n for n in ("availability.csv", "daily_stats.csv", "channel_flags.json")]
+    before = {p: p.read_bytes() for p in tables}
+
+    runner = CliRunner()
+    replot = runner.invoke(main, ["diagnostics", "qc", "-c", str(excl_config)])
+    assert replot.exit_code == 0, replot.output
+    after_ids = set(pd.read_csv(summary)["seed_id"])
+    assert after_ids == {s for s in seed_ids if s.split(".")[1] != station}
+    assert {p: p.read_bytes() for p in tables} == before
+
+    mtimes = {p: p.stat().st_mtime_ns for p in tables}
+    rerun = runner.invoke(main, ["qc", "-c", str(excl_config)])
+    assert rerun.exit_code == 0, rerun.output
+    assert {p: p.stat().st_mtime_ns for p in tables} == mtimes, "qc recomputed"
+
+    # Without the option, a replot from the tables restores every channel.
+    restore = runner.invoke(main, ["diagnostics", "qc", "-c", str(config_path)])
+    assert restore.exit_code == 0, restore.output
+    assert sorted(pd.read_csv(summary)["seed_id"]) == seed_ids

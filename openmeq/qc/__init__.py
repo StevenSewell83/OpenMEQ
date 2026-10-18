@@ -30,6 +30,16 @@ stage's outputs, per the design note in this task's beads issue)
 6. Render QC diagnostic plots (``openmeq.qc.plots``) -> ``qc/
    diagnostics/``.
 
+Plot-only station exclusion (``cfg.qc.plot_exclude_stations``, OpenMEQ-v3i)
+----------------------------------------------------------------------------
+Stations listed there (``STA`` or ``NET.STA``) are dropped from every
+``qc/diagnostics/`` figure and ``summary.csv``; the tables in ``qc/`` keep
+them. Because the monthly comparison is against the network median, the
+plots' monthly stats and flags are recomputed without those stations. The
+option is left out of this step's fingerprint (it's ``exclude=True`` in the
+config model), so changing it never recomputes QC: :func:`replot` (``openmeq
+diagnostics qc``) redraws the figures from the existing ``qc/`` tables.
+
 Skip-unchanged (whole-step manifest)
 -------------------------------------
 A single ``openmeq.manifest.StepManifest`` entry covers the *whole* qc step
@@ -55,10 +65,12 @@ rather than silently treating a partial output set as complete.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
 from obspy import UTCDateTime
 
 from openmeq.index import build_index
@@ -93,11 +105,80 @@ if TYPE_CHECKING:
 logger = get_logger("qc")
 
 
-def _noise_diagnostics(cfg: Config, paths: RunPaths, inv, seed_ids, daily_stats_df) -> None:
-    """Per-instrument noise table and figures (OpenMEQ-h8j).
+def _station_excluded(seed_ids: pd.Series, exclude: list[str]) -> pd.Series:
+    """Mask of ``seed_ids`` whose ``STA`` or ``NET.STA`` is in ``exclude``."""
+    parts = seed_ids.astype(str).str.split(".")
+    sta = parts.str[1]
+    net_sta = parts.str[0] + "." + sta
+    return sta.isin(exclude) | net_sta.isin(exclude)
 
-    A failure here is logged, never raised: these figures are a report and
-    must not stop QC's own outputs (already written) from being marked done.
+
+def _drop_plot_stations(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+    """``df`` without ``cfg.qc.plot_exclude_stations``' rows (module docstring)."""
+    exclude = cfg.qc.plot_exclude_stations
+    if not exclude or df.empty:
+        return df
+    return df[~_station_excluded(df["seed_id"], exclude)].reset_index(drop=True)
+
+
+def _make_plots(
+    cfg: Config,
+    paths: RunPaths,
+    availability_df: pd.DataFrame,
+    daily_stats_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    flags: dict,
+    noise_df: pd.DataFrame | None,
+) -> None:
+    """Render ``qc/diagnostics/`` (and ``noise/``), honouring ``plot_exclude_stations``."""
+    if cfg.qc.plot_exclude_stations:
+        n_before = availability_df["seed_id"].nunique()
+        availability_df = _drop_plot_stations(availability_df, cfg)
+        daily_stats_df = _drop_plot_stations(daily_stats_df, cfg)
+        monthly_df = compute_monthly_stats(daily_stats_df, cfg)
+        flags = compute_channel_flags(availability_df, daily_stats_df, monthly_df, cfg)
+        logger.info(
+            "qc: plots exclude stations %s (%d of %d channel(s) dropped)",
+            cfg.qc.plot_exclude_stations,
+            n_before - availability_df["seed_id"].nunique(),
+            n_before,
+        )
+    make_qc_diagnostics(
+        availability_df,
+        daily_stats_df,
+        monthly_df,
+        flags,
+        paths.qc_diagnostics_dir,
+        stats=cfg.qc.daily_stats,
+    )
+    if noise_df is None:
+        return
+    try:
+        noise_dir = paths.qc_noise_diagnostics_dir
+        written = make_noise_diagnostics(
+            _drop_plot_stations(noise_df, cfg),
+            noise_dir,
+            start=cfg.data.start,
+            end=cfg.data.end,
+            noise_cfg=cfg.qc.noise,
+            title=cfg.project.name,
+        )
+        # A group with no stations left (e.g. all excluded) writes nothing:
+        # remove its figures from an earlier run rather than leave them stale.
+        keep = {Path(w).name for w in written}
+        for old in noise_dir.glob("*.png"):
+            if old.name not in keep:
+                old.unlink()
+    except Exception:  # noqa: BLE001 - report figures must never fail the step
+        logger.exception("qc: noise diagnostics failed (QC outputs are unaffected)")
+
+
+def _noise_table(cfg: Config, paths: RunPaths, inv, seed_ids, daily_stats_df):
+    """Per-instrument noise table (OpenMEQ-h8j), written to ``noise_daily.csv``.
+
+    A failure here is logged, never raised (returns ``None``): the noise
+    figures are a report and must not stop QC's own outputs (already
+    written) from being marked done.
     """
     try:
         mid = cfg.data.start + (cfg.data.end - cfg.data.start) / 2
@@ -106,16 +187,45 @@ def _noise_diagnostics(cfg: Config, paths: RunPaths, inv, seed_ids, daily_stats_
         )
         noise_df = noise_table(daily_stats_df, instruments)
         write_noise_daily_csv(noise_df, paths.noise_daily_csv)
-        make_noise_diagnostics(
-            noise_df,
-            paths.qc_noise_diagnostics_dir,
-            start=cfg.data.start,
-            end=cfg.data.end,
-            noise_cfg=cfg.qc.noise,
-            title=cfg.project.name,
-        )
+        return noise_df
     except Exception:  # noqa: BLE001 - report figures must never fail the step
-        logger.exception("qc: noise diagnostics failed (QC outputs are unaffected)")
+        logger.exception("qc: noise table failed (QC outputs are unaffected)")
+        return None
+
+
+def replot(cfg: Config, paths: RunPaths) -> None:
+    """Redraw ``qc/diagnostics/`` from an existing run's ``qc/`` tables.
+
+    ``openmeq diagnostics qc``: no waveforms are read and no table is
+    rewritten, so a plot-only change (``cfg.qc.plot_exclude_stations``,
+    ``daily_stats``) takes effect without recomputing QC.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a required ``qc/`` table is missing (run ``openmeq qc`` first).
+    """
+    required = [
+        paths.availability_csv,
+        paths.daily_stats_csv,
+        paths.monthly_stats_csv,
+        paths.channel_flags_json,
+    ]
+    missing = [str(p) for p in required if not Path(p).is_file()]
+    if missing:
+        raise FileNotFoundError(f"QC table(s) missing, run `openmeq qc` first: {missing}")
+
+    def read(path):
+        return pd.read_csv(path, dtype={"seed_id": str, "date": str, "month": str})
+
+    availability_df = read(paths.availability_csv)
+    daily_stats_df = read(paths.daily_stats_csv)
+    monthly_df = read(paths.monthly_stats_csv)
+    with open(paths.channel_flags_json, encoding="utf-8") as f:
+        flags = json.load(f)["flags"]
+    noise_df = read(paths.noise_daily_csv) if Path(paths.noise_daily_csv).is_file() else None
+    _make_plots(cfg, paths, availability_df, daily_stats_df, monthly_df, flags, noise_df)
+    logger.info("qc: diagnostics redrawn in %s", paths.qc_diagnostics_dir)
 
 
 #: Step key StepManifest is keyed on (ARCHITECTURE.md §2/§3's whole-step
@@ -210,15 +320,8 @@ def run(cfg: Config, paths: RunPaths, *, force: bool = False, **_opts: object) -
     write_channel_flags(flags, paths.channel_flags_json)
 
     # 6. Diagnostics (M1.6).
-    make_qc_diagnostics(
-        availability_df,
-        daily_stats_df,
-        monthly_df,
-        flags,
-        paths.qc_diagnostics_dir,
-        stats=cfg.qc.daily_stats,
-    )
-    _noise_diagnostics(cfg, paths, inv, seed_ids, daily_stats_df)
+    noise_df = _noise_table(cfg, paths, inv, seed_ids, daily_stats_df)
+    _make_plots(cfg, paths, availability_df, daily_stats_df, monthly_df, flags, noise_df)
 
     manifest.mark_done(_MANIFEST_KEY, input_fp)
 

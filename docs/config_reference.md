@@ -66,6 +66,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `qc.noise.min_window_frac` | float | `0.5` | A noise window counts only if at least this fraction of its samples is present. |
 | `qc.noise.dead_rms_counts` | float | `0.5` | A noise window whose core-band RMS (counts) is below this is dead/flatlined hardware. |
 | `qc.instrument_groups` | dict[str, list[str]] | `{}` | Instrument group -> stations (`STA`, `NET.STA` or seed id) for the per-instrument noise plots; overrides the StationXML sensor model for the stations listed. |
+| `qc.plot_exclude_stations` | list[str] | `[]` | Stations (`STA` or `NET.STA`) left out of the `1_qc/diagnostics/` plots and `summary.csv` only; the QC tables keep them. The plots' monthly network comparison and flags are recomputed without them. Not part of the qc step's skip-unchanged check: apply a change with `openmeq diagnostics qc` (redraws from the existing tables). |
 
 ## `detection` -- STA/LTA network detection (`openmeq detect`)
 

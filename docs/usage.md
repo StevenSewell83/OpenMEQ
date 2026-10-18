@@ -158,7 +158,10 @@ file/folder and/or CSV).
 
 **Diagnostics** (`1_qc/diagnostics/`): an availability heatmap, daily RMS/mean-
 abs/spike-count/kurtosis time series per channel, monthly box plots and
-rankings per statistic, and a flag overview plot.
+rankings per statistic, and a flag overview plot. `qc.plot_exclude_stations`
+leaves stations out of every QC plot (the tables keep them), and
+`openmeq diagnostics qc -c config.yaml` redraws all of `1_qc/diagnostics/`
+from the existing tables without re-reading any waveforms.
 
 **Noise by instrument** (`1_qc/diagnostics/noise/`, data in
 `1_qc/noise_daily.csv`): the MicroQuake `noise_daily` figures. Each channel-day

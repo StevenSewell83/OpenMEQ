@@ -118,6 +118,12 @@ QC flags are **informational**: they never remove data from detection. Only
 - **`instrument_groups`**: override the instrument group (taken from the
   StationXML sensor model) for the per-instrument noise plots. Needed only
   when the StationXML sensor model is wrong or missing.
+- **`plot_exclude_stations`**: stations (`STA` or `NET.STA`) to leave out of
+  the QC plots, e.g. stations with known-bad metadata that would otherwise
+  dominate the colour scales and the network medians. The QC tables (and so
+  detection's channel flags) still include them. Changing it does not rerun
+  QC; run `openmeq diagnostics qc -c config.yaml` to redraw the plots.
+  RK-NM 2026 Q1: `[NS12, NS13, NS14]`.
 
 ## `detection`
 

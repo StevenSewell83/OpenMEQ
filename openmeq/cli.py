@@ -696,6 +696,26 @@ def diagnostics_funnel(config_path: str) -> None:
     click.echo(f"wrote {png} and {png.with_suffix('.csv')}")
 
 
+@diagnostics.command("qc")
+@_CONFIG_OPTION
+def diagnostics_qc(config_path: str) -> None:
+    """Redraw 1_qc/diagnostics/ from an existing run's QC tables.
+
+    No waveforms are read and no table is rewritten, so plot-only settings
+    (``qc.plot_exclude_stations``, ``qc.daily_stats``) apply without
+    recomputing QC.
+    """
+    from openmeq.qc import replot
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    configure_logging(paths, "qc")
+    try:
+        replot(cfg, paths)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"wrote {paths.qc_diagnostics_dir}/")
+
+
 @diagnostics.command("xcorr")
 @_CONFIG_OPTION
 @click.option(
