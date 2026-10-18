@@ -52,7 +52,7 @@ so this module relies on the vendored PhaseNet's ``read_mseed``
 ``trace.id[:-1]`` values, sorted) -- **and verifies it per event**: the
 column count must equal that sorted key count, and every catalogue pick
 must read back its own ``probability`` (within
-:data:`_PROB_CHECK_TOLERANCE`) from its mapped column at its sample index.
+:data:`openmeq.pick.probability.PROB_CHECK_TOLERANCE`) from its mapped column at its sample index.
 Any mismatch disables the probability overlay for that event (logged)
 rather than risk drawing another station's trace.
 """
@@ -69,7 +69,8 @@ from obspy import Stream, UTCDateTime, read
 from openmeq.catalog import event_id as get_event_id
 from openmeq.catalog import get_extra
 from openmeq.log import get_logger
-from openmeq.pick.diagnostics import _read_result_h5_probs, _sample_events
+from openmeq.pick.diagnostics import _sample_events
+from openmeq.pick.probability import read_result_h5_probs, result_h5_key, station_columns
 from openmeq.plotting import save_fig, setup_style
 
 if TYPE_CHECKING:
@@ -88,11 +89,6 @@ EXTENDED_SUBDIR = "extended"
 #: Lowest probability-trace peak drawn as a below-threshold rejected
 #: candidate (``show_rejected``); smaller wiggles are noise, not candidates.
 REJECTED_PEAK_FLOOR = 0.1
-
-#: Max allowed ``|result.h5 value - pick probability|`` at a pick's own
-#: sample when verifying the station-column mapping (module docstring);
-#: ``picks.csv`` rounds ``phase_score`` to 3 decimals.
-_PROB_CHECK_TOLERANCE = 0.05
 
 _P_COLOR = "#0072B2"
 _S_COLOR = "#D55E00"
@@ -115,36 +111,11 @@ def _prob_columns(
     stream: Stream, prob: np.ndarray | None, event: Event, begin: UTCDateTime, sr: float
 ) -> dict[str, int]:
     """``{station_key: result.h5 column}``, or ``{}`` if unverifiable (module docstring)."""
-    if prob is None or prob.ndim != 3 or prob.shape[2] < 3:
-        return {}
-    keys = sorted({tr.id[:-1] for tr in stream})
-    if len(keys) != prob.shape[1]:
-        logger.warning(
-            "result.h5 has %d station column(s) but chunks_pn has %d station(s) -- "
-            "no probability overlay",
-            prob.shape[1],
-            len(keys),
-        )
-        return {}
-    cols = {key: i for i, key in enumerate(keys)}
-    for pick in event.picks:
-        p = get_extra(pick, "probability")
-        key = _station_key(pick)
-        idx = int(round((pick.time - begin) * sr))
-        if p is None or key not in cols or not 0 <= idx < prob.shape[0]:
-            continue
-        ch = 1 if pick.phase_hint == "P" else 2
-        if abs(float(prob[idx, cols[key], ch]) - float(p)) > _PROB_CHECK_TOLERANCE:
-            logger.warning(
-                "result.h5 column for %s does not reproduce its %s pick probability "
-                "(%.3f vs %.3f) -- no probability overlay for this event",
-                key,
-                pick.phase_hint,
-                float(prob[idx, cols[key], ch]),
-                float(p),
-            )
-            return {}
-    return cols
+    checks = [
+        (_station_key(pick), pick.phase_hint, pick.time, get_extra(pick, "probability"))
+        for pick in event.picks
+    ]
+    return station_columns(stream, prob, checks, begin, sr)
 
 
 def _panel_traces(stream: Stream, station_key: str, phase: str) -> list:
@@ -363,7 +334,7 @@ def _make_pick_zoom_plots(
             stream = read(str(chunk_path))
             prob = None
             if has_result_h5:
-                prob = _read_result_h5_probs(result_h5_path, f"{event_id}/{event_id}.mseed")
+                prob = read_result_h5_probs(result_h5_path, result_h5_key(event_id))
             fig = _build_pick_zoom_figure(event, event_id, stream, prob, cfg, rejected)
             save_fig(fig, out_dir / f"pick_zoom_{event_id}.png")
         except Exception as exc:  # noqa: BLE001 - extended QAQC must never fail the step

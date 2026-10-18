@@ -124,7 +124,13 @@ phasenet:
   pick_window_s: [-5.0, 15.0]           # keep picks within [before, after] s of the detection
                                          # trigger (null = whole chunk); PhaseNet fires on the
                                          # chunk start, and those artefacts can out-score real picks
-  pick_uncertainty_s: 0.1               # PhaseNet emits no timing uncertainty; used for Pick.time_errors
+  # --- OpenMEQ-9kn ---
+  pick_uncertainty_method: peak_width   # peak_width: half-width of the pick's PhaseNet probability
+                                         # peak (result.h5); fixed: pick_uncertainty_s for every pick
+  pick_uncertainty_s: 0.1               # fixed value; also the peak_width fallback
+  pick_uncertainty_peak_frac: 0.5       # width measured at this fraction of the peak (0.5 = FWHM)
+  pick_uncertainty_min_s: 0.02          # clamp peak_width uncertainties to [min, max] s
+  pick_uncertainty_max_s: 0.5
 
 nlloc:
   velocity_model:

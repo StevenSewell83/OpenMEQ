@@ -35,6 +35,7 @@ from openmeq.config import load_config
 from openmeq.index import build_index
 from openmeq.paths import RunPaths
 from openmeq.pick.prep import prepare_all
+from openmeq.pick.probability import result_h5_key
 from openmeq.pick.run_phasenet import PICKS_CSV_COLUMNS, run_phasenet
 from openmeq.pick.to_quakeml import (
     PHASENET_METHOD_ID,
@@ -207,6 +208,86 @@ def test_channel_attribution_and_dedup(hand_built_project):
 
 
 # ---------------------------------------------------------------------------
+# test_uncertainty_from_peak_width (OpenMEQ-9kn)
+# ---------------------------------------------------------------------------
+
+
+def _write_result_h5(paths: RunPaths, event_id: str, peaks: list[tuple[int, int, float, float]]):
+    """``result.h5`` for the hand-built chunk: Gaussian peaks of given widths.
+
+    ``peaks``: ``(station_column, phase_channel, time_s, sigma_s)``; columns
+    follow PhaseNet's sorted station order (``XX.ORNT.00.HH``, ``XX.UNOR.00.DP``).
+    """
+    import h5py
+
+    prob = np.zeros((_NPTS, 2, 3), dtype=np.float32)
+    t = np.arange(_NPTS) / _SR
+    for col, ch, time_s, sigma_s in peaks:
+        prob[:, col, ch] += 0.9 * np.exp(-0.5 * ((t - time_s) / sigma_s) ** 2)
+    out = paths.phasenet_raw_dir / "result.h5"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(out, "w") as f:
+        f.create_dataset(result_h5_key(event_id), data=prob)
+
+
+def test_uncertainty_from_peak_width(hand_built_project):
+    """Each pick's uncertainty is its own probability peak's half-width (clamped)."""
+    cfg, paths, event_id = hand_built_project
+    file_name = f"{event_id}/{event_id}.mseed"
+    _write_result_h5(
+        paths,
+        event_id,
+        [
+            (0, 1, 20.0, 0.05),  # ORNT P: sharp
+            (0, 2, 32.0, 0.2),  # ORNT S: broad
+            (1, 1, 21.0, 0.005),  # UNOR P: narrower than the floor
+            (1, 2, 33.0, 2.0),  # UNOR S: wider than the ceiling
+        ],
+    )
+    rows = [
+        _pick_row("XX.ORNT.00.HH", "P", _START + 20.0, 0.9, file_name),
+        _pick_row("XX.ORNT.00.HH", "S", _START + 32.0, 0.9, file_name),
+        _pick_row("XX.UNOR.00.DP", "P", _START + 21.0, 0.9, file_name),
+        _pick_row("XX.UNOR.00.DP", "S", _START + 33.0, 0.9, file_name),
+    ]
+    picks_csv = _write_picks_csv(paths, rows)
+
+    assert cfg.phasenet.pick_uncertainty_method == "peak_width"
+    catalog = build_catalog(picks_csv, paths, cfg)
+    by_key = {(p.waveform_id.station_code, p.phase_hint): p for p in catalog.events[0].picks}
+    k = np.sqrt(2 * np.log(2))
+    unc = {key: p.time_errors.uncertainty for key, p in by_key.items()}
+    assert unc[("ORNT", "P")] == pytest.approx(0.05 * k, rel=0.05)
+    assert unc[("ORNT", "S")] == pytest.approx(0.2 * k, rel=0.05)
+    assert unc[("UNOR", "P")] == pytest.approx(cfg.phasenet.pick_uncertainty_min_s)
+    assert unc[("UNOR", "S")] == pytest.approx(cfg.phasenet.pick_uncertainty_max_s)
+    for pick in by_key.values():
+        assert get_extra(pick, "uncertainty_method") == "peak_width"
+
+    # "fixed" ignores result.h5.
+    cfg.phasenet.pick_uncertainty_method = "fixed"
+    for pick in build_catalog(picks_csv, paths, cfg).events[0].picks:
+        assert pick.time_errors.uncertainty == pytest.approx(cfg.phasenet.pick_uncertainty_s)
+        assert get_extra(pick, "uncertainty_method") == "fixed"
+
+
+def test_uncertainty_falls_back_when_columns_unverified(hand_built_project):
+    """If result.h5 doesn't reproduce the pick probabilities, use the fixed value."""
+    cfg, paths, event_id = hand_built_project
+    file_name = f"{event_id}/{event_id}.mseed"
+    # Peaks swapped between station columns: the mapping check must reject it.
+    _write_result_h5(paths, event_id, [(1, 1, 20.0, 0.05), (0, 1, 21.0, 0.05)])
+    rows = [
+        _pick_row("XX.ORNT.00.HH", "P", _START + 20.0, 0.9, file_name),
+        _pick_row("XX.UNOR.00.DP", "P", _START + 21.0, 0.9, file_name),
+    ]
+    catalog = build_catalog(_write_picks_csv(paths, rows), paths, cfg)
+    for pick in catalog.events[0].picks:
+        assert pick.time_errors.uncertainty == pytest.approx(cfg.phasenet.pick_uncertainty_s)
+        assert get_extra(pick, "uncertainty_method") == "fixed"
+
+
+# ---------------------------------------------------------------------------
 # test_round_trip_and_missing_channel
 # ---------------------------------------------------------------------------
 
@@ -329,6 +410,11 @@ def test_build_catalog_real_phasenet(phasenet_world, tmp_path):
         for pick in event.picks:
             assert pick.phase_hint in ("P", "S")
             assert get_extra(pick, "probability") is not None
+            # Real result.h5 (layout + station columns) must drive the uncertainty.
+            assert get_extra(pick, "uncertainty_method") == "peak_width"
+            pn = cfg2.phasenet
+            assert pn.pick_uncertainty_min_s <= pick.time_errors.uncertainty
+            assert pick.time_errors.uncertainty <= pn.pick_uncertainty_max_s
 
     write_catalog_picks(catalog, paths2)
     assert paths2.catalog_picks_xml.is_file()

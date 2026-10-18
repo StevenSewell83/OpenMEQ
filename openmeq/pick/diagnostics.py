@@ -68,6 +68,7 @@ from obspy import Stream, read
 from openmeq.catalog import event_id as get_event_id
 from openmeq.catalog import get_extra
 from openmeq.log import get_logger
+from openmeq.pick.probability import read_result_h5_probs, result_h5_key
 from openmeq.plotting import plot_bar, plot_hist, save_fig, setup_style
 
 if TYPE_CHECKING:
@@ -221,21 +222,6 @@ def _sample_events(catalog: Catalog, max_events: int) -> list[Event]:
     return [events[int(round(i))] for i in idx]
 
 
-def _read_result_h5_probs(result_h5_path: Path, key: str) -> np.ndarray | None:
-    try:
-        import h5py
-    except ImportError:  # pragma: no cover - h5py ships with tensorflow's own deps here
-        return None
-    try:
-        with h5py.File(result_h5_path, "r") as f:
-            if key not in f:
-                return None
-            return np.asarray(f[key])
-    except Exception as exc:  # noqa: BLE001 - a bad/partial result.h5 must not abort diagnostics
-        logger.warning("could not read %s from %s: %s", key, result_h5_path, exc)
-        return None
-
-
 def _plot_event_example(
     event: Event,
     event_id: str,
@@ -326,7 +312,7 @@ def _make_example_plots(paths: RunPaths, catalog: Catalog, diagnostics_dir: Path
 
         prob = None
         if has_result_h5:
-            prob = _read_result_h5_probs(result_h5_path, f"{event_id}/{event_id}.mseed")
+            prob = read_result_h5_probs(result_h5_path, result_h5_key(event_id))
 
         out_path = diagnostics_dir / f"example_{event_id}.png"
         try:

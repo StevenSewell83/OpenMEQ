@@ -71,6 +71,10 @@ def test_load_example_config():
     assert cfg.detection.dedup_window_s == pytest.approx(10.0)
     assert cfg.phasenet.max_gap_fill_s == pytest.approx(2.0)
     assert cfg.phasenet.pick_uncertainty_s == pytest.approx(0.1)
+    assert cfg.phasenet.pick_uncertainty_method == "peak_width"
+    assert cfg.phasenet.pick_uncertainty_peak_frac == pytest.approx(0.5)
+    assert cfg.phasenet.pick_uncertainty_min_s == pytest.approx(0.02)
+    assert cfg.phasenet.pick_uncertainty_max_s == pytest.approx(0.5)
     assert cfg.nlloc.obspyck_pluginpath.is_absolute()
     assert cfg.nlloc.locsearch.init_num_cells_x == 10
     assert cfg.nlloc.locgau.sigma_time_s == pytest.approx(0.1)

@@ -194,8 +194,17 @@ MEANINGS: dict[str, str] = {
     "config hook.",
     "phasenet.max_gap_fill_s": "Gaps up to this long (seconds) are zero-filled rather than "
     "interpolated during chunk preprocessing; longer gaps are left as real gaps.",
-    "phasenet.pick_uncertainty_s": "PhaseNet emits no timing uncertainty (only a probability); "
-    "this fixed value (seconds) becomes every PhaseNet `Pick.time_errors.uncertainty`.",
+    "phasenet.pick_uncertainty_method": "How PhaseNet `Pick.time_errors.uncertainty` is set. "
+    "`peak_width`: half-width (seconds) of the pick's P/S probability peak in "
+    "`phasenet_raw/result.h5`, measured at `pick_uncertainty_peak_frac` x peak and clamped to "
+    "`[pick_uncertainty_min_s, pick_uncertainty_max_s]`. `fixed`: every pick gets "
+    "`pick_uncertainty_s`. The method used is stored per pick as extra `uncertainty_method`.",
+    "phasenet.pick_uncertainty_s": "Fixed pick uncertainty (seconds) for `fixed`, and the "
+    "`peak_width` fallback when `result.h5` or the pick's station column cannot be used.",
+    "phasenet.pick_uncertainty_peak_frac": "Fraction of the peak probability at which the peak "
+    "width is measured (0.5 = half the full width at half maximum).",
+    "phasenet.pick_uncertainty_min_s": "Lower clamp (seconds) on `peak_width` uncertainties.",
+    "phasenet.pick_uncertainty_max_s": "Upper clamp (seconds) on `peak_width` uncertainties.",
     "phasenet.pick_window_s": "`[before, after]` seconds relative to the detection trigger time: "
     "PhaseNet picks outside it are dropped before choosing one pick per station and phase "
     "(rejected reason `outside window`). PhaseNet fires on the start of every processed chunk "

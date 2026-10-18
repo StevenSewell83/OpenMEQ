@@ -103,7 +103,11 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `phasenet.min_s_prob` | float | `0.3` | Discard PhaseNet S picks below this probability (unitless, 0-1). |
 | `phasenet.batch_size` | int | `20` | Currently unused: the PhaseNet runner always invokes `predict.py` with `--batch_size=1` regardless of this value, since `predict.py`'s own batching needs equal station counts across events too (docs/phasenet_interface.md §7). Kept as a forward-looking config hook. |
 | `phasenet.max_gap_fill_s` | float | `2.0` | Gaps up to this long (seconds) are zero-filled rather than interpolated during chunk preprocessing; longer gaps are left as real gaps. |
-| `phasenet.pick_uncertainty_s` | float | `0.1` | PhaseNet emits no timing uncertainty (only a probability); this fixed value (seconds) becomes every PhaseNet `Pick.time_errors.uncertainty`. |
+| `phasenet.pick_uncertainty_method` | 'peak_width' \| 'fixed' | `"peak_width"` | How PhaseNet `Pick.time_errors.uncertainty` is set. `peak_width`: half-width (seconds) of the pick's P/S probability peak in `phasenet_raw/result.h5`, measured at `pick_uncertainty_peak_frac` x peak and clamped to `[pick_uncertainty_min_s, pick_uncertainty_max_s]`. `fixed`: every pick gets `pick_uncertainty_s`. The method used is stored per pick as extra `uncertainty_method`. |
+| `phasenet.pick_uncertainty_s` | float | `0.1` | Fixed pick uncertainty (seconds) for `fixed`, and the `peak_width` fallback when `result.h5` or the pick's station column cannot be used. |
+| `phasenet.pick_uncertainty_peak_frac` | float | `0.5` | Fraction of the peak probability at which the peak width is measured (0.5 = half the full width at half maximum). |
+| `phasenet.pick_uncertainty_min_s` | float | `0.02` | Lower clamp (seconds) on `peak_width` uncertainties. |
+| `phasenet.pick_uncertainty_max_s` | float | `0.5` | Upper clamp (seconds) on `peak_width` uncertainties. |
 | `phasenet.pick_window_s` | tuple[float, float] \| None | `(-5.0, 15.0)` | `[before, after]` seconds relative to the detection trigger time: PhaseNet picks outside it are dropped before choosing one pick per station and phase (rejected reason `outside window`). PhaseNet fires on the start of every processed chunk (taper + high-pass), and those artefacts can out-score real picks. `null` keeps the whole chunk. |
 
 ## `nlloc` -- NonLinLoc location and filtering (`openmeq locate`, `scripts/setup_nlloc.py`)

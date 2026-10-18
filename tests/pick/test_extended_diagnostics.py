@@ -21,6 +21,7 @@ from openmeq.config import load_config
 from openmeq.paths import RunPaths
 from openmeq.pick import extended_diagnostics as ext
 from openmeq.pick.diagnostics import make_pick_diagnostics
+from openmeq.pick.probability import result_h5_key
 
 _START = UTCDateTime(2025, 6, 1, 0, 0, 0)
 _NPTS = 6000
@@ -106,7 +107,7 @@ def _write_inputs(paths: RunPaths, *, with_h5: bool = True, extra_bump=None) -> 
             prob[:, keys.index(key), ch] += height * np.exp(-0.5 * ((idx - t * _SR) / 10.0) ** 2)
         paths.phasenet_raw_dir.mkdir(parents=True, exist_ok=True)
         with h5py.File(paths.phasenet_raw_dir / "result.h5", "w") as f:
-            f.create_dataset(f"{_EVENT_ID}/{_EVENT_ID}.mseed", data=prob)
+            f.create_dataset(result_h5_key(_EVENT_ID), data=prob)
 
     event = make_event(_EVENT_ID)
     event.picks.extend(picks)
@@ -141,7 +142,7 @@ def _read_stream(paths):
 
 def _read_prob(paths):
     with h5py.File(paths.phasenet_raw_dir / "result.h5", "r") as f:
-        return np.asarray(f[f"{_EVENT_ID}/{_EVENT_ID}.mseed"])
+        return np.asarray(f[result_h5_key(_EVENT_ID)])
 
 
 # ---------------------------------------------------------------------------

@@ -93,6 +93,24 @@ whoever next needs that exact distinction -- out of this task's scope, and
 not exercised by the synthetic fixture (``config/example.yaml`` ships
 ``orientations: {}``).
 
+Pick uncertainty from the probability peak (OpenMEQ-9kn)
+----------------------------------------------------------
+PhaseNet's ``picks.csv`` has no timing uncertainty, only a probability.
+With ``cfg.phasenet.pick_uncertainty_method = "peak_width"`` (the default),
+each pick's ``time_errors.uncertainty`` is the half-width of its P or S
+probability peak in ``pick/phasenet_raw/result.h5``, measured at
+``pick_uncertainty_peak_frac * peak`` (0.5: half the FWHM,
+:func:`openmeq.pick.probability.peak_half_width_s`), clamped to
+``[pick_uncertainty_min_s, pick_uncertainty_max_s]``. A sharp onset gives a
+narrow peak and a small uncertainty; an emergent one a broad peak and a
+large one, so NLLoc weights picks by how well PhaseNet resolved them.
+The station column is verified against the event's own pick probabilities
+(:func:`openmeq.pick.probability.station_columns`); when ``result.h5`` is
+missing, or the column can't be verified, the pick falls back to the fixed
+``pick_uncertainty_s`` (``"fixed"`` uses that for every pick). The method
+actually used is stored as ``extra`` ``uncertainty_method``
+(``"peak_width"`` or ``"fixed"``).
+
 Probability -> ``extra``
 --------------------------
 ``phase_score`` is stored via ``openmeq.catalog.set_extra(pick,
@@ -127,12 +145,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 from obspy import Stream, UTCDateTime, read
 from obspy.core.event import Catalog, Pick, WaveformStreamID
 
 from openmeq.catalog import make_event, set_extra, time_from_event_id, write_catalog
 from openmeq.log import get_logger
+from openmeq.pick.probability import (
+    PHASE_CHANNEL,
+    peak_half_width_s,
+    read_result_h5_probs,
+    result_h5_key,
+    sample_index,
+    station_columns,
+)
 from openmeq.pick.run_phasenet import PICKS_CSV_COLUMNS
 
 if TYPE_CHECKING:
@@ -258,7 +285,57 @@ def _resolve_waveform_id(
     return None
 
 
-def _build_pick(row: pd.Series, waveform_id: WaveformStreamID, pick_uncertainty_s: float) -> Pick:
+class _ProbCurves:
+    """One event's ``result.h5`` curves, ready for per-pick peak-width lookups."""
+
+    def __init__(self, paths: RunPaths, event_id: str, stream: Stream, best: pd.DataFrame):
+        self.cols: dict[str, int] = {}
+        self.prob: np.ndarray | None = None
+        if not len(stream):
+            return
+        self.begin = min(tr.stats.starttime for tr in stream)
+        self.sr = float(stream[0].stats.sampling_rate)
+        prob = read_result_h5_probs(paths.phasenet_raw_dir / "result.h5", result_h5_key(event_id))
+        if prob is None:
+            return
+        checks = [
+            (
+                str(row["station_id"]),
+                str(row["phase_type"]),
+                UTCDateTime(row["phase_time"]),
+                float(row["phase_score"]),
+            )
+            for _, row in best.iterrows()
+        ]
+        self.cols = station_columns(stream, prob, checks, self.begin, self.sr)
+        self.prob = prob
+
+    def half_width_s(self, station_id: str, phase_type: str, time: UTCDateTime, frac: float):
+        if station_id not in self.cols or phase_type not in PHASE_CHANNEL:
+            return None
+        curve = self.prob[:, self.cols[station_id], PHASE_CHANNEL[phase_type]]
+        return peak_half_width_s(curve, sample_index(time, self.begin, self.sr), self.sr, frac)
+
+
+def _pick_uncertainty(row: pd.Series, curves: _ProbCurves | None, cfg: Config) -> tuple[float, str]:
+    """``(uncertainty_s, method)`` for one pick (module docstring's uncertainty note)."""
+    pn = cfg.phasenet
+    if curves is not None:
+        half = curves.half_width_s(
+            str(row["station_id"]),
+            str(row["phase_type"]),
+            UTCDateTime(row["phase_time"]),
+            pn.pick_uncertainty_peak_frac,
+        )
+        if half is not None:
+            clamped = min(max(half, pn.pick_uncertainty_min_s), pn.pick_uncertainty_max_s)
+            return clamped, "peak_width"
+    return pn.pick_uncertainty_s, "fixed"
+
+
+def _build_pick(
+    row: pd.Series, waveform_id: WaveformStreamID, uncertainty_s: float, method: str
+) -> Pick:
     pick = Pick(
         time=UTCDateTime(row["phase_time"]),
         waveform_id=waveform_id,
@@ -266,8 +343,9 @@ def _build_pick(row: pd.Series, waveform_id: WaveformStreamID, pick_uncertainty_
         method_id=PHASENET_METHOD_ID,
         evaluation_mode="automatic",
     )
-    pick.time_errors.uncertainty = pick_uncertainty_s
+    pick.time_errors.uncertainty = uncertainty_s
     set_extra(pick, "probability", float(row["phase_score"]))
+    set_extra(pick, "uncertainty_method", method)
     return pick
 
 
@@ -290,9 +368,11 @@ def build_catalog(
         ``paths.chunk_pn_file(event_id)`` locates each event's
         ``chunks_pn/`` mseed for channel resolution (see module docstring).
     cfg : openmeq.config.Config
-        ``cfg.phasenet.pick_uncertainty_s`` becomes every
+        ``cfg.phasenet.pick_uncertainty_*`` set each
         ``Pick.time_errors.uncertainty`` (PhaseNet emits no timing
-        uncertainty, only a probability -- ARCHITECTURE.md §5). Not part of
+        uncertainty, only a probability -- see the module docstring's
+        uncertainty note; ``pick/phasenet_raw/result.h5`` is read via
+        ``paths``). Not part of
         the beads issue's abbreviated signature sketch
         (``build_catalog(picks_csv, paths, station_table)``) -- added
         because the config value it reads did not exist to be threaded
@@ -336,9 +416,11 @@ def build_catalog(
     df["event_id"] = df["file_name"].map(_event_id_from_file_name)
 
     window_s = cfg.phasenet.pick_window_s
+    use_peak_width = cfg.phasenet.pick_uncertainty_method == "peak_width"
     catalog = Catalog()
     n_picks_total = 0
     n_outside = 0
+    n_fixed_fallback = 0
     for event_id, group in df.groupby("event_id", sort=True):
         group, outside = _split_by_pick_window(group, event_id, window_s)
         n_outside += len(outside)
@@ -358,6 +440,7 @@ def build_catalog(
         if rejected is not None:
             for _, row in group.drop(index=best.index).iterrows():
                 rejected.append(_rejected_record(event_id, row, "duplicate"))
+        curves = _ProbCurves(paths, event_id, stream, best) if use_peak_width else None
 
         event = make_event(event_id)
         for _, row in best.iterrows():
@@ -388,7 +471,10 @@ def build_catalog(
                     rejected.append(_rejected_record(event_id, row, "unresolved channel"))
                 continue
 
-            pick = _build_pick(row, waveform_id, cfg.phasenet.pick_uncertainty_s)
+            uncertainty_s, method = _pick_uncertainty(row, curves, cfg)
+            if use_peak_width and method == "fixed":
+                n_fixed_fallback += 1
+            pick = _build_pick(row, waveform_id, uncertainty_s, method)
             event.picks.append(pick)
             n_picks_total += 1
 
@@ -410,6 +496,14 @@ def build_catalog(
         n_outside,
         None if window_s is None else list(window_s),
     )
+    if n_fixed_fallback:
+        logger.warning(
+            "build_catalog: %d of %d pick(s) fell back to phasenet.pick_uncertainty_s=%g "
+            "(no usable result.h5 probability curve)",
+            n_fixed_fallback,
+            n_picks_total,
+            cfg.phasenet.pick_uncertainty_s,
+        )
     return catalog
 
 

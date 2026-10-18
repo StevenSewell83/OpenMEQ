@@ -182,9 +182,17 @@ contain known events (a reference catalogue helps), using
   those artefacts can out-score real picks. Set `before` a few seconds before
   the earliest P, and `after` beyond the latest S. RK-NM: `[-5, 15]`; without
   it, 59% of P picks sat at the chunk start.
-- **`pick_uncertainty_s`**: timing uncertainty given to every pick (PhaseNet
-  reports none). Roughly the typical pick error; affects NLLoc's error
-  estimates.
+- **`pick_uncertainty_method`**: `peak_width` (default) sets each pick's
+  timing uncertainty to the half-width of its PhaseNet probability peak at
+  `pick_uncertainty_peak_frac` of the peak (0.5 = half the FWHM), clamped to
+  `[pick_uncertainty_min_s, pick_uncertainty_max_s]`. Sharp onsets get
+  smaller uncertainties and more weight in NLLoc. The width includes
+  PhaseNet's own label width (Gaussian, sigma about 0.1 s), so values rarely
+  drop below about 0.12 s. RK-NM 2026 Q1: P median 0.13 s (5-95%: 0.12-0.17),
+  S median 0.15 s (0.12-0.24). `fixed` gives every pick `pick_uncertainty_s`.
+- **`pick_uncertainty_s`**: fixed uncertainty for `fixed`, and the fallback
+  when `result.h5` is missing or its station columns can't be verified (a
+  warning gives the count).
 - **`batch_size`**: unused.
 
 ## `nlloc`

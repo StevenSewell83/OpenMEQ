@@ -310,9 +310,18 @@ class PhasenetConfig(_StrictModel):
     # M4.2 / OpenMEQ-1m7.2: gaps longer than this are zero-filled rather than
     # interpolated during chunk preprocessing.
     max_gap_fill_s: float = 2.0
-    # M4.4 / OpenMEQ-1m7.4: PhaseNet emits no timing uncertainty (only a
-    # probability); this becomes Pick.time_errors.uncertainty.
+    # OpenMEQ-9kn: how Pick.time_errors.uncertainty is set. "peak_width":
+    # half-width of the pick's PhaseNet probability peak (result.h5) at
+    # pick_uncertainty_peak_frac * peak, clamped to
+    # [pick_uncertainty_min_s, pick_uncertainty_max_s]. "fixed": every pick
+    # gets pick_uncertainty_s.
+    pick_uncertainty_method: Literal["peak_width", "fixed"] = "peak_width"
+    # M4.4 / OpenMEQ-1m7.4: fixed uncertainty; also the peak_width fallback
+    # when result.h5 or its station column can't be used.
     pick_uncertainty_s: float = 0.1
+    pick_uncertainty_peak_frac: float = Field(default=0.5, gt=0.0, lt=1.0)
+    pick_uncertainty_min_s: float = Field(default=0.02, gt=0.0)
+    pick_uncertainty_max_s: float = 0.5
     # OpenMEQ-nzf: keep only picks within [before, after] seconds of the
     # detection trigger time (before <= 0 <= after typical); null keeps the
     # whole chunk. PhaseNet fires on the processed chunk's start (taper +
@@ -321,11 +330,16 @@ class PhasenetConfig(_StrictModel):
     pick_window_s: tuple[float, float] | None = (-5.0, 15.0)
 
     @model_validator(mode="after")
-    def _check_pick_window(self) -> PhasenetConfig:
+    def _check_ranges(self) -> PhasenetConfig:
         if self.pick_window_s is not None and self.pick_window_s[0] >= self.pick_window_s[1]:
             raise ValueError(
                 f"phasenet.pick_window_s must be [before, after] with before < after, "
                 f"got {list(self.pick_window_s)}"
+            )
+        if self.pick_uncertainty_min_s > self.pick_uncertainty_max_s:
+            raise ValueError(
+                "phasenet.pick_uncertainty_min_s must be <= pick_uncertainty_max_s, got "
+                f"{self.pick_uncertainty_min_s} > {self.pick_uncertainty_max_s}"
             )
         return self
 
