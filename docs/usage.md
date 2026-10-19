@@ -177,6 +177,15 @@ leaves stations out of every QC plot (the tables keep them), and
 `openmeq diagnostics qc -c config.yaml` redraws all of `1_qc/diagnostics/`
 from the existing tables without re-reading any waveforms.
 
+**PPSD (optional)** (`qc.ppsd.enabled: true`, or `openmeq diagnostics ppsd -c
+config.yaml [--force]` at any time): an obspy probabilistic PSD per channel
+(vertical only by default), stored per channel-day in `1_qc/ppsd/` so reruns
+only add new days. `1_qc/diagnostics/ppsd/` gets, per channel, the PPSD
+histogram with NLNM/NHNM (`<seed_id>_ppsd.png`), a spectrogram of every PSD,
+and PSD level through time at a few periods, plus `ppsd_medians.png`: every
+channel's median PSD, one panel per instrument group. It needs instrument
+responses; channels without one are skipped and named in the log.
+
 **Noise by instrument** (`1_qc/diagnostics/noise/`, data in
 `1_qc/noise_daily.csv`): the MicroQuake `noise_daily` figures. Each channel-day
 is cut into hourly windows; each window gets a band-limited RMS

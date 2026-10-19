@@ -162,6 +162,16 @@ class RunPaths:
         """Per-instrument-group noise figures (OpenMEQ-h8j)."""
         return self.qc_diagnostics_dir / "noise"
 
+    @property
+    def qc_ppsd_dir(self) -> Path:
+        """Per channel-day PPSD ``.npz`` files, ``<seed_id>/<date>.npz`` (OpenMEQ-itl)."""
+        return self.step_dir("qc") / "ppsd"
+
+    @property
+    def qc_ppsd_diagnostics_dir(self) -> Path:
+        """Per-channel PPSD figures (OpenMEQ-itl)."""
+        return self.qc_diagnostics_dir / "ppsd"
+
     # -- detections (Step 2 / M2, ``openmeq detect``) -----------------------------
 
     @property

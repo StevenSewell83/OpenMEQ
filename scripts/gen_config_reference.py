@@ -97,6 +97,27 @@ MEANINGS: dict[str, str] = {
     "miniSEED files, e.g. `*.mseed`.",
     "data.start": "Inclusive UTC calendar date (day granularity) the run processes from.",
     "data.end": "Inclusive UTC calendar date (day granularity) the run processes through.",
+    "data.convert.format": "Raw-data format converted at the start of the `qc` step "
+    "(and so of `openmeq run`); only `suds` (PC-SUDS event files) is supported. "
+    "Omit `data.convert` entirely when the archive is already miniSEED.",
+    "data.convert.input_dir": "Directory searched recursively for raw files to convert.",
+    "data.convert.output_dir": "Root of the converted miniSEED day-file archive "
+    "(`YEAR/STA/CHA.D/NET.STA.LOC.CHA.D.YEAR.DOY.mseed`); must be one of, or inside one "
+    "of, `data.waveform_dirs`.",
+    "data.convert.pattern": "Glob selecting the raw files under `input_dir`.",
+    "data.convert.network": "SEED network code (1-2 alphanumerics) given to every "
+    "converted channel.",
+    "data.convert.location": "SEED location code (0-2 alphanumerics) given to every "
+    "converted channel.",
+    "data.convert.band": "SEED band code of the converted channels (`E` = short period "
+    ">=80 Hz, `H` = broadband >=80 Hz).",
+    "data.convert.instrument": "SEED instrument code of the converted channels "
+    "(`H` = high-gain seismometer).",
+    "data.convert.stationxml": "Write `output_dir/stations.xml` (coordinates only, no "
+    "instrument response); `stations.stationxml` defaults to it when unset.",
+    "data.convert.overwrite": "Replace existing day files when converting; otherwise "
+    "they are kept. The conversion itself is skipped when its input files and settings "
+    "are unchanged.",
     # --- stations ---
     "stations.stationxml": "A single StationXML file merged into the run's inventory. StationXML "
     "with a real instrument response is required for the magnitude step.",
@@ -154,6 +175,23 @@ MEANINGS: dict[str, str] = {
     "plots and `summary.csv` only; the QC tables keep them. The plots' monthly network comparison "
     "and flags are recomputed without them. Not part of the qc step's skip-unchanged check: apply "
     "a change with `openmeq diagnostics qc` (redraws from the existing tables).",
+    "qc.ppsd.enabled": "Compute an obspy PPSD per channel at the end of `openmeq qc` (also when "
+    "the rest of QC is up to date). Not part of the qc skip-unchanged check. "
+    "`openmeq diagnostics ppsd` runs it regardless of this flag.",
+    "qc.ppsd.components": "Last channel-code characters to include, e.g. `[Z]`; `[]` = every "
+    "channel.",
+    "qc.ppsd.ppsd_length_s": "Length of each PSD segment (seconds).",
+    "qc.ppsd.overlap": "Fractional overlap between PSD segments (0-1).",
+    "qc.ppsd.db_bins": "`[min, max, step]` power histogram bins (dB).",
+    "qc.ppsd.period_limits": "`[short, long]` period range of the PSD (seconds); `null` = obspy's "
+    "default from the sampling rate and segment length. Keep the short end below the "
+    "anti-alias corner and the long end within the sensor's band.",
+    "qc.ppsd.period_smoothing_width_octaves": "Width of the period smoothing window (octaves).",
+    "qc.ppsd.period_step_octaves": "Step between PSD period bins (octaves).",
+    "qc.ppsd.skip_on_gaps": "Skip PSD segments containing gaps instead of zero-filling them.",
+    "qc.ppsd.xaxis_frequency": "Plot frequency (Hz) rather than period on the PPSD x axis.",
+    "qc.ppsd.temporal_periods_s": "Periods (seconds) for the PSD-through-time figure; `[]` skips "
+    "it. Periods outside the PSD's range are dropped.",
     # --- detection ---
     "detection.sta": "STA/LTA short-term-average window (seconds).",
     "detection.lta": "STA/LTA long-term-average window (seconds).",

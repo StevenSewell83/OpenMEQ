@@ -64,6 +64,16 @@ Turn on `diagnostics.extended: true` for a first run on a short date range
   THQ2, WPRZ have no extension, and `*.mseed` silently dropped them). Narrow it
   by day number to keep channels outside the run period out of the index.
 - **`start` / `end`**: inclusive UTC dates processed.
+- **`convert`** (optional): raw data that isn't miniSEED is converted at the
+  start of `openmeq qc` / `openmeq run`, before indexing. Only `format: suds`
+  (PC-SUDS event files, e.g. MacBan 2018-2019) exists so far. The triggered
+  event windows become miniSEED day files under `output_dir`, which must lie
+  inside `waveform_dirs`. SUDS carries no channel naming that maps to SEED, so
+  `network`/`band`/`instrument` are your choice (MacBan: `MB`, `E`, `H`, i.e.
+  `EHZ/EHN/EHE`). The generated `stations.xml` has coordinates only -- give a
+  StationXML with responses in `stations` before running `magnitude`. Runs
+  that start with `--from detect` or later skip the conversion. The same
+  converter is available standalone as `scripts/suds2mseed.py`.
 
 ## `stations`
 
@@ -124,6 +134,22 @@ QC flags are **informational**: they never remove data from detection. Only
   detection's channel flags) still include them. Changing it does not rerun
   QC; run `openmeq diagnostics qc -c config.yaml` to redraw the plots.
   RK-NM 2026 Q1: `[NS12, NS13, NS14]`.
+- **`ppsd.enabled`**: per-channel probabilistic PSDs (obspy PPSD, McNamara &
+  Buland 2004) at the end of `openmeq qc`, or any time with `openmeq
+  diagnostics ppsd -c config.yaml`. It needs instrument responses in the
+  StationXML (channels without one are skipped and listed in the log), and
+  stores one file per channel-day, so reruns only compute new days. Changing
+  a computation setting, or the station metadata, recomputes everything.
+  Cost: RK-NM, 200 Hz, about 3.5 s per channel-day per worker (90 days x 23
+  vertical channels is about 30 min on 4 workers).
+- **`ppsd.period_limits`**: the PSD's period range. obspy's default reaches
+  hundreds of seconds, where short-period geophones record only
+  amplified instrument noise. The short end must stay below the response's
+  anti-alias corner, or the PSD shoots up near Nyquist. RK-NM: `[0.025, 10]`
+  (the RT stations' StationXML gives 100 Hz although the data are 200 Hz, so
+  their response cuts off at about 40 Hz).
+- **`ppsd.components`**: `[Z]` by default; `[]` adds the horizontals (3x the
+  cost).
 
 ## `detection`
 

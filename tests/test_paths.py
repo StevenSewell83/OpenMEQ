@@ -59,6 +59,8 @@ _EXPECTED_PROPERTIES = {
     "qc_diagnostics_dir": "1_qc/diagnostics",
     "noise_daily_csv": "1_qc/noise_daily.csv",
     "qc_noise_diagnostics_dir": "1_qc/diagnostics/noise",
+    "qc_ppsd_dir": "1_qc/ppsd",
+    "qc_ppsd_diagnostics_dir": "1_qc/diagnostics/ppsd",
     "detections_csv": "2_detection/detections.csv",
     "detect_diagnostics_dir": "2_detection/diagnostics",
     "chunk_dir": "4_data_chunks/chunks",

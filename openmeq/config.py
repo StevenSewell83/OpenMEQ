@@ -45,6 +45,7 @@ Design notes
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 from datetime import date
 from pathlib import Path
@@ -125,11 +126,37 @@ class ParallelConfig(_StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class DataConvertConfig(_StrictModel):
+    """Raw-data conversion run at the start of the ``qc`` step (OpenMEQ-6zu).
+
+    Every ``pattern`` file under ``input_dir`` is converted to miniSEED day
+    files under ``output_dir`` (``YEAR/STA/CHA.D/NET.STA.LOC.CHA.D.YEAR.DOY.mseed``,
+    see :mod:`openmeq.suds`) before the waveform index is built, so
+    ``output_dir`` must be one of (or inside one of) ``data.waveform_dirs``.
+    Skipped when the input files and these settings are unchanged since the
+    last conversion; existing day files are kept unless ``overwrite``.
+    """
+
+    format: Literal["suds"] = "suds"
+    input_dir: Path
+    output_dir: Path
+    pattern: str = "*.suds"
+    network: str = Field(pattern=r"^[A-Za-z0-9]{1,2}$")
+    location: str = Field(default="", pattern=r"^[A-Za-z0-9]{0,2}$")
+    band: str = Field(default="E", pattern=r"^[A-Z]$")
+    instrument: str = Field(default="H", pattern=r"^[A-Z]$")
+    # Write output_dir/stations.xml (coordinates only, no response). If
+    # stations.stationxml is unset it defaults to this file.
+    stationxml: bool = True
+    overwrite: bool = False
+
+
 class DataConfig(_StrictModel):
     waveform_dirs: list[Path]
     file_pattern: str = "*.mseed"
     start: date
     end: date
+    convert: DataConvertConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +175,43 @@ class StationsConfig(_StrictModel):
 # ---------------------------------------------------------------------------
 # qc
 # ---------------------------------------------------------------------------
+
+
+class QcPpsdConfig(_StrictModel):
+    """OpenMEQ-itl: optional obspy PPSD per channel in the qc step.
+
+    Computed per channel-day (``1_qc/ppsd/<seed_id>/<date>.npz``, resumable)
+    and drawn per channel (``1_qc/diagnostics/ppsd/``). Needs instrument
+    responses; channels without one are skipped and listed in the log.
+    """
+
+    enabled: bool = False
+    # Last channel-code characters to include (e.g. ["Z"]); [] = every channel.
+    components: list[str] = Field(default_factory=lambda: ["Z"])
+    ppsd_length_s: float = Field(default=3600.0, gt=0)
+    overlap: float = Field(default=0.5, ge=0, lt=1)
+    db_bins: tuple[float, float, float] = (-200.0, -50.0, 1.0)
+    # [short, long] period (s) range of the PSD; null = obspy's default from
+    # the sampling rate and ppsd_length_s.
+    period_limits: tuple[float, float] | None = None
+    period_smoothing_width_octaves: float = Field(default=1.0, gt=0)
+    period_step_octaves: float = Field(default=0.125, gt=0)
+    skip_on_gaps: bool = False
+    # Plot frequency (Hz) rather than period on the x axis.
+    xaxis_frequency: bool = True
+    # Periods (s) for the PSD-through-time figure; [] skips it.
+    temporal_periods_s: list[float] = Field(default_factory=lambda: [0.05, 0.2, 1.0])
+
+    @model_validator(mode="after")
+    def _check(self) -> QcPpsdConfig:
+        lo, hi, step = self.db_bins
+        if not (lo < hi and step > 0):
+            raise ValueError(f"qc.ppsd.db_bins must be [min, max, step], got {list(self.db_bins)}")
+        if self.period_limits is not None and not 0 < self.period_limits[0] < self.period_limits[1]:
+            raise ValueError(
+                f"qc.ppsd.period_limits must be [short, long] > 0, got {list(self.period_limits)}"
+            )
+        return self
 
 
 class QcNoiseConfig(_StrictModel):
@@ -220,6 +284,10 @@ class QcConfig(_StrictModel):
     # skip-unchanged fingerprint ignores it (re-plot with `openmeq
     # diagnostics qc` instead of recomputing QC).
     plot_exclude_stations: list[str] = Field(default_factory=list, exclude=True)
+    # OpenMEQ-itl: optional PPSD. exclude=True like plot_exclude_stations:
+    # enabling or tuning it never recomputes the rest of QC (PPSD tracks its
+    # own settings, openmeq.qc.ppsd).
+    ppsd: QcPpsdConfig = Field(default_factory=QcPpsdConfig, exclude=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1202,34 @@ class Config(_StrictModel):
             )
         self.hypodd.velocity_model.file = _resolve(self.hypodd.velocity_model.file, base_dir)
         self.diagnostics.wells.dir = _resolve(self.diagnostics.wells.dir, base_dir)
+        if self.data.convert is not None:
+            self.data.convert.input_dir = _resolve(self.data.convert.input_dir, base_dir)
+            self.data.convert.output_dir = _resolve(self.data.convert.output_dir, base_dir)
+        return self
+
+    @model_validator(mode="after")
+    def _check_data_convert(self) -> Config:
+        """``data.convert`` output must be indexed; default the StationXML to it.
+
+        Runs after :meth:`_resolve_relative_paths` (pydantic applies
+        ``after`` validators in definition order), so paths are resolved.
+        """
+        conv = self.data.convert
+        if conv is None:
+            return self
+        out = conv.output_dir
+        if not any(out == d or d in out.parents for d in self.data.waveform_dirs):
+            raise ValueError(
+                f"data.convert.output_dir ({out}) must be one of, or inside one of, "
+                "data.waveform_dirs, or the converted files are never indexed"
+            )
+        if not fnmatch.fnmatch("NET.STA..EHZ.D.2020.001.mseed", self.data.file_pattern):
+            raise ValueError(
+                f"data.file_pattern {self.data.file_pattern!r} does not match the "
+                "converted day files (*.mseed)"
+            )
+        if conv.stationxml and self.stations.stationxml is None:
+            self.stations.stationxml = out / "stations.xml"
         return self
 
 

@@ -15,6 +15,9 @@ wire a step in.
 Pipeline order (strictly linear -- each stage's inputs are an earlier
 stage's outputs, per the design note in this task's beads issue)
 -------------------------------------------------------------------
+0. Convert raw data if ``data.convert`` is set (``openmeq.ingest``,
+   OpenMEQ-6zu) -> miniSEED day files under ``data.convert.output_dir``
+   (skipped when its inputs are unchanged).
 1. Build/update the miniSEED index (``openmeq.index.build_index``) ->
    ``inventory/index.json``.
 2. Merge station metadata (``openmeq.stations``) -> ``inventory/
@@ -29,6 +32,9 @@ stage's outputs, per the design note in this task's beads issue)
    channel_flags.json``.
 6. Render QC diagnostic plots (``openmeq.qc.plots``) -> ``qc/
    diagnostics/``.
+7. Optional PPSD per channel (``cfg.qc.ppsd.enabled``, ``openmeq.qc.ppsd``,
+   OpenMEQ-itl) -> ``qc/ppsd/`` and ``qc/diagnostics/ppsd/``; also run when
+   the rest of QC is up to date.
 
 Plot-only station exclusion (``cfg.qc.plot_exclude_stations``, OpenMEQ-v3i)
 ----------------------------------------------------------------------------
@@ -74,6 +80,7 @@ import pandas as pd
 from obspy import UTCDateTime
 
 from openmeq.index import build_index
+from openmeq.ingest import convert_raw_data
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
 from openmeq.qc.availability import (
@@ -90,6 +97,7 @@ from openmeq.qc.flags import (
 from openmeq.qc.instruments import instrument_table
 from openmeq.qc.noise_plots import make_noise_diagnostics, noise_table, write_noise_daily_csv
 from openmeq.qc.plots import make_qc_diagnostics
+from openmeq.qc.ppsd import run_ppsd
 from openmeq.qc.stats import compute_daily_stats, write_daily_stats_csv
 from openmeq.stations import (
     check_coverage,
@@ -201,6 +209,21 @@ def _noise_table(cfg: Config, paths: RunPaths, inv, seed_ids, daily_stats_df):
         return None
 
 
+def _ppsd(cfg: Config, paths: RunPaths, *, force: bool, instruments=None) -> None:
+    """Optional PPSD (``cfg.qc.ppsd.enabled``, :mod:`openmeq.qc.ppsd`).
+
+    Runs after the manifest is marked done, and also when QC itself is up to
+    date (PPSD tracks its own settings), so enabling it never recomputes QC.
+    A failure is logged, never raised: QC's own outputs are already complete.
+    """
+    if not cfg.qc.ppsd.enabled:
+        return
+    try:
+        run_ppsd(cfg, paths, force=force, instruments=instruments)
+    except Exception:  # noqa: BLE001 - an optional report must never fail the step
+        logger.exception("qc: PPSD failed (QC outputs are unaffected)")
+
+
 def replot(cfg: Config, paths: RunPaths) -> None:
     """Redraw ``qc/diagnostics/`` from an existing run's ``qc/`` tables.
 
@@ -296,10 +319,15 @@ def run(cfg: Config, paths: RunPaths, *, force: bool = False, **_opts: object) -
     """
     t_start = time.perf_counter()
 
+    # 0. Raw-data conversion (data.convert, OpenMEQ-6zu) -- before the
+    # fingerprint, so newly converted files count as qc inputs this run.
+    convert_raw_data(cfg, paths, force=force)
+
     manifest = StepManifest(paths, _MANIFEST_KEY)
     input_fp = _input_fingerprint(cfg)
     if not force and manifest.is_done(_MANIFEST_KEY, input_fp):
         logger.info("qc: up to date, skipping")
+        _ppsd(cfg, paths, force=False)
         return
 
     # 1. Index (M1.1) -- writes inventory/index.json itself.
@@ -332,6 +360,7 @@ def run(cfg: Config, paths: RunPaths, *, force: bool = False, **_opts: object) -
     _make_plots(cfg, paths, availability_df, daily_stats_df, monthly_df, flags, noise_df)
 
     manifest.mark_done(_MANIFEST_KEY, input_fp)
+    _ppsd(cfg, paths, force=force, instruments=noise_df)
 
     elapsed = time.perf_counter() - t_start
     logger.info("qc: completed in %.2fs", elapsed)

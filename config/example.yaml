@@ -51,6 +51,21 @@ data:
   file_pattern: "*.mseed"
   start: 2025-01-01                     # inclusive, UTC calendar date
   end: 2025-12-31                       # inclusive, UTC calendar date
+  # Optional: convert raw (non-miniSEED) data at the start of the qc step, i.e.
+  # of every `openmeq run`, before the archive is indexed. Skipped when the raw
+  # files and these settings are unchanged; existing day files are kept.
+  # convert:
+  #   format: suds                        # PC-SUDS event files (only format so far)
+  #   input_dir: ./data/raw_suds          # searched recursively
+  #   pattern: "*.suds"
+  #   output_dir: ./data/mseed            # must be (inside) one of waveform_dirs
+  #   network: MB                         # SEED codes for the converted channels
+  #   location: ""
+  #   band: E                             # E = short period >=80 Hz
+  #   instrument: H
+  #   stationxml: true                    # write output_dir/stations.xml (coords only);
+  #                                       # stations.stationxml defaults to it when unset
+  #   overwrite: false
 
 stations:
   # Any of these may be given; they are merged. StationXML (with instrument
@@ -100,6 +115,22 @@ qc:
                                          # StationXML sensor model, e.g. {"GS-11D": ["RT05"]}
   plot_exclude_stations: []             # [STA | NET.STA] left out of 1_qc/diagnostics plots only
                                          # (tables keep them); apply with `openmeq diagnostics qc`
+  # --- OpenMEQ-itl: optional PPSD per channel (needs instrument responses) ---
+  # 1_qc/ppsd/<seed_id>/<date>.npz (resumable) + 1_qc/diagnostics/ppsd/ figures.
+  # Run standalone with `openmeq diagnostics ppsd -c config.yaml [--force]`.
+  ppsd:
+    enabled: false                      # true = run at the end of `openmeq qc`
+    components: [Z]                     # last channel-code characters; [] = all channels
+    ppsd_length_s: 3600                 # PSD segment length, s
+    overlap: 0.5                        # segment overlap fraction
+    db_bins: [-200, -50, 1]             # [min, max, step] dB
+    period_limits: null                 # [short, long] s; null = obspy default. Geophones, e.g.
+                                         # [0.025, 10] (40 Hz..0.1 Hz): stay below the anti-alias corner
+    period_smoothing_width_octaves: 1.0
+    period_step_octaves: 0.125
+    skip_on_gaps: false
+    xaxis_frequency: true               # Hz on the x axis (false = period, s)
+    temporal_periods_s: [0.05, 0.2, 1.0] # periods for the PSD-through-time figure; [] = none
 
 detection:
   sta: 0.05                             # STA/LTA short-term average window, s

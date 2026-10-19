@@ -716,6 +716,30 @@ def diagnostics_qc(config_path: str) -> None:
     click.echo(f"wrote {paths.qc_diagnostics_dir}/")
 
 
+@diagnostics.command("ppsd")
+@_CONFIG_OPTION
+@click.option(
+    "--force", is_flag=True, default=False, help="Recompute every stored channel-day PSD."
+)
+def diagnostics_ppsd(config_path: str, force: bool) -> None:
+    """PPSD per channel -> 1_qc/ppsd/ (per channel-day .npz) and
+    1_qc/diagnostics/ppsd/ (from an existing qc run).
+
+    Always runs when asked for here (``qc.ppsd.enabled`` only gates the
+    automatic run inside ``openmeq qc``). Only days not already stored are
+    computed, unless the PPSD settings or station metadata changed.
+    """
+    from openmeq.qc.ppsd import run_ppsd
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    configure_logging(paths, "qc")
+    try:
+        written = run_ppsd(cfg, paths, force=force)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"wrote {len(written)} figure(s) to {paths.qc_ppsd_diagnostics_dir}/")
+
+
 @diagnostics.command("xcorr")
 @_CONFIG_OPTION
 @click.option(
