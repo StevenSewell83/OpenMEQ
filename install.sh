@@ -117,6 +117,58 @@ require_tools() {
     fi
 }
 
+# --- Compilers ---------------------------------------------------------------
+#
+# NonLinLoc (C) and hypoDD (C + Fortran, linked by gfortran) must be built by
+# one consistent toolchain. A bare `gcc` from PATH is not good enough: an
+# active conda env puts its own gcc ahead of the system one and exports
+# CC/CFLAGS/LDFLAGS (x86_64-conda-linux-gnu-cc, -isystem <conda>/include,
+# -rpath <conda>/lib), which CMake picks up -- NLLoc then ends up with the
+# conda lib dir baked into its RPATH, and hypoDD mixes conda-gcc C objects
+# with system-gfortran Fortran objects.
+#
+# So: take gfortran from PATH (or $OPENMEQ_FC), take the gcc that sits next
+# to it in the same install (or $OPENMEQ_CC), and run the builds with the
+# inherited compiler variables removed (see build_env).
+select_compilers() {
+    FC="${OPENMEQ_FC:-$(command -v gfortran)}"
+    [ -x "$FC" ] || die "Fortran compiler not executable: $FC"
+
+    if [ -n "${OPENMEQ_CC:-}" ]; then
+        CC="$OPENMEQ_CC"
+    else
+        local fc_dir fc_ver cand
+        fc_dir="$(dirname "$(readlink -f "$FC")")"
+        fc_ver="$("$FC" -dumpversion)"
+        CC=""
+        for cand in "$fc_dir/gcc-${fc_ver%%.*}" "$fc_dir/gcc"; do
+            if [ -x "$cand" ]; then
+                CC="$cand"
+                break
+            fi
+        done
+        [ -n "$CC" ] || die "no gcc found alongside $FC (looked in $fc_dir). Set OPENMEQ_CC to the matching C compiler."
+    fi
+    [ -x "$CC" ] || die "C compiler not executable: $CC"
+
+    local cc_ver fc_ver_full
+    cc_ver="$("$CC" -dumpfullversion -dumpversion)"
+    fc_ver_full="$("$FC" -dumpfullversion -dumpversion)"
+    log "compilers: CC=$CC ($cc_ver), FC=$FC ($fc_ver_full)"
+    if [ "${cc_ver%%.*}" != "${fc_ver_full%%.*}" ]; then
+        log "WARNING: C and Fortran compiler major versions differ ($cc_ver vs $fc_ver_full)"
+    fi
+}
+
+# Runs "$@" with compiler/flag variables inherited from the caller's shell
+# (e.g. a conda activation) removed, so only CC/FC from select_compilers apply.
+build_env() {
+    env -u CC -u CXX -u FC -u F77 -u F90 -u CPP \
+        -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u FFLAGS -u FCFLAGS -u LDFLAGS \
+        -u CONDA_BUILD_SYSROOT \
+        "$@"
+}
+
 # --- Step 1: venv ------------------------------------------------------------
 
 install_venv() {
@@ -184,10 +236,15 @@ build_nonlinloc() {
         git -C "$dir" checkout --quiet "$NLLOC_COMMIT"
     fi
 
-    # NonLinLoc's CMakeLists.txt lives under src/, not the repo root.
+    # NonLinLoc's CMakeLists.txt lives under src/, not the repo root. The
+    # build dir is configured from scratch each run: CMake caches the
+    # compiler and flags it first saw, so a stale cache would keep using
+    # them regardless of CC below.
     log "NonLinLoc: cmake configure + build"
-    cmake -S "$dir/src" -B "$dir/build" -DCMAKE_BUILD_TYPE=Release
-    cmake --build "$dir/build" -j"$(nproc)"
+    rm -rf "$dir/build"
+    build_env cmake -S "$dir/src" -B "$dir/build" -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER="$CC"
+    build_env cmake --build "$dir/build" -j"$(nproc)"
 
     local built_bin="$dir/src/bin"
     [ -d "$built_bin" ] || die "NonLinLoc build did not produce $built_bin -- cmake target layout may have changed upstream"
@@ -216,8 +273,11 @@ build_hypodd() {
     fi
     [ -d "$dir/src" ] || die "unexpected HYPODD.zip layout: $dir/src not found"
 
+    # The Makefiles hardcode CC = gcc / FC = gfortran (resolved via PATH);
+    # command-line assignments override those and reach the sub-makes
+    # through MAKEFLAGS.
     log "hypoDD: make clean && make (src/hypoDD, src/ph2dt)"
-    (cd "$dir/src" && make clean && make)
+    (cd "$dir/src" && build_env make clean && build_env make CC="$CC" FC="$FC")
 
     mkdir -p "$BIN_DIR"
     [ -x "$dir/src/hypoDD/hypoDD" ] || die "hypoDD build did not produce src/hypoDD/hypoDD"
@@ -318,6 +378,7 @@ main() {
     fi
 
     require_tools git unzip cmake gcc gfortran make
+    select_compilers
 
     mkdir -p "$EXTERNAL_DIR" "$BIN_DIR"
     install_phasenet
