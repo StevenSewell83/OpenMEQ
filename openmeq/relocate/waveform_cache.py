@@ -280,15 +280,15 @@ def _applicable_windows(
     """Every ``(start, end)`` padded window ``comp`` (a mapped channel's last
     character) is relevant to, given this station's P/S pick times."""
     windows: list[tuple[UTCDateTime, UTCDateTime]] = []
-    maxlag = xcorr_cfg.maxlag_s
     p_components = set(xcorr_cfg.components.get("P", []))
     s_components = set(xcorr_cfg.components.get("S", []))
-    pad = maxlag + xcorr_cfg.filter_edge_margin_s
     if comp in p_components:
+        pad = xcorr_cfg.maxlag_for("P") + xcorr_cfg.filter_edge_margin_s
         for t in station_picks.get("P", []):
             before, after = xcorr_cfg.window_p
             windows.append((t + before - pad, t + after + pad))
     if comp in s_components:
+        pad = xcorr_cfg.maxlag_for("S") + xcorr_cfg.filter_edge_margin_s
         for t in station_picks.get("S", []):
             before, after = xcorr_cfg.window_s
             windows.append((t + before - pad, t + after + pad))

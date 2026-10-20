@@ -937,3 +937,49 @@ def test_edge_lags_rejected(tmp_path, reject):
         assert len(lines) == 1
         # Pinned at the edge: |correction| == maxlag, not the true 0.06 s.
         assert abs(lines[0].dt_s - (1.0 - 1.0)) == pytest.approx(0.03, abs=DT)
+
+
+def test_s_maxlag_applies_to_s_only(tmp_path):
+    """OpenMEQ-suj: a 0.06 s shift on both P and S, maxlag_s 0.03 and
+    s_maxlag_s 0.1: S recovers the shift, P is still pinned at its edge and
+    dropped."""
+    n = int(4.0 * SR)
+    start_i = UTCDateTime(2020, 1, 1)
+    start_j = UTCDateTime(2020, 1, 1, 0, 5)
+    pick_i, pick_j = start_i + 2.0, start_j + 2.0
+    data_i = _make_window(start_i, n, peak_time=pick_i, freq=4.0)
+    data_j = _make_window(start_j, n, peak_time=pick_j + 0.06, freq=4.0)
+    cache_dir = tmp_path / "cache"
+    _write_npz_cache(
+        cache_dir,
+        "evt_i",
+        {"XX.STA1.00.HHZ": (data_i, start_i), "XX.STA1.00.HHN": (data_i, start_i)},
+    )
+    _write_npz_cache(
+        cache_dir,
+        "evt_j",
+        {"XX.STA1.00.HHZ": (data_j, start_j), "XX.STA1.00.HHN": (data_j, start_j)},
+    )
+    picks_by_event = {
+        "evt_i": _pick_data(pick_i - 1.0, {"XX.STA1": {"P": pick_i, "S": pick_i}}),
+        "evt_j": _pick_data(pick_j - 1.0, {"XX.STA1": {"P": pick_j, "S": pick_j}}),
+    }
+    params = dataclasses.replace(
+        _params(
+            maxlag_s=0.03,
+            station_phase_list=[("STA1", "P"), ("STA1", "S")],
+            cuspid_to_event_id={1: "evt_i", 2: "evt_j"},
+        ),
+        s_maxlag_s=0.1,
+    )
+    lines = cross_correlate_pair((1, 2), str(cache_dir), picks_by_event, params)
+    assert [ln.phase for ln in lines] == ["S"]
+    assert lines[0].dt_s == pytest.approx(-0.06, abs=DT)
+
+
+def test_xcorr_maxlag_for():
+    from openmeq.config import XcorrConfig
+
+    assert XcorrConfig(maxlag_s=0.05).maxlag_for("S") == 0.05
+    cfg = XcorrConfig(maxlag_s=0.05, s_maxlag_s=0.1)
+    assert (cfg.maxlag_for("P"), cfg.maxlag_for("S")) == (0.05, 0.1)

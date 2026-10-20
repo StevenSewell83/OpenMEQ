@@ -413,9 +413,12 @@ def _no_data(ax, text: str = "No data") -> None:
     ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes)
 
 
-def plot_dtcc_vs_dtct(df: pd.DataFrame, path: Path, *, maxlag_s: float | None) -> None:
+def plot_dtcc_vs_dtct(
+    df: pd.DataFrame, path: Path, *, maxlag_s: float | None, s_maxlag_s: float | None = None
+) -> None:
     """``dtcc_vs_dtct.png``: P and S histograms of ``diff_ms``, with
-    median/MAD/n annotated and +-``maxlag_s`` bounds drawn.
+    median/MAD/n annotated and +-``maxlag_s`` bounds drawn (``s_maxlag_s``,
+    when given, for the S panel).
 
     With ``maxlag_s`` set, the x range is fixed at +-3 x maxlag and values
     beyond it are clipped into the edge bins (so gross outliers stay
@@ -425,7 +428,9 @@ def plot_dtcc_vs_dtct(df: pd.DataFrame, path: Path, *, maxlag_s: float | None) -
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.5), layout="constrained")
+    p_maxlag = maxlag_s
     for ax, phase in zip(axes, ("P", "S"), strict=True):
+        maxlag_s = s_maxlag_s if phase == "S" and s_maxlag_s is not None else p_maxlag
         vals = df.loc[df["phase"] == phase, "diff_ms"].to_numpy(dtype=float)
         vals = vals[np.isfinite(vals)]
         if vals.size == 0:
@@ -457,7 +462,7 @@ def plot_dtcc_vs_dtct(df: pd.DataFrame, path: Path, *, maxlag_s: float | None) -
         ax.set_title(f"{phase} phase")
     fig.suptitle(
         "Cross-correlation vs catalogue differential times, (DT - OTC) - (TT1 - TT2)"
-        + (f"; dashed = +-maxlag ({maxlag_s * 1000:g} ms)" if maxlag_s is not None else "")
+        + ("; dashed = +-maxlag" if p_maxlag is not None else "")
     )
     save_fig(fig, path)
 
@@ -637,7 +642,12 @@ def write_relocate_extended_diagnostics(
         df = match_dtcc_dtct(dt_ct, dt_cc)
         df.to_csv(out_dir / "dtcc_vs_dtct.csv", index=False)
         written.append("dtcc_vs_dtct.csv")
-        plot_dtcc_vs_dtct(df, out_dir / "dtcc_vs_dtct.png", maxlag_s=cfg.hypodd.xcorr.maxlag_s)
+        plot_dtcc_vs_dtct(
+            df,
+            out_dir / "dtcc_vs_dtct.png",
+            maxlag_s=cfg.hypodd.xcorr.maxlag_s,
+            s_maxlag_s=cfg.hypodd.xcorr.maxlag_for("S"),
+        )
         written.append("dtcc_vs_dtct.png")
         return True
 

@@ -322,6 +322,7 @@ hypodd:
     # can lock onto the wrong cycle ("cycle skipping") and still pass min_cc.
     # About half to two-thirds of a period is a good default.
     maxlag_s: 0.05
+    s_maxlag_s: 0.10                    # S only (2026-10-21): S peaks were pinned at the 0.05 s edge
     # components: channels to correlate per phase, by the last letter of the
     # (mapped) channel code. P on the vertical; S on every horizontal, keeping
     # only the best-correlating one.
@@ -468,7 +469,7 @@ diagnostics:
   relocate:
     extended: true                      # extended relocate QAQC figures (2026-10-21)
     xcorr_plots:                        # obspy xcorr_pick_correction plots (relocate/diagnostics/xcorr_pairs/)
-      enabled: false
+      enabled: true                     # (2026-10-21)
       pair_interval: 100                # plot every Nth ph2dt-linked event pair (dt.ct order)
       max_pairs: 20                     # stop after this many pairs
   run: {extended: null}                 # event-count funnel across the whole run

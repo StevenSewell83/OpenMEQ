@@ -212,6 +212,7 @@ def _plot_pair_item(item: dict[str, Any]) -> list[dict[str, Any]]:
             rows.append({**row0, "error": "pick missing at one event"})
             continue
         t_before, t_after = item["window_p"] if phase == "P" else item["window_s"]
+        maxlag = item["s_maxlag_s"] if phase == "S" else item["maxlag_s"]
         seeds = []
         for comp in item["components"].get(phase, []):
             seed_i = _find_seed_id(list(traces_i), net_sta, comp)
@@ -234,13 +235,13 @@ def _plot_pair_item(item: dict[str, Any]) -> list[dict[str, Any]]:
             # Same (t_before, t_after) xcorr.cross_correlate_pair passes on, so
             # the plotted window is exactly the one the pipeline correlated:
             # [pick - t_before - maxlag/2, pick + t_after + maxlag/2].
-            w0 = -t_before - item["maxlag_s"] / 2.0
-            w1 = t_after + item["maxlag_s"] / 2.0
+            w0 = -t_before - maxlag / 2.0
+            w1 = t_after + maxlag / 2.0
             title = (
                 f"pair {item['pair_index']}: {item['event_i']} (1, black) vs "
                 f"{item['event_j']} (2, red)\n{seed_i} {phase}   correlated window: pick "
                 f"{w0:+.3f} to {w1:+.3f} s (time 0 = window start), maxlag "
-                f"{item['maxlag_s']} s   [{in_dtcc}]"
+                f"{maxlag} s   [{in_dtcc}]"
             )
             corr, cc, note = _plot_one(
                 traces_i[seed_i],
@@ -249,7 +250,7 @@ def _plot_pair_item(item: dict[str, Any]) -> list[dict[str, Any]]:
                 UTCDateTime(pick_j),
                 t_before,
                 t_after,
-                item["maxlag_s"],
+                maxlag,
                 png,
                 title,
             )
@@ -344,6 +345,7 @@ def write_xcorr_plots(
                 "window_p": obspy_window(xc.window_p),
                 "window_s": obspy_window(xc.window_s),
                 "maxlag_s": xc.maxlag_s,
+                "s_maxlag_s": xc.maxlag_for("S"),
                 "components": xc.components,
             }
         )

@@ -415,3 +415,20 @@ def test_synthetic_project_cache_builds(synthetic_project, tmp_path):
         data = np.load(cache_path)
         assert "sampling_rate" in data
         assert float(data["sampling_rate"]) == pytest.approx(cfg.hypodd.xcorr.resample_rate_hz)
+
+
+def test_applicable_windows_pad_by_phase_maxlag():
+    """OpenMEQ-suj: S windows are padded by s_maxlag_s, P windows by maxlag_s."""
+    from obspy import UTCDateTime
+
+    from openmeq.config import XcorrConfig
+    from openmeq.relocate.waveform_cache import _applicable_windows
+
+    xc = XcorrConfig(window_p=(-0.1, 0.1), window_s=(-0.1, 0.2), maxlag_s=0.05, s_maxlag_s=0.1)
+    t = UTCDateTime(2020, 1, 1)
+    picks = {"P": [t], "S": [t]}
+    margin = xc.filter_edge_margin_s
+    [(p0, p1)] = _applicable_windows("Z", picks, xc)
+    [(s0, s1)] = _applicable_windows("N", picks, xc)
+    assert (t - p0, p1 - t) == pytest.approx((0.1 + 0.05 + margin, 0.1 + 0.05 + margin))
+    assert (t - s0, s1 - t) == pytest.approx((0.1 + 0.1 + margin, 0.2 + 0.1 + margin))

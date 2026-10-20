@@ -457,6 +457,9 @@ MEANINGS: dict[str, str] = {
     "hypodd.xcorr.maxlag_s": "Maximum lag (seconds) searched. Must cover real pick errors but "
     "stay below one cycle of the dominant frequency, or the correlation can lock onto the wrong "
     "cycle (cycle skipping) and still pass `min_cc`; about half to two-thirds of a period.",
+    "hypodd.xcorr.s_maxlag_s": "Maximum lag (seconds) for S only; `null` = `maxlag_s`. S picks "
+    "are less precise than P and S has a lower dominant frequency, so S can usually take a "
+    "longer search than P before cycle skipping.",
     "hypodd.xcorr.components": '`{"P": [...], "S": [...]}` -- which mapped component code(s) to '
     "cross-correlate P and S on (e.g. `Z` for P; every configured horizontal tried independently "
     "for S, keeping only the best-correlating one).",

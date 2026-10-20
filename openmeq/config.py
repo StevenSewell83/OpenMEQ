@@ -845,6 +845,10 @@ class XcorrConfig(_StrictModel):
     window_s: tuple[float, float] = (-0.1, 0.2)
     min_cc: float = Field(default=0.75, ge=-1.0, le=1.0)
     maxlag_s: float = Field(default=0.05, gt=0)
+    # OpenMEQ-suj: S-phase max lag (s); null = maxlag_s. S picks are less
+    # precise than P, and S's lower frequency allows a longer lag before
+    # cycle skipping.
+    s_maxlag_s: float | None = Field(default=None, gt=0)
     components: dict[str, list[str]] = Field(
         default_factory=lambda: {"P": ["Z"], "S": ["1", "2", "N", "E"]}
     )
@@ -873,6 +877,12 @@ class XcorrConfig(_StrictModel):
     # edge of the +/- maxlag_s search (within half a sample): the true peak is
     # outside the search, so the lag is not a real correlation maximum.
     reject_edge_lags: bool = True
+
+    def maxlag_for(self, phase: str) -> float:
+        """Max lag (s) searched for ``phase`` (``"P"`` or ``"S"``)."""
+        if phase == "S" and self.s_maxlag_s is not None:
+            return self.s_maxlag_s
+        return self.maxlag_s
 
     @model_validator(mode="after")
     def _check_windows(self) -> XcorrConfig:

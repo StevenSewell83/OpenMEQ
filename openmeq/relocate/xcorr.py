@@ -348,6 +348,7 @@ class PairXcorrParams:
     station_phase_list: list[tuple[str, str]]
     cuspid_to_event_id: dict[int, str]
     reject_edge_lags: bool = True
+    s_maxlag_s: float | None = None  # OpenMEQ-suj: S max lag; None = maxlag_s
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +549,7 @@ def cross_correlate_pair(
     list[DtccLine]
         One line per station+phase that had a pick at both events, a
         cached channel at both events, and a cross-correlation with
-        ``cc >= cfg.min_cc`` and ``|lag| <= cfg.maxlag_s`` (plus a small
+        ``cc >= cfg.min_cc`` and ``|lag| <=`` the phase's max lag (plus a small
         one-sample tolerance for the sub-sample fit). Empty if nothing
         qualified -- never raises for a missing phase/channel/event (module
         docstring's pitfalls).
@@ -589,6 +590,7 @@ def cross_correlate_pair(
         pick_i_t = UTCDateTime(pick_i_iso)
         pick_j_t = UTCDateTime(pick_j_iso)
         t_before, t_after = obspy_window(cfg.window_p if phase == "P" else cfg.window_s)
+        maxlag = cfg.s_maxlag_s if phase == "S" and cfg.s_maxlag_s is not None else cfg.maxlag_s
         comps = cfg.components.get(phase, [])
 
         best: tuple[float, float, float] | None = None  # (cc, pick2_corr, sr)
@@ -611,18 +613,18 @@ def cross_correlate_pair(
                 continue
             sr = sr_i
             w_i = _extract_window(
-                arrays_i, seed_i, pick_i_t.timestamp, t_before, t_after, cfg.maxlag_s, sr
+                arrays_i, seed_i, pick_i_t.timestamp, t_before, t_after, maxlag, sr
             )
             w_j = _extract_window(
-                arrays_j, seed_j, pick_j_t.timestamp, t_before, t_after, cfg.maxlag_s, sr
+                arrays_j, seed_j, pick_j_t.timestamp, t_before, t_after, maxlag, sr
             )
             if w_i is None or w_j is None:
                 continue
-            result = _lag_and_cc(w_i, w_j, sr, cfg.maxlag_s)
+            result = _lag_and_cc(w_i, w_j, sr, maxlag)
             if result is None:
                 continue
             pick2_corr, coeff = result
-            if cfg.reject_edge_lags and _at_lag_edge(pick2_corr, cfg.maxlag_s, sr):
+            if cfg.reject_edge_lags and _at_lag_edge(pick2_corr, maxlag, sr):
                 # Best lag pinned to the search edge: not a real peak. Another
                 # channel (S) may still give an interior one.
                 continue
@@ -634,7 +636,7 @@ def cross_correlate_pair(
         coeff, pick2_corr, sr = best
         if coeff < cfg.min_cc:
             continue
-        if abs(pick2_corr) > cfg.maxlag_s + 1.0 / sr:
+        if abs(pick2_corr) > maxlag + 1.0 / sr:
             continue
 
         dt_s = (pick_i_t - origin_i) - (pick_j_t + pick2_corr - origin_j)
@@ -923,6 +925,7 @@ def run_xcorr(
             station_phase_list=pair_detail.get(pair, []),
             cuspid_to_event_id={cuspid_i: event_i, cuspid_j: event_j},
             reject_edge_lags=xcorr_cfg.reject_edge_lags,
+            s_maxlag_s=xcorr_cfg.s_maxlag_s,
         )
         picks_subset: dict[str, dict[str, Any]] = {}
         if event_i in event_pick_data:

@@ -368,6 +368,10 @@ here makes the next `openmeq relocate` recompute every pair.
   stay **below one cycle** of the dominant frequency: a longer search lets the
   correlation lock onto the neighbouring cycle (cycle skipping), which still
   passes `min_cc`. About half to two-thirds of a period.
+- **`s_maxlag_s`**: the same for S only (`null` = `maxlag_s`). S picks are less
+  precise than P and S has a lower dominant frequency, so S can take a longer
+  search. Raise it when the `xcorr_pairs` plots show S correlation peaks at the
+  edge of the search (MacBan: 0.1 s for S, 0.05 s for P).
 - **`reject_edge_lags`**: drop measurements whose best lag is at the edge of
   the search (the real peak is outside it). Keep on.
 - **`components`**: channels per phase, by the last letter of the mapped

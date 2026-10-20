@@ -357,6 +357,9 @@ hypodd:
     # can lock onto the wrong cycle ("cycle skipping") and still pass min_cc.
     # About half to two-thirds of a period is a good default.
     maxlag_s: 0.05
+    # s_maxlag_s: max lag for S only (null = maxlag_s). S picks are less precise
+    # and S is lower-frequency, so S can usually take a longer search than P.
+    s_maxlag_s: null
     # components: channels to correlate per phase, by the last letter of the
     # (mapped) channel code. P on the vertical; S on every horizontal, keeping
     # only the best-correlating one.
