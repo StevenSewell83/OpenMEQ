@@ -216,6 +216,37 @@ MEANINGS: dict[str, str] = {
     "detection.dedup_window_s": "Triggers within this many seconds of each other are merged into "
     "one detection (STA/LTA often fires separately on P and S); should exceed the network's max "
     "S-P time plus trigger length.",
+    # --- detection.sweep (OpenMEQ-cl6; `openmeq diagnostics detect-sweep` only) ---
+    "detection.sweep.days": "Sample days (UTC dates) to sweep; empty = `n_days` days spread over "
+    "the days with the most channels.",
+    "detection.sweep.n_days": "Number of sample days chosen automatically when `days` is empty.",
+    "detection.sweep.filters": "Bandpass `[freqmin, freqmax]` pairs (Hz) to sweep.",
+    "detection.sweep.sta": "STA windows (seconds) to sweep.",
+    "detection.sweep.lta_factor": "LTA windows to sweep, as multiples of `sta`.",
+    "detection.sweep.trigger_on": "`trigger_on` values (the L-curve axis); `null` = 15 "
+    "log-spaced values from 2.5 to 12.",
+    "detection.sweep.trigger_off": "`trigger_off` values; pairs with `trigger_off >= trigger_on` "
+    "are skipped.",
+    "detection.sweep.min_stations": "`min_stations` values (one L-curve each); `null` = 2 to "
+    "min(number of stations, 12).",
+    "detection.sweep.trace_coincidence_per_station": "Each `min_stations` value is run with "
+    "`min_trace_coincidence = ceil(min_stations * this)`.",
+    "detection.sweep.max_station_triggers": "A grid point with more single-trace triggers than "
+    "this in one sample day/window is recorded as saturated (noise) and not coincidence-tested.",
+    "detection.sweep.reference": "Optional reference catalogue CSV; enables the recall vs "
+    "extra-detections curves.",
+    "detection.sweep.reference_time_column": "Event-time column of the reference catalogue "
+    "(ISO-8601, UTC).",
+    "detection.sweep.match_window_s": "`[lo, hi]` (seconds): a detection matches a reference "
+    "event if `detection_time - event_time` is in this range (one-to-one).",
+    "detection.sweep.windows_csv": "`coincidence_windows.csv` from `scripts/detect_windows.py`: "
+    "sweep inside these recording windows (triggered archives) instead of whole days.",
+    "detection.sweep.max_windows": "Use at most this many recording windows, spread evenly; "
+    "`null` = all.",
+    "detection.sweep.edge_s": "Window mode: ignore triggers this many seconds after a window "
+    "start; `null` = 2 x the largest swept `lta`.",
+    "detection.sweep.n_workers": "Worker processes (one sample day x filter band each; a day of "
+    "many 200 Hz channels can use >10 GB).",
     # --- chunks ---
     "chunks.pre_s": "Seconds of context kept before a detection's trigger time in the raw chunk.",
     "chunks.post_s": "Seconds of context kept after.",

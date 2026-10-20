@@ -105,6 +105,23 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `detection.station_weights` | dict[str, float] | `{}` | `{"NET.STA": weight}` -- optional per-station weights passed to `coincidence_trigger`'s `trace_ids` weighting; a station absent from this map weighs 1.0. |
 | `detection.day_overlap_s` | float | `60.0` | Padding (seconds) read on each side of a per-day detection window so a trigger straddling midnight isn't lost; must comfortably exceed `lta` plus a trigger's typical duration. |
 | `detection.dedup_window_s` | float | `10.0` | Triggers within this many seconds of each other are merged into one detection (STA/LTA often fires separately on P and S); should exceed the network's max S-P time plus trigger length. |
+| `detection.sweep.days` | list[date] | `[]` | Sample days (UTC dates) to sweep; empty = `n_days` days spread over the days with the most channels. |
+| `detection.sweep.n_days` | int | `3` | Number of sample days chosen automatically when `days` is empty. |
+| `detection.sweep.filters` | list[tuple[float, float]] | `[(1.0, 10.0), (2.0, 20.0), (2.0, 30.0), (5.0, 40.0)]` | Bandpass `[freqmin, freqmax]` pairs (Hz) to sweep. |
+| `detection.sweep.sta` | list[float] | `[0.05, 0.1, 0.2, 0.5]` | STA windows (seconds) to sweep. |
+| `detection.sweep.lta_factor` | list[float] | `[10.0, 25.0, 50.0]` | LTA windows to sweep, as multiples of `sta`. |
+| `detection.sweep.trigger_on` | list[float] \| None | `None` | `trigger_on` values (the L-curve axis); `null` = 15 log-spaced values from 2.5 to 12. |
+| `detection.sweep.trigger_off` | list[float] | `[1.0, 1.5, 2.0]` | `trigger_off` values; pairs with `trigger_off >= trigger_on` are skipped. |
+| `detection.sweep.min_stations` | list[int] \| None | `None` | `min_stations` values (one L-curve each); `null` = 2 to min(number of stations, 12). |
+| `detection.sweep.trace_coincidence_per_station` | float | `1.0` | Each `min_stations` value is run with `min_trace_coincidence = ceil(min_stations * this)`. |
+| `detection.sweep.max_station_triggers` | int | `200000` | A grid point with more single-trace triggers than this in one sample day/window is recorded as saturated (noise) and not coincidence-tested. |
+| `detection.sweep.reference` | path \| None | `None` | Optional reference catalogue CSV; enables the recall vs extra-detections curves. |
+| `detection.sweep.reference_time_column` | str | `"time"` | Event-time column of the reference catalogue (ISO-8601, UTC). |
+| `detection.sweep.match_window_s` | tuple[float, float] | `(-2.0, 5.0)` | `[lo, hi]` (seconds): a detection matches a reference event if `detection_time - event_time` is in this range (one-to-one). |
+| `detection.sweep.windows_csv` | path \| None | `None` | `coincidence_windows.csv` from `scripts/detect_windows.py`: sweep inside these recording windows (triggered archives) instead of whole days. |
+| `detection.sweep.max_windows` | int \| None | `None` | Use at most this many recording windows, spread evenly; `null` = all. |
+| `detection.sweep.edge_s` | float \| None | `None` | Window mode: ignore triggers this many seconds after a window start; `null` = 2 x the largest swept `lta`. |
+| `detection.sweep.n_workers` | int | `3` | Worker processes (one sample day x filter band each; a day of many 200 Hz channels can use >10 GB). |
 
 ## `chunks` -- per-event waveform chunk writing (`openmeq chunk`)
 

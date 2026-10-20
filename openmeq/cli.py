@@ -716,6 +716,70 @@ def diagnostics_qc(config_path: str) -> None:
     click.echo(f"wrote {paths.qc_diagnostics_dir}/")
 
 
+@diagnostics.command("detect-sweep")
+@_CONFIG_OPTION
+@click.option(
+    "--day",
+    "days",
+    multiple=True,
+    help="Sample day YYYY-MM-DD (repeatable); overrides detection.sweep.days.",
+)
+@click.option(
+    "--reference",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Reference catalogue CSV (overrides detection.sweep.reference).",
+)
+@click.option(
+    "--windows-csv",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="coincidence_windows.csv from scripts/detect_windows.py (overrides "
+    "detection.sweep.windows_csv).",
+)
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Overrides detection.sweep.n_workers.",
+)
+def diagnostics_detect_sweep(
+    config_path: str,
+    days: tuple[str, ...],
+    reference: str | None,
+    windows_csv: str | None,
+    workers: int | None,
+) -> None:
+    """Sweep detection parameters on sample days -> 2_detection/sweep/ (L-curves).
+
+    Grid from detection.sweep. Needs the waveform index from `openmeq qc`;
+    detections.csv is not touched.
+    """
+    import datetime as _dt
+
+    from openmeq.detect.sweep import run_sweep
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    configure_logging(paths, "detect")
+    sweep = cfg.detection.sweep
+    try:
+        if days:
+            sweep.days = [_dt.date.fromisoformat(d) for d in days]
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--day") from exc
+    if reference:
+        sweep.reference = Path(reference).resolve()
+    if windows_csv:
+        sweep.windows_csv = Path(windows_csv).resolve()
+    if workers:
+        sweep.n_workers = workers
+    try:
+        out_dir = run_sweep(cfg, paths, config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"wrote {out_dir}/ (sweep.csv, knees.csv, candidates.csv, figures)")
+
+
 @diagnostics.command("ppsd")
 @_CONFIG_OPTION
 @click.option(

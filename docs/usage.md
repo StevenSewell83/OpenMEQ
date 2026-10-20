@@ -236,6 +236,42 @@ weighted by `station_weights`; a 3-C station counts up to 3) and at least
 triggers within `detection.dedup_window_s` are merged into one detection
 (STA/LTA commonly fires separately on P and S).
 
+### Choosing the detection parameters: `openmeq diagnostics detect-sweep`
+
+```bash
+openmeq diagnostics detect-sweep -c config.yaml [--day 2026-01-15 ...] \
+    [--reference catalogue.csv] [--windows-csv 2_detection/coincidence_windows.csv] [--workers 3]
+```
+
+Runs the detector over the `detection.sweep` grid on a few sample days (needs
+`0_setup/index.json` from `openmeq qc`) and writes `2_detection/sweep/`;
+`detections.csv` is not touched. Each sample day x filter band is read and
+filtered once, STA/LTA is computed once per `sta` x `lta_factor`, and every
+`trigger_on` x `trigger_off` x `min_stations` combination reuses it, so the
+threshold axes can be dense. Each grid point gives exactly the detections
+`openmeq detect` would give with those values on that day.
+
+- `lcurve_<band>_off<trigger_off>.png`: detections per day against
+  `trigger_on` (log-log), one panel per `sta` x `lta`, one line per
+  `min_stations`. Noise triggers fall away steeply, then the count levels off
+  on the real events; the knee (x) is a good `trigger_on`. Grey: saturated
+  (too many single-channel triggers to coincidence-test; noise).
+- `recall_<band>_off<trigger_off>.png` (with `--reference` /
+  `detection.sweep.reference`, a CSV with a `time` column): recall against
+  extra detections per day. Detections match reference events with
+  `detection - event` time in `match_window_s`.
+- `sweep.csv` (every grid point: `det_per_day`, `persist_frac` = share of
+  detections still found at the next higher `trigger_on`, and `recall`,
+  `extras_per_day`, `precision`, `f1` with a reference), `knees.csv` (one row
+  per curve), `candidates.csv` (best F1 with a reference, else the sharpest
+  knees) and `items.csv` (the sample days).
+
+For triggered archives (only short event windows recorded), pass the
+`coincidence_windows.csv` of `scripts/detect_windows.py --windows-only` to
+sweep inside those windows; keep the `lta` grid short, as the first `edge_s`
+(default 2 x the largest `lta`) of each window is ignored. A day of many
+200 Hz channels can use over 10 GB per worker; keep `n_workers` small.
+
 ## Step 3: `openmeq chunk` -- per-event waveform chunks
 
 **Reads:** `2_detection/detections.csv`, `0_setup/index.json`.

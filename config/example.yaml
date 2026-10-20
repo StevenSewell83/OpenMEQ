@@ -152,6 +152,30 @@ detection:
                                          # lta plus a trigger's typical duration
   # --- M2.2 / OpenMEQ-ujx.2 ---
   dedup_window_s: 10.0                  # triggers within this many seconds are one detection. STA/LTA often fires separately on P and S; keep this above the network's max S-P time plus trigger length
+  # --- OpenMEQ-cl6: parameter sweep for `openmeq diagnostics detect-sweep` (not used by detect) ---
+  # Runs the detector over the grid below on a few sample days and writes L-curves
+  # (detections/day vs trigger_on; with a reference catalogue, recall vs extras/day)
+  # to 2_detection/sweep/. filters x sta x lta_factor each recompute STA/LTA;
+  # trigger_on x trigger_off x min_stations are cheap.
+  sweep:
+    days: []                            # sample UTC dates; [] = n_days spread over the best-covered days
+    n_days: 3
+    filters: [[1, 10], [2, 20], [2, 30], [5, 40]]   # bandpass [freqmin, freqmax], Hz
+    sta: [0.05, 0.1, 0.2, 0.5]          # s
+    lta_factor: [10, 25, 50]            # lta = sta * lta_factor
+    trigger_on: null                    # null = 15 log-spaced values, 2.5..12
+    trigger_off: [1.0, 1.5, 2.0]        # pairs with trigger_off >= trigger_on are skipped
+    min_stations: null                  # null = 2 .. min(n stations, 12); one L-curve each
+    trace_coincidence_per_station: 1.0  # min_trace_coincidence = ceil(min_stations * this)
+    max_station_triggers: 200000        # more single-trace triggers per sample day = saturated (noise)
+    reference: null                     # reference catalogue CSV -> recall vs extra-detections curves
+    reference_time_column: time
+    match_window_s: [-2.0, 5.0]         # detection - reference time range that counts as a match, s
+    windows_csv: null                   # triggered archives: coincidence_windows.csv from
+                                         # scripts/detect_windows.py replaces the sample days
+    max_windows: null                   # at most this many windows, spread evenly
+    edge_s: null                        # window mode: skip triggers this long after a window start; null = 2 x max lta
+    n_workers: 3                        # one sample day x filter each; a 200 Hz day can use >10 GB
 
 chunks:
   pre_s: 30                             # seconds of context before a detection kept in the raw chunk

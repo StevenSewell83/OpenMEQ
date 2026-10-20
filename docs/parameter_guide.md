@@ -156,6 +156,8 @@ QC flags are **informational**: they never remove data from detection. Only
 Network STA/LTA with coincidence triggering. Tune on one or two days that
 contain known events (a reference catalogue helps), using
 `station_trigger_rate.png` and `cf_examples_NN.png`.
+`openmeq diagnostics detect-sweep` runs the whole grid below (`detection.sweep`)
+on sample days and draws L-curves; see `docs/usage.md` (Step 2).
 
 - **`filter`** (`type`, `freqmin`, `freqmax`): applied before STA/LTA. Choose the
   band where local events stand above the noise. Keep `freqmax` below the

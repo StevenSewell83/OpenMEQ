@@ -301,6 +301,58 @@ class DetectionFilterConfig(_StrictModel):
     freqmax: float | None = 80.0
 
 
+class DetectionSweepConfig(_StrictModel):
+    """``openmeq diagnostics detect-sweep`` grid (OpenMEQ-cl6).
+
+    Outer axes (``filters`` x ``sta`` x ``lta_factor``) each need a fresh
+    STA/LTA; inner axes (``trigger_on`` x ``trigger_off`` x ``min_stations``)
+    reuse it. See :mod:`openmeq.detect.sweep`.
+    """
+
+    # Sample days (UTC dates); empty = n_days spread over the days with the most channels.
+    days: list[date] = Field(default_factory=list)
+    n_days: int = Field(default=3, ge=1)
+    # Bandpass [freqmin, freqmax] pairs (Hz).
+    filters: list[tuple[float, float]] = Field(
+        default_factory=lambda: [(1.0, 10.0), (2.0, 20.0), (2.0, 30.0), (5.0, 40.0)]
+    )
+    sta: list[float] = Field(default_factory=lambda: [0.05, 0.1, 0.2, 0.5])
+    # lta = sta * lta_factor
+    lta_factor: list[float] = Field(default_factory=lambda: [10.0, 25.0, 50.0])
+    # null = 15 log-spaced values from 2.5 to 12
+    trigger_on: list[float] | None = None
+    trigger_off: list[float] = Field(default_factory=lambda: [1.0, 1.5, 2.0])
+    # null = 2 .. min(number of stations, 12)
+    min_stations: list[int] | None = None
+    # min_trace_coincidence = ceil(min_stations * this) for each min_stations value
+    trace_coincidence_per_station: float = Field(default=1.0, gt=0)
+    # A (filter, sta, lta, trigger_on, trigger_off) combination with more single-trace
+    # triggers than this in one sample day is recorded as saturated, not coincidence-tested.
+    max_station_triggers: int = Field(default=200_000, ge=1)
+    # Reference catalogue (CSV with a time column) for the recall-vs-extras mode.
+    reference: Path | None = None
+    reference_time_column: str = "time"
+    # A detection matches a reference event if det_time - ref_time is in this range (s).
+    match_window_s: tuple[float, float] = (-2.0, 5.0)
+    # Recording-window mode (triggered archives): coincidence_windows.csv from
+    # scripts/detect_windows.py; replaces the sample days.
+    windows_csv: Path | None = None
+    max_windows: int | None = Field(default=None, ge=1)
+    # Window mode: ignore on-times this long after a window start; null = 2 x the largest lta.
+    edge_s: float | None = None
+    # Worker processes, one sample day x filter each (a day of 200 Hz data can take >10 GB).
+    n_workers: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def _check_filters(self):
+        for fmin, fmax in self.filters:
+            if not 0 < fmin < fmax:
+                raise ValueError(
+                    f"detection.sweep.filters: need 0 < freqmin < freqmax, got {[fmin, fmax]}"
+                )
+        return self
+
+
 class DetectionConfig(_StrictModel):
     sta: float = 0.05
     lta: float = 1.0
@@ -324,6 +376,8 @@ class DetectionConfig(_StrictModel):
     # Must exceed the max S-P time plus trigger length so P and S triggers of one
     # event merge into a single detection (STA/LTA often fires on both).
     dedup_window_s: float = 10.0
+    # OpenMEQ-cl6: grid for `openmeq diagnostics detect-sweep`; not used by `openmeq detect`.
+    sweep: DetectionSweepConfig = Field(default_factory=DetectionSweepConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -1202,6 +1256,9 @@ class Config(_StrictModel):
             )
         self.hypodd.velocity_model.file = _resolve(self.hypodd.velocity_model.file, base_dir)
         self.diagnostics.wells.dir = _resolve(self.diagnostics.wells.dir, base_dir)
+        sweep = self.detection.sweep
+        sweep.reference = _resolve(sweep.reference, base_dir)
+        sweep.windows_csv = _resolve(sweep.windows_csv, base_dir)
         if self.data.convert is not None:
             self.data.convert.input_dir = _resolve(self.data.convert.input_dir, base_dir)
             self.data.convert.output_dir = _resolve(self.data.convert.output_dir, base_dir)
