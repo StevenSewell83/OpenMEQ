@@ -240,10 +240,15 @@ build_nonlinloc() {
     # build dir is configured from scratch each run: CMake caches the
     # compiler and flags it first saw, so a stale cache would keep using
     # them regardless of CC below.
+    #
+    # The C standard is pinned to gnu17: GCC 15 defaults to C23, where an
+    # empty parameter list `int f();` means `int f(void)`, and NonLinLoc's
+    # K&R-style prototypes (e.g. vector/vector.h) then conflict with their
+    # definitions ("conflicting types for 'cross_product_3d'").
     log "NonLinLoc: cmake configure + build"
     rm -rf "$dir/build"
     build_env cmake -S "$dir/src" -B "$dir/build" -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER="$CC"
+        -DCMAKE_C_COMPILER="$CC" -DCMAKE_C_STANDARD=17 -DCMAKE_C_EXTENSIONS=ON
     build_env cmake --build "$dir/build" -j"$(nproc)"
 
     local built_bin="$dir/src/bin"
