@@ -11,8 +11,9 @@
 #      its pretrained model weights.
 #   4. NonLinLoc, built from source with CMake, binaries copied to
 #      external/bin/.
-#   5. hypoDD 2.1 (3D), unpacked from HYPODD.zip and built with make,
-#      binaries copied to external/bin/.
+#   5. hypoDD 2.1 (3D), unpacked from HYPODD.zip, patched with
+#      patches/hypodd-gfortran13.patch, built with make, binaries copied to
+#      external/bin/.
 #   6. A smoke check: imports succeed, binaries run without a missing-library
 #      error, and hypoDD's bundled example 1 relocates end-to-end.
 #
@@ -75,6 +76,7 @@ EXTERNAL_DIR="$REPO_ROOT/external"
 BIN_DIR="$EXTERNAL_DIR/bin"
 LOG_FILE="$REPO_ROOT/install.log"
 HYPODD_ZIP="$REPO_ROOT/HYPODD.zip"
+HYPODD_PATCH="$REPO_ROOT/patches/hypodd-gfortran13.patch"
 
 # --- Logging (stdout/stderr tee'd to install.log, truncated each run) ------
 : > "$LOG_FILE"
@@ -277,6 +279,21 @@ build_hypodd() {
         unzip -q "$HYPODD_ZIP" -d "$EXTERNAL_DIR"
     fi
     [ -d "$dir/src" ] || die "unexpected HYPODD.zip layout: $dir/src not found"
+
+    # The HYPODD.zip source has bugs that gfortran 13+ turns into a segfault
+    # in the relocation step: matmult2 declares its output c(n) but writes
+    # c(1..m), and several FORMAT strings are missing commas (some because
+    # the comma sits in column 73 and is dropped) -- libgfortran rejects one
+    # at run time and crashes while formatting the error. The patch makes
+    # them conforming; output is unchanged. Skipped if already applied, since
+    # an existing external/HYPODD is reused.
+    if git -C "$dir" apply --check --reverse "$HYPODD_PATCH" 2>/dev/null; then
+        log "hypoDD: ${HYPODD_PATCH#"$REPO_ROOT"/} already applied"
+    else
+        log "hypoDD: applying ${HYPODD_PATCH#"$REPO_ROOT"/}"
+        git -C "$dir" apply "$HYPODD_PATCH" \
+            || die "could not apply ${HYPODD_PATCH#"$REPO_ROOT"/} to external/HYPODD -- delete external/HYPODD and re-run"
+    fi
 
     # The Makefiles hardcode CC = gcc / FC = gfortran (resolved via PATH);
     # command-line assignments override those and reach the sub-makes

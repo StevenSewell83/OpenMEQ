@@ -1,0 +1,99 @@
+--- a/src/hypoDD/cluster1.f
++++ b/src/hypoDD/cluster1.f
+@@ -177,7 +177,7 @@
+ cfw      write(log,'("# isolated events =",i5,/,8(i8))')
+       write(log,'("# isolated events =",i5,/,8(i9))')
+      & noclust(1),(noclust(j),j=2,noclust(1)+1)
+-      write(log,'("# clusters =",i5,"  for min. number of links "
++      write(log,'("# clusters =",i5,"  for min. number of links ",
+      & "set to ",i5)')nclust,minobs_ct+minobs_cc
+       k = 0
+       do i=1,nclust
+--- a/src/hypoDD/getinp2.f
++++ b/src/hypoDD/getinp2.f
+@@ -335,7 +335,7 @@
+ 
+       aiter(0)=0
+       write (log, '("  ITER ",i3,"-",i3,
+-     &": DAMP= "f7.1,/,"    WT_CCP= ",f7.2,2X,"WT_CCS= ",f7.2,2x,
++     &": DAMP= ",f7.1,/,"    WT_CCP= ",f7.2,2X,"WT_CCS= ",f7.2,2x,
+      &"MAXR_CC= ",f7.2,2X,"MAXD_CC= ",f7.2,2X,/,
+      &"    WT_CTP= ",f7.2,2x,"WT_CTS= ",f7.2,2x,"MAXR_CT= ",f7.2,2x,
+      &"MAXD_CT= ",f7.2)')
+--- a/src/hypoDD/getinp.f
++++ b/src/hypoDD/getinp.f
+@@ -206,7 +206,7 @@
+ 
+       aiter(0)=0
+       write (log, '("  ITER ",i2,"-",i2,
+-     &": DAMP= "f5.1,/,"    WT_CCP= ",f7.4,2X,"WT_CCS= ",f7.4,2x,
++     &": DAMP= ",f5.1,/,"    WT_CCP= ",f7.4,2X,"WT_CCS= ",f7.4,2x,
+      &"MAXR_CC= ",f7.4,2X,"MAXD_CC= ",f7.2,2X,/,
+      &"    WT_CTP= ",f7.4,2x,"WT_CTS= ",f7.4,2x,"MAXR_CT= ",f7.4,2x,
+      &"MAXD_CT= ",f7.2)')
+--- a/src/hypoDD/hypoDD.f
++++ b/src/hypoDD/hypoDD.f
+@@ -980,7 +980,7 @@
+       call setorg(sdc0_lat,sdc0_lon,rot_3d,0)
+       close(iunit)
+ c WARNING: variable "str" is set to zero value by default
+-      write(log,'(/,"Relocation results for this iteration are"
++      write(log,'(/,"Relocation results for this iteration are",
+      & " stored in ",a)')str80(1:trimlen(str80))
+ 
+ 500   continue  ! case of air quakes
+--- a/src/hypoDD/lsfit_lsqr.f
++++ b/src/hypoDD/lsfit_lsqr.f
+@@ -341,8 +341,8 @@
+       do i=1,nev*4
+          norm_test(i) = sqrt(norm_test(i)/nndt)
+          if (abs(norm_test(i)-1).gt.0.001) then
+-            write(*,'("FATAL ERROR (lsqr: G scaling). Please report to ",   
+-     &                "felixw@ldeo.columbia.edu")')
++            write(*,'("FATAL ERROR (lsqr: G scaling). Please report to "
++     &                ,"felixw@ldeo.columbia.edu")')
+             stop
+          endif
+       enddo
+@@ -383,8 +383,8 @@
+      & atol, btol, conlim, itnlim, 
+      & istop, anorm, acond, rnorm, arnorm, xnorm)
+ 
+-      write(log,'("  istop = ",i1,"; acond (CND)=",f8.1,"; anorm =",f8.1,
+-     & "; arnorm =",f8.1,"; xnorm =",f8.1)')
++      write(log,'("  istop = ",i1,"; acond (CND)=",f8.1,"; anorm =",f8.1
++     & ,"; arnorm =",f8.1,"; xnorm =",f8.1)')
+      & istop, acond, anorm, arnorm, xnorm
+ 
+       if (nsrc.eq.1) nsrc = nev
+@@ -502,7 +502,7 @@
+       write(log,'(/,"Location summary:")')
+       write(log,'(
+      & " mean 2sig-error (x,y,z,t) [m,ms]: ",/,f7.1,f7.1,f7.1,f7.1,
+-     & " (",f7.1,f7.1,f7.1,f7.1")",/,
++     & " (",f7.1,f7.1,f7.1,f7.1,")",/,
+      & " mean shift (x,y,z,t) [m,ms] (DX,DY,DZ,DT): ",/,
+      & f7.1,f7.1,f7.1,f7.1," (",f7.1,f7.1,f7.1,f7.1,")")')
+      & exav, eyav, ezav, etav, exav-exavold, eyav-eyavold, 
+--- a/src/hypoDD/lsfit_svd.f
++++ b/src/hypoDD/lsfit_svd.f
+@@ -477,7 +477,7 @@
+       endif
+       write(log,'(/,"Location summary:",/,
+      & "  mean 2sig-error (x,y,z,t) [m,ms]: ",/,f7.1,f7.1,f7.1,f7.1,
+-     & " (",f7.1,f7.1,f7.1,f7.1")",/,
++     & " (",f7.1,f7.1,f7.1,f7.1,")",/,
+      & "  mean shift (x,y,z,t) [m,ms] (DX,DY,DZ,DT): ",/,
+      & f7.1,f7.1,f7.1,f7.1," (",f7.1,f7.1,f7.1,f7.1,")")')
+      & exav,eyav,ezav,etav,exav-exavold,eyav-eyavold,
+--- a/src/hypoDD/matmult2.f
++++ b/src/hypoDD/matmult2.f
+@@ -10,7 +10,7 @@
+ 	integer	n
+ 	doubleprecision	a(maxm,n)	! (1..m, 1..n)
+ 	real	b(n)		! (1..n)
+-	real	c(n)		! (1..n)
++	real	c(m)		! (1..m)
+ 
+ c	Local variables:
+ 	integer	j, l
