@@ -427,7 +427,9 @@ def test_run_all_review_enabled_catalog_final_used_by_magnitude(
     real compile would simply overwrite from its own inputs anyway).
     """
     config_path, _output_dir = _patched_example_config(tmp_path)
-    text = config_path.read_text().replace("enabled: false", "enabled: true", 1)
+    text = config_path.read_text().replace(
+        "review:\n  enabled: false", "review:\n  enabled: true", 1
+    )
     config_path.write_text(text)
 
     cfg = load_config(config_path)
