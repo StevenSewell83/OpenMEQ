@@ -274,6 +274,31 @@ def test_decimation_preserves_injected_frequency(prep_world, tmp_path):
     )
 
 
+@pytest.mark.parametrize("freq_hz", [5.0, 12.0, 25.0])
+def test_decimation_does_not_delay_onsets(freq_hz):
+    """OpenMEQ-tr9: ``Trace.decimate``'s own (causal) anti-alias filter
+    delayed a 200 -> 100 Hz onset by 20-30 ms, and every PhaseNet pick with
+    it. The decimated wavelet must line up with the original to within a
+    fraction of a 100 Hz sample."""
+    from openmeq.pick.prep import _decimate_to_target
+
+    sr = 200.0
+    t = np.arange(int(60 * sr)) / sr
+    tau = np.clip(t - 30.0, 0.0, None)
+    wavelet = np.where(t >= 30.0, np.sin(2 * np.pi * freq_hz * tau) * np.exp(-3.0 * tau), 0.0)
+    tr = Trace(data=wavelet.copy(), header={"sampling_rate": sr, "channel": "HHZ"})
+    stream = Stream([tr])
+    _decimate_to_target(stream, "ev_test", 100.0)
+
+    out = stream[0]
+    assert out.stats.sampling_rate == pytest.approx(100.0)
+    back = np.interp(t, out.times(), out.data)
+    lags = np.arange(-40, 41)  # +-0.2 s at 200 Hz
+    cc = [np.dot(np.roll(wavelet, k), back) for k in lags]
+    lag_s = lags[int(np.argmax(cc))] / sr
+    assert abs(lag_s) <= 0.0025, f"{freq_hz} Hz onset shifted by {lag_s * 1000:.1f} ms"
+
+
 # ---------------------------------------------------------------------------
 # 3. two-location-code collation
 # ---------------------------------------------------------------------------

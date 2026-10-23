@@ -296,7 +296,7 @@ cross-correlation later -- they are never regenerated once written unless
 
 - `4_data_chunks/chunks_pn/<event_id>/<event_id>.mseed` -- PhaseNet-ready waveforms
   (merged/gap-filled, demeaned/detrended, tapered, optional high-pass,
-  anti-alias-filtered and decimated to `phasenet.target_rate_hz`, channels
+  zero-phase anti-alias-filtered and decimated to `phasenet.target_rate_hz`, channels
   mapped to Z/1/2 or rotated to ZNE if `stations.orientations` gives a known
   azimuth).
 - `4_data_chunks/chunks_pn/data_list.csv` -- the PhaseNet input list.

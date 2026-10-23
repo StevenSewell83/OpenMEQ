@@ -20,8 +20,11 @@ d. Optional zero-phase high-pass (``cfg.phasenet.highpass_hz``), before
    decimation.
 e. Anti-alias decimate each trace individually (verified per-trace, not
    assumed uniform) from its own sampling rate to
-   ``cfg.phasenet.target_rate_hz`` via ``Trace.decimate`` (obspy's own
-   built-in anti-alias filter, ``no_filter=False``); a trace already at the
+   ``cfg.phasenet.target_rate_hz``: obspy's ``lowpass_cheby_2`` (the filter
+   ``Trace.decimate`` uses) applied forward and backward, i.e. zero-phase,
+   then ``Trace.decimate(no_filter=True)``. ``Trace.decimate``'s own filter
+   is causal and delayed 5-20 Hz onsets by 20-30 ms at 200 -> 100 Hz, which
+   shifted every PhaseNet pick late (OpenMEQ-tr9). A trace already at the
    target rate is a no-op; a non-integer ratio raises ``ValueError``.
 f. **Location-code collation**: PhaseNet groups by ``NET.STA.LOC.BandInst``
    (docs/phasenet_interface.md §4.6), so two location codes at one
@@ -81,6 +84,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 from obspy import Stream, Trace, read
+from obspy.signal.filter import lowpass_cheby_2
 
 from openmeq.log import get_logger
 from openmeq.manifest import StepManifest, fingerprint
@@ -108,6 +112,11 @@ _SIDECAR_NAME = "_prep_report.json"
 #: (guards against float round-off in ``sampling_rate / target_rate_hz``,
 #: not intended to tolerate a genuinely non-integer decimation factor).
 _RATIO_TOL = 1e-6
+
+#: Part of every event's skip-unchanged fingerprint: bump it when the
+#: preparation itself changes so existing ``chunks_pn/`` files are redone
+#: (2: zero-phase anti-alias filter, OpenMEQ-tr9).
+_PREP_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +232,15 @@ def _decimate_to_target(stream: Stream, event_id: str, target_rate_hz: float) ->
                 f"event {event_id}: {tr.id} sampling rate {sr} Hz is not an integer multiple "
                 f"of phasenet.target_rate_hz={target_rate_hz} Hz (ratio={ratio!r})"
             )
-        tr.decimate(factor=int(rounded), no_filter=False)
+        factor = int(rounded)
+        if factor == 1:
+            continue
+        # Same filter and corner as Trace.decimate(no_filter=False), but
+        # forward-backward so onsets are not delayed (module docstring, e).
+        freq = sr * 0.5 / factor
+        data = lowpass_cheby_2(tr.data, freq, sr, maxorder=12)
+        tr.data = np.ascontiguousarray(lowpass_cheby_2(data[::-1], freq, sr, maxorder=12)[::-1])
+        tr.decimate(factor=factor, no_filter=True)
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +494,7 @@ def prepare_all(
     manifest = StepManifest(paths, "chunks_pn")
 
     def _fp(event_id: str) -> str:
-        return fingerprint(cfg.phasenet, cfg.stations, paths.chunk_file(event_id))
+        return fingerprint(cfg.phasenet, cfg.stations, paths.chunk_file(event_id), _PREP_VERSION)
 
     pending = [event_id for event_id in event_ids if not manifest.is_done(event_id, _fp(event_id))]
 
