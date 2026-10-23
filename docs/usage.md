@@ -471,8 +471,12 @@ unchanged.
 
 **Reads:** `7b_review/catalog_final.xml` if it exists, else
 `7_location/catalog_auto.xml` (override with `--catalog PATH`, e.g. to compute
-magnitudes on hypoDD-relocated output), `0_setup/stations.xml` (needs a
-real instrument response), `4_data_chunks/chunks/<event_id>/*.mseed`, `cfg.magnitude`.
+magnitudes on hypoDD-relocated output), the station metadata from
+`cfg.stations` (loaded afresh, not `0_setup/stations.xml`; needs a real
+instrument response), `4_data_chunks/chunks/<event_id>/*.mseed`, `cfg.magnitude`.
+The step skips when `cfg.magnitude` and the input catalogue are unchanged, even
+if the StationXML or a station-corrections CSV changed: use `--force` then
+(OpenMEQ-812).
 
 **Writes:** `8_relocation/magnitude/catalog_mag.xml` (with `Amplitude`/`StationMagnitude`/
 `Magnitude` objects added), `8_relocation/magnitude/station_magnitudes.csv`.
