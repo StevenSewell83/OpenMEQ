@@ -125,7 +125,7 @@ def run(
 
     setup_nlloc(cfg, paths)
 
-    fp = fingerprint(cfg.nlloc, paths.catalog_picks_xml)
+    fp = fingerprint(cfg.nlloc, paths.catalog_picks_xml, cfg.nlloc.station_delays_csv or "")
     manifest = StepManifest(paths, STEP_NAME)
     if not force and manifest.is_done(MANIFEST_KEY, fp) and paths.catalog_auto_xml.is_file():
         step_logger.info(

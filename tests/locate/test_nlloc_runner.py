@@ -245,3 +245,50 @@ def test_batch_locate_events_recovery_and_throughput(nlloc_grids):
         f"median total location error {median_err:.3f} km across {len(items)} events"
     )
     assert max(total_errors) < 0.25, f"worst-case total location error {max(total_errors):.3f} km"
+
+
+def test_locdelay_statements_format(tmp_path):
+    from openmeq.locate.nlloc_runner import locdelay_statements
+
+    assert locdelay_statements(None) == ""
+    csv = tmp_path / "delays.csv"
+    csv.write_text("station,phase,delay_s,n\nSTA01,S,0.25,40\nSTA02,p,-0.031,\n")
+    assert locdelay_statements(csv) == (
+        "LOCDELAY STA01 S 40 0.2500 0.0000\nLOCDELAY STA02 P 1 -0.0310 0.0000\n"
+    )
+    (tmp_path / "bad.csv").write_text("station,delay_s\nSTA01,0.1\n")
+    with pytest.raises(ValueError, match="phase"):
+        locdelay_statements(tmp_path / "bad.csv")
+
+
+def test_locate_event_applies_station_delays(nlloc_grids, tmp_path):
+    """OpenMEQ-qgn.6: a station whose P and S arrive 0.3 s late (a site
+    delay) pulls the location off; the same delay given as LOCDELAY via
+    ``nlloc.station_delays_csv`` removes it."""
+    import openmeq.locate.nlloc_runner as runner
+
+    cfg, paths, truth, _table = nlloc_grids
+    ev = _pick_a_well_covered_event(truth)
+    picks = _build_clean_picks(ev["arrivals"])
+    late = picks[0].waveform_id.station_code
+    for p in picks:
+        if p.waveform_id.station_code == late:
+            p.time += 0.3
+
+    def _locate(delays_csv):
+        cfg2 = cfg.model_copy(deep=True)
+        cfg2.nlloc.station_delays_csv = delays_csv
+        runner._CONTEXT_CACHE.pop(str(paths.root), None)
+        try:
+            origin = locate_event(make_event(ev["event_id_hint"]), picks, paths, cfg2, "passA", 1)
+        finally:
+            runner._CONTEXT_CACHE.pop(str(paths.root), None)
+        return origin
+
+    csv = tmp_path / "delays.csv"
+    csv.write_text(f"station,phase,delay_s\n{late},P,0.3\n{late},S,0.3\n")
+    shifted = _locate(None)
+    corrected = _locate(csv)
+    rms = lambda o: statistics.fmean(a.time_residual**2 for a in o.arrivals) ** 0.5  # noqa: E731
+    assert rms(corrected) < 0.02 < rms(shifted)
+    assert _total_error_km(corrected, ev["origin"])[0] < 0.1

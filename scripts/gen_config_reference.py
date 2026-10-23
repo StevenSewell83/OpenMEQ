@@ -368,6 +368,10 @@ MEANINGS: dict[str, str] = {
     "own `NLLOC_OBS` input (which always carries a literal per-pick error) -- a syntactically "
     "valid ascending list is still required to satisfy NLLoc, but the numbers themselves have no "
     "effect on the location (docs/nlloc_interface.md §5).",
+    "nlloc.station_delays_csv": "Optional CSV of per-station, per-phase time delays (columns "
+    "`station`, `phase` P/S, `delay_s`; optional `n`, `std_s`), written to every NLLoc control "
+    "file as `LOCDELAY` statements. NLLoc subtracts the delay from the observed time, so a "
+    "station's mean residual is its delay. `null` = no delays.",
     # --- review ---
     "review.enabled": "`true` to pause the pipeline for manual ObsPyck review "
     "(`openmeq run`'s branching rule, ARCHITECTURE.md §2); `false` (default) to go straight from "

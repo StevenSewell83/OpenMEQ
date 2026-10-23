@@ -198,6 +198,7 @@ A field's default is shown as `*(required)*` if the YAML must supply it explicit
 | `nlloc.locmeth.min_dist_sta_grid` | float | `-1.0` | NLLoc `LOCMETH` minimum station-to-grid distance (km); `-1` = no minimum. |
 | `nlloc.locmeth.reject_duplicate_arrivals` | bool | `True` | NLLoc `LOCMETH`: reject duplicate arrivals for the same station/phase (boolean). |
 | `nlloc.locqual2err_thresholds_s` | list[float] | `[0.05, 0.1, 0.2, 0.5, 99999.9]` | Ascending `time_errors.uncertainty` (seconds) bucket edges for NLLoc's required `LOCQUAL2ERR` statement. NLLoc ignores these values for this project's own `NLLOC_OBS` input (which always carries a literal per-pick error) -- a syntactically valid ascending list is still required to satisfy NLLoc, but the numbers themselves have no effect on the location (docs/nlloc_interface.md §5). |
+| `nlloc.station_delays_csv` | path \| None | `None` | Optional CSV of per-station, per-phase time delays (columns `station`, `phase` P/S, `delay_s`; optional `n`, `std_s`), written to every NLLoc control file as `LOCDELAY` statements. NLLoc subtracts the delay from the observed time, so a station's mean residual is its delay. `null` = no delays. |
 
 ## `review` -- manual ObsPyck review (`openmeq review`)
 

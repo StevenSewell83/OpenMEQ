@@ -666,6 +666,12 @@ class NllocConfig(_StrictModel):
     locqual2err_thresholds_s: list[float] = Field(
         default_factory=lambda: [0.05, 0.1, 0.2, 0.5, 99999.9]
     )
+    # Optional per-station, per-phase time delays (OpenMEQ-qgn.6): a CSV with
+    # columns ``station``, ``phase`` (P/S) and ``delay_s`` (optional ``n``,
+    # ``std_s``), written to every control file as NLLoc ``LOCDELAY``
+    # statements. NLLoc subtracts the delay from the observed time, so a
+    # station's mean residual is its delay. ``null`` = no delays.
+    station_delays_csv: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1258,6 +1264,7 @@ class Config(_StrictModel):
         self.stations.csv = _resolve(self.stations.csv, base_dir)
         self.nlloc.velocity_model.file = _resolve(self.nlloc.velocity_model.file, base_dir)
         self.nlloc.obspyck_pluginpath = _resolve(self.nlloc.obspyck_pluginpath, base_dir)
+        self.nlloc.station_delays_csv = _resolve(self.nlloc.station_delays_csv, base_dir)
         self.review.obspyck_config = _resolve(self.review.obspyck_config, base_dir)
         self.magnitude.ml.local.file = _resolve(self.magnitude.ml.local.file, base_dir)
         if isinstance(self.magnitude.ml.station_corrections, Path):

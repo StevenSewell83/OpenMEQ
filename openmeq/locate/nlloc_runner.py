@@ -173,6 +173,8 @@ class _RunnerContext:
     #: (station_code, phase) -> (z_min_km, z_max_km) for that station's own
     #: Grid2Time output, read once from its ``.hdr`` file.
     time_grid_z_range: dict[tuple[str, str], tuple[float, float]]
+    #: ``LOCDELAY`` statements from ``cfg.nlloc.station_delays_csv`` ("" if unset).
+    locdelay: str = ""
 
 
 #: Cache keyed by ``str(paths.root)`` (stable across repeated calls within
@@ -222,6 +224,7 @@ def _get_context(cfg: Config, paths: RunPaths) -> _RunnerContext:
         grid_root=str(grid_root),
         bounds=bounds,
         time_grid_z_range=z_ranges,
+        locdelay=locdelay_statements(cfg.nlloc.station_delays_csv),
     )
     _CONTEXT_CACHE[cache_key] = ctx
     return ctx
@@ -265,12 +268,35 @@ def _check_locgrid_coverage(
         )
 
 
+def locdelay_statements(path: Path | None) -> str:
+    """NLLoc ``LOCDELAY label phase n delay std`` lines from a station-delay
+    CSV (``station``, ``phase``, ``delay_s``; optional ``n``, ``std_s``), or
+    "" when ``path`` is ``None``. NLLoc subtracts ``delay`` from the
+    observed arrival time."""
+    if path is None:
+        return ""
+    import pandas as pd
+
+    df = pd.read_csv(path)
+    missing = {"station", "phase", "delay_s"} - set(df.columns)
+    if missing:
+        raise ValueError(f"{path}: station delay CSV is missing column(s) {sorted(missing)}")
+    n = df["n"].fillna(1).astype(int) if "n" in df else pd.Series(1, index=df.index)
+    std = df["std_s"].fillna(0.0) if "std_s" in df else pd.Series(0.0, index=df.index)
+    lines = [
+        f"LOCDELAY {sta} {str(ph).upper()} {k} {float(d):.4f} {float(sd):.4f}\n"
+        for sta, ph, k, d, sd in zip(df.station, df.phase, n, df.delay_s, std, strict=True)
+    ]
+    return "".join(lines)
+
+
 def _render_control(cfg: Config, ctx: _RunnerContext, obs_filename: str, out_root: str) -> str:
     """The full per-event NLLoc control file: shared ``CONTROL``/``TRANS``
     (:func:`openmeq.nlloc_setup.write_control_common`, never re-derived)
     plus ``LOCFILES``/``LOCHYPOUT``/``LOCSEARCH``/``LOCGRID`` (from
     :func:`openmeq.nlloc_setup.location_grid_bounds`, never re-derived)/
-    ``LOCMETH``/``LOCGAU``/``LOCGAU2``/``LOCPHASEID``/``LOCQUAL2ERR``.
+    ``LOCMETH``/``LOCGAU``/``LOCGAU2``/``LOCPHASEID``/``LOCQUAL2ERR``, plus
+    ``LOCDELAY`` lines when ``cfg.nlloc.station_delays_csv`` is set.
     """
     bounds = ctx.bounds
     spacing = cfg.nlloc.grid.spacing_km
@@ -312,6 +338,7 @@ def _render_control(cfg: Config, ctx: _RunnerContext, obs_filename: str, out_roo
         f"LOCQUAL2ERR {locqual2err}\n"
         "\n"
         "LOCANGLES ANGLES_NO 5\n"
+        + (f"\n{ctx.locdelay}" if ctx.locdelay else "")
     )
 
 
