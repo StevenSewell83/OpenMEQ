@@ -172,9 +172,14 @@ phasenet:
 
 nlloc:
   velocity_model:
-    type: 1d                            # 1d | 3d
-    # VELEST 1D model (openSeisVelocity, 2026-10-20), smoothed to increase with depth, 2 km step graded; was the generic placeholder
-    file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt  # 1d: layer file (ARCHITECTURE.md §6a); 3d: NLLoc grid root name
+    type: 3d                            # 1d | 3d
+    # FMTOMO 3D P+S inversion (runs_ps_fixedterms/06_invert/final_model.nc), exported to NLLoc
+    # 2026-10-23: 0.05 km SLOW_LEN grid, x/y -10.5..10.5, z -2.5..10.5 km, TRANS SIMPLE 14.1 121.21;
+    # the 1-D starting model continues outside the FMTOMO grid. Use with its station delays below.
+    file: ./runs/macban_tomo_2018-2019/velest/nlloc_export_ps_fixedterms/macban3d  # 1d: layer file (ARCHITECTURE.md §6a); 3d: NLLoc grid root name
+    # previous 1-D model -- VELEST (openSeisVelocity, 2026-10-20), smoothed, 2 km step graded:
+    # type: 1d
+    # file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt
   grid:
     origin: [14.100, 121.210]           # [lat, lon] of the location-grid origin (grid centre; MacBan station centroid)
     size_km: [20, 20, 10]               # [x, y, z] full grid extent, km
@@ -241,6 +246,7 @@ nlloc:
   # input (which always carries a literal per-pick error, docs/nlloc_interface.md
   # §5 LOCQUAL2ERR); a syntactically valid ascending list is still required.
   locqual2err_thresholds_s: [0.05, 0.1, 0.2, 0.5, 99999.9]
+  station_delays_csv: ./runs/macban_tomo_2018-2019/velest/nlloc_export_ps_fixedterms/macban3d_station_delays.csv  # FMTOMO stage-3 station terms (LOCDELAY) that go with the 3D model
 
 review:
   enabled: false                       # true to pause the pipeline for manual ObsPyck review
@@ -276,10 +282,15 @@ magnitude:
 
 hypodd:
   velocity_model:
-    type: 1d                            # 1d | 3d
-    file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt  # 1d: layer file; 3d: SIMUL2000 vel3D.dat (VELEST, smoothed + graded at 2 km)
+    type: 3d                            # 1d | 3d
+    # SIMUL2000 conversion of the NLLoc macban3d grid (nlloc.velocity_model), 0.5 km nodes = the
+    # FMTOMO inversion spacing (45 x 45 x 29 incl. +-80 km boundary nodes); written 2026-10-23 with
+    # openmeq.relocate.nlloc_to_simul.nlloc_grid_to_vel3d(node_spacing_km=0.5), since
+    # setup_hypodd.py --nlloc-to-simul always uses 0.1 km nodes (213 x 213 x 133).
+    file: ./runs/macban_tomo_2018-2019/velest/nlloc_export_ps_fixedterms/macban3d_vel3D.dat  # 1d: layer file; 3d: SIMUL2000 vel3D.dat
+    # previous 1-D model: type: 1d, file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt
     # --- M9.3 / OpenMEQ-6ld.3: only used when type: 3d ---
-    origin_3d: [37.878, -122.244]       # [lat, lon] SIMUL2000 model origin
+    origin_3d: [14.100, 121.210]        # [lat, lon] SIMUL2000 model origin = the NLLoc grid's TRANS SIMPLE origin
     rotation_3d_deg: 0.0                # Cartesian-frame rotation, deg, positive = anticlockwise
     # Field order confirmed against src/hypoDD/get_vel3d.f's subroutine
     # signature (M9.3 / OpenMEQ-6ld.3; see Simul2000RaytraceConfig docstring).
