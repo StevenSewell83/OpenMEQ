@@ -14,7 +14,7 @@ are left out (correction 0).
 
 Usage::
 
-    python scripts/macban_station_terms.py -c config/macban_full.yaml OUT_CSV [--min-count 20]
+    python scripts/macban_station_terms.py -c config/macban_full_.yaml OUT_CSV [--min-count 20]
 """
 
 from __future__ import annotations

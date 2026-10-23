@@ -92,7 +92,7 @@ All data and run folders are on the `fast9100` drive, which is the configs'
 
 | Path | Config | Contents |
 |---|---|---|
-| `macban_2018-01-01_2019-12-31/` | `config/macban_full.yaml` | **Main run**: 2018-01-01 to 2019-12-31 |
+| `macban_2018-01-01_2019-12-31/` | `config/macban_full_.yaml` | **Main run**: 2018-01-01 to 2019-12-31 |
 | `macban_tomo_2018-2019/` | `config/macban_tomo.yaml` | Tomography catalogue: QC'd and weighted picks, station delays, VELEST |
 | `macban_2018-03-09_2019-08-07/` | `config/macban_old.yaml` | Earlier, shorter run, superseded |
 
@@ -100,7 +100,7 @@ All data and run folders are on the `fast9100` drive, which is the configs'
 
 | Path | Purpose |
 |---|---|
-| `config/macban_full.yaml`, `macban_tomo.yaml`, `macban_old.yaml` | Run configs |
+| `config/macban_full_.yaml`, `macban_tomo.yaml`, `macban_old.yaml` | Run configs |
 | `config/macban_station_corrections.csv` | ML station corrections |
 | `scripts/suds2mseed.py` | SUDS → miniSEED, run outside the pipeline |
 | `scripts/detect_windows.py` | Detection limited to the recording windows of a triggered archive |
@@ -116,7 +116,7 @@ All data and run folders are on the `fast9100` drive, which is the configs'
 
 The three configs are identical except for the keys in the table below.
 
-| Key | `macban_old.yaml` | `macban_full.yaml` | `macban_tomo.yaml` |
+| Key | `macban_old.yaml` | `macban_full_.yaml` | `macban_tomo.yaml` |
 |---|---|---|---|
 | `project.output_dir` | `runs/macban_2018-03-09_2019-08-07` | `runs/macban_2018-01-01_2019-12-31` | `runs/macban_tomo_2018-2019` |
 | `data.start` / `end` | 2018-03-09 / 2019-08-07 | 2018-01-01 / 2019-12-31 | 2018-01-01 / 2019-12-31 |
@@ -269,12 +269,12 @@ The script takes about 10 s. It prints every channel's date ranges with
 ## 6. Step 3 – the main run (detect → locate)
 
 The main run is `runs/macban_2018-01-01_2019-12-31` with
-`config/macban_full.yaml`. Because the archive is triggered, detection
+`config/macban_full_.yaml`. Because the archive is triggered, detection
 doesn't run over whole days. Instead it runs only inside the windows where
 enough stations record at once:
 
 ```bash
-C=config/macban_full.yaml
+C=config/macban_full_.yaml
 openmeq qc -c $C                                   # index the archive, merge station metadata, QC
 python scripts/detect_windows.py -c $C --min-stations 5
 openmeq run -c $C --from chunk --skip-review       # chunk, pick, locate, magnitude, relocate
@@ -304,7 +304,7 @@ instead of rejection (see [§11](#11-tomography-catalogue)).
 ### 7.1 Running
 
 ```bash
-openmeq magnitude -c config/macban_full.yaml --force
+openmeq magnitude -c config/macban_full_.yaml --force
 ```
 
 For each event the step:
@@ -333,9 +333,9 @@ constrained to average zero, so the overall Hutton–Boore level is
 unchanged. The correction is `−S`.
 
 ```bash
-python scripts/macban_station_terms.py -c config/macban_full.yaml \
+python scripts/macban_station_terms.py -c config/macban_full_.yaml \
     config/macban_station_corrections.csv [--min-count 20]
-openmeq magnitude -c config/macban_full.yaml --force
+openmeq magnitude -c config/macban_full_.yaml --force
 ```
 
 * The script first removes the corrections already in the config from each
@@ -393,7 +393,7 @@ absolute reference.
 ## 8. Step 5 – hypoDD relocation
 
 ```bash
-openmeq relocate -c config/macban_full.yaml     # reads 8_relocation/magnitude/catalog_mag.xml
+openmeq relocate -c config/macban_full_.yaml     # reads 8_relocation/magnitude/catalog_mag.xml
 ```
 
 The settings were tuned on 2026-10-22:
@@ -424,7 +424,7 @@ ones carry the ML from the magnitude step.
 
 ```bash
 E=/media/steve/fast9100/runs/macban_2018-01-01_2019-12-31/8_relocation
-openmeq export -c config/macban_full.yaml --catalog $E/catalog_dd.xml --accepted-only
+openmeq export -c config/macban_full_.yaml --catalog $E/catalog_dd.xml --accepted-only
 (cd $E && zip -qr export.zip export)
 ```
 
@@ -603,7 +603,7 @@ openmeq relocate  -c config/macban_tomo.yaml
 
 ```bash
 cd /home/steve/PycharmProjects/OpenMEQ
-C=config/macban_full.yaml
+C=config/macban_full_.yaml
 E=/media/steve/fast9100/runs/macban_2018-01-01_2019-12-31/8_relocation
 
 # Rebuild the response, then redo everything downstream of it
