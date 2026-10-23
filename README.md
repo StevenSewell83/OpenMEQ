@@ -113,7 +113,10 @@ layout), each with a `diagnostics/` folder of PNG plots and CSV/text
 summaries, plus a `logs/<step>.log` and a `config_snapshot.yaml`. Two setup scripts (`scripts/setup_nlloc.py`,
 `scripts/setup_hypodd.py`) can be run independently of the rest of the
 pipeline, e.g. to build travel-time grids or check compiled array limits
-before any events exist. Full detail, including exact inputs/outputs/options
+before any events exist. `openmeq export -c config.yaml` turns
+`7_location/catalog_auto.xml` (or any catalogue via `--catalog`) into
+events/arrivals/stations CSVs plus WGS84 shapefiles of hypocentres, error
+ellipses and stations, in an `export/` folder next to the catalogue. Full detail, including exact inputs/outputs/options
 per step and the review step's interactive/resume behaviour, is in
 [docs/usage.md](docs/usage.md).
 

@@ -613,6 +613,57 @@ def relocate(config_path: str, force: bool) -> None:
 @main.command()
 @_CONFIG_OPTION
 @click.option(
+    "--catalog",
+    "catalog",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    default=None,
+    help="QuakeML to export (default: locate/catalog_auto.xml). Any OpenMEQ catalogue "
+    "works: review/catalog_final.xml, magnitude/catalog_mag.xml, relocate/catalog_dd.xml.",
+)
+@click.option(
+    "--out",
+    "out_dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Output folder (default: export/ next to the catalogue).",
+)
+@click.option("--accepted-only", is_flag=True, default=False, help="Leave rejected events out.")
+@click.option("--no-shp", is_flag=True, default=False, help="CSV tables only.")
+def export(
+    config_path: str, catalog: str | None, out_dir: str | None, accepted_only: bool, no_shp: bool
+) -> None:
+    """Export a catalogue to CSV tables and WGS84 shapefiles.
+
+    Writes <stem>_events/_arrivals/_stations.csv, a <stem>_fields.csv column
+    dictionary, and <stem>_events/_ellipses/_stations.shp. Read-only: the run
+    directory and its config snapshot are not touched.
+    """
+    from openmeq.export import run_export
+
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    paths = RunPaths(cfg)
+    try:
+        result = run_export(
+            paths,
+            catalog=catalog,
+            out_dir=out_dir,
+            accepted_only=accepted_only,
+            shapefiles=not no_shp,
+        )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"exported {result.n_events} events ({result.n_mapped} with coordinates) "
+        f"to {result.files[0].parent}/"
+    )
+
+
+@main.command()
+@_CONFIG_OPTION
+@click.option(
     "--force",
     "force",
     is_flag=True,

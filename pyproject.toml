@@ -29,6 +29,8 @@ dependencies = [
     # a dependency. Confirmed missing during the OpenMEQ-c3l.1 spike -- see
     # docs/obspyck_notes.md.
     "pyproj",
+    # Pure-Python shapefile writer for `openmeq export` (OpenMEQ-0ac).
+    "pyshp",
 ]
 
 [project.scripts]
