@@ -197,14 +197,61 @@ def test_predict_time_clamps_out_of_range_query(tmp_path):
     assert predicted == pytest.approx(expected_at_corner, abs=1e-4)
 
 
-def test_predict_time_rejects_3d_grid(tmp_path):
-    """A genuine 3D (``numx != 1``) time grid raises ``NotImplementedError``
-    rather than silently returning a wrong nearest-node answer."""
-    root = tmp_path / "grid"
-    _write_time_grid(root, "P", "STA5", velocity_km_s=4.0, numy=5, numz=5, spacing_km=0.5, numx=3)
+def _write_time_grid_3d(
+    root: Path,
+    phase: str,
+    station: str,
+    *,
+    velocity_km_s: float,
+    num: tuple[int, int, int],
+    orig: tuple[float, float, float],
+    spacing_km: float,
+    src_km: tuple[float, float, float],
+) -> None:
+    """Hand-write a genuine 3D (``GRID3D``, ``numx > 1``) constant-velocity
+    travel-time grid: x/y/z are the map frame, the station sits at
+    ``src_km``, straight-ray time at every node."""
+    hdr_path = Path(f"{root}.{phase}.{station}.time.hdr")
+    buf_path = Path(f"{root}.{phase}.{station}.time.buf")
+    hdr_path.parent.mkdir(parents=True, exist_ok=True)
+    numx, numy, numz = num
+    with open(hdr_path, "w") as f:
+        f.write(
+            f"{numx} {numy} {numz}  {orig[0]} {orig[1]} {orig[2]}  "
+            f"{spacing_km} {spacing_km} {spacing_km} TIME FLOAT\n"
+        )
+        f.write(f"{station} {src_km[0]} {src_km[1]} {src_km[2]}\n")
+        f.write(
+            f"TRANSFORM  SIMPLE LatOrig {_LAT_ORIG:.6f}  LongOrig {_LON_ORIG:.6f}  RotCW 0.000000\n"
+        )
+    x = orig[0] + spacing_km * np.arange(numx)
+    y = orig[1] + spacing_km * np.arange(numy)
+    z = orig[2] + spacing_km * np.arange(numz)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+    dist = np.sqrt((xx - src_km[0]) ** 2 + (yy - src_km[1]) ** 2 + (zz - src_km[2]) ** 2)
+    (dist / velocity_km_s).astype("<f4").tofile(buf_path)
 
-    with pytest.raises(NotImplementedError):
-        predict_time(root, "P", _LAT_ORIG, _LON_ORIG, 1.0, "STA5")
+
+def test_predict_time_3d_grid_on_node(tmp_path):
+    """A genuine 3D (``numx > 1``) time grid is indexed by the query's own
+    map-frame x/y/depth; a query on a node returns that node's value exactly,
+    and an asymmetric station position proves x and y aren't swapped."""
+    root = tmp_path / "grid"
+    velocity = 3.0
+    spacing = 0.5
+    src = (2.0, -1.5, -0.5)
+    _write_time_grid_3d(
+        root, "S", "STA5", velocity_km_s=velocity, num=(21, 17, 13),
+        orig=(-5.0, -4.0, -1.0), spacing_km=spacing, src_km=src,
+    )
+
+    target_x, target_y, depth = -3.0, 2.5, 4.0
+    lat = _LAT_ORIG + target_y / 111.111
+    lon = _LON_ORIG + target_x / (111.111 * math.cos(math.radians(lat)))
+    predicted = predict_time(root, "S", lat, lon, depth, "STA5")
+
+    expected = math.dist((target_x, target_y, depth), src) / velocity
+    assert predicted == pytest.approx(expected, abs=1e-5)
 
 
 def test_predict_time_missing_grid_raises_nlloc_setup_error(tmp_path):

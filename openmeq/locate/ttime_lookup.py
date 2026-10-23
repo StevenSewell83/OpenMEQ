@@ -91,16 +91,16 @@ clamping here just extends that same "nearest valid answer" behaviour to
 the rare edge case of a query landing exactly on, or a hair outside, the
 travel-time grid's own boundary.
 
-**Only a radially-symmetric (``numx == 1``) time grid is supported.** This
-is what this project's only currently-built velocity-model path (1D layered,
-``openmeq.nlloc_setup.build_1d_grid``) always produces. A genuine 3D
-velocity model (``cfg.nlloc.velocity_model.type == "3d"``) would make
-``Grid2Time`` write a full ``GRID3D`` time grid (``numx`` unchanged, a true
-3-D field, not radially symmetric), which this simple nearest-node lookup
-does not attempt to index correctly -- :func:`predict_time` raises
-``NotImplementedError`` rather than silently returning a wrong answer for
-that case (flagged as a follow-up if pass B ever needs to run against a 3D
-model).
+**Genuine 3D time grids (``numx > 1``) are read too.** A 3D velocity model
+(``cfg.nlloc.velocity_model.type == "3d"``, :func:`openmeq.nlloc_setup.link_3d_grid`)
+makes ``Grid2Time`` run in ``GTMODE GRID3D`` and write a full 3-D field
+whose x/y/z axes *are* the project's map frame (same ``TRANS SIMPLE``,
+``origx``/``origy``/``origz`` taken from the model grid). There the query's
+own map-frame ``(x, y, depth)`` indexes the grid directly -- no
+station-distance step -- with the same nearest-node rounding, clamping and
+``.buf`` layout (z fastest, then y, then x). The worst-case position error
+grows to a half-cell 3-D diagonal, ``spacing_km * sqrt(3) / 2``, still a few
+milliseconds at the grids this project builds.
 """
 
 from __future__ import annotations
@@ -225,36 +225,33 @@ def predict_time(
     ------
     openmeq.nlloc_setup.NllocSetupError
         If the grid files don't exist or don't parse as expected.
-    NotImplementedError
-        If the grid is a genuine 3D (``numx != 1``) time grid -- see the
-        module docstring's "Only a radially-symmetric grid is supported" note.
     """
     grid_root = Path(grid_root)
     hdr_path = grid_root.parent / f"{grid_root.name}.{phase}.{station}.time.hdr"
     buf_path = grid_root.parent / f"{grid_root.name}.{phase}.{station}.time.buf"
 
     header = read_grid3d_hdr(hdr_path)
-    if header.numx != 1:
-        raise NotImplementedError(
-            f"{hdr_path}: numx={header.numx} -- this is a genuine 3D (GRID3D) travel-time "
-            "grid, not the radially-symmetric (GRID2D, numx=1) grid this nearest-node "
-            "pre-screen lookup supports (see openmeq.locate.ttime_lookup's module "
-            "docstring). Pass B's S-prediction screening does not yet support 3D models."
-        )
-
-    src_x, src_y = _read_source_position_km(hdr_path)
     lat_orig, long_orig = _parse_simple_transform_origin(header.transform_line)
     query_x, query_y = _geo_to_map_km(lat, lon, lat_orig, long_orig)
-    distance_km = math.hypot(query_x - src_x, query_y - src_y)
 
-    iy = round((distance_km - header.origy) / header.dy)
+    if header.numx == 1:
+        # GRID2D: axis y is epicentral distance from the station, ix is always 0.
+        src_x, src_y = _read_source_position_km(hdr_path)
+        distance_km = math.hypot(query_x - src_x, query_y - src_y)
+        ix = 0
+        iy = round((distance_km - header.origy) / header.dy)
+    else:
+        # GRID3D: x/y are the map frame itself.
+        ix = round((query_x - header.origx) / header.dx)
+        iy = round((query_y - header.origy) / header.dy)
     iz = round((depth_km - header.origz) / header.dz)
+    ix = min(max(ix, 0), header.numx - 1)
     iy = min(max(iy, 0), header.numy - 1)
     iz = min(max(iz, 0), header.numz - 1)
 
     # Row-major, z fastest-varying, then y, then x (openmeq.nlloc_setup /
-    # tests/helpers_nlloc3d.py's confirmed .buf layout); ix is always 0 here.
-    offset = 4 * (iy * header.numz + iz)
+    # tests/helpers_nlloc3d.py's confirmed .buf layout).
+    offset = 4 * ((ix * header.numy + iy) * header.numz + iz)
     try:
         with open(buf_path, "rb") as f:
             f.seek(offset)
@@ -263,7 +260,8 @@ def predict_time(
         raise NllocSetupError(f"cannot read travel-time grid buffer {buf_path}: {exc}") from exc
     if len(raw) != 4:
         raise NllocSetupError(
-            f"travel-time grid buffer {buf_path} is too short to read node (iy={iy}, iz={iz}) "
+            f"travel-time grid buffer {buf_path} is too short to read node "
+            f"(ix={ix}, iy={iy}, iz={iz}) "
             f"at byte offset {offset}"
         )
     (value,) = struct.unpack("<f", raw)
