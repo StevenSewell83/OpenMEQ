@@ -1,0 +1,475 @@
+# MacBan tomography relocation (OpenMEQ-qgn.6): QC'd, weighted picks from
+# scripts/macban_tomo_catalog.py weights written to 5_ml_picks/catalog_picks.xml;
+# only `openmeq locate` is run with this config.
+#
+# OpenMEQ example configuration -- the documented reference schema.
+#
+# This file is parsed and validated by openmeq.config.load_config(path) into
+# a typed Config object (see openmeq/config.py). Every key below is either
+# required or has a sane default in the pydantic schema; every section is
+# unknown-key-strict, so a misspelled key here raises a validation error
+# rather than being silently ignored.
+#
+# Paths: any relative path in this file (e.g. "./data/mseed") is resolved
+# against project.base_dir if set, otherwise against *this file's own
+# directory* -- never the current working directory (ARCHITECTURE.md §2).
+# Absolute paths are used as-is; a leading ~ is expanded.
+#
+# How to choose each value: docs/parameter_guide.md. Every key with its type
+# and default: docs/config_reference.md.
+#
+# Units: distances are km in the location/hypoDD sections and metres for
+# station elevation/depth in metadata (ARCHITECTURE.md §1). Times are UTC.
+
+# To run the pipeline:
+# openmeq qc -c config.yaml           # 1
+# openmeq detect -c config.yaml       # 2
+# openmeq chunk -c config.yaml        # 3
+# openmeq pick -c config.yaml         # 4
+# openmeq locate -c config.yaml       # 5
+# openmeq review -c config.yaml       # 6 (interactive; --compile only rebuilds the catalogue)
+# openmeq magnitude -c config.yaml    # 7
+# openmeq relocate -c config.yaml     # 8
+
+# Each one accepts --force.
+
+# To run a range of stages:
+# openmeq run -c config.yaml                          # all stages
+# openmeq run -c config.yaml --from pick --to locate  # only stages 4-5
+# openmeq run -c config.yaml --from locate --skip-review
+
+project:
+  name: macban_2018-2019_tomo
+  output_dir: ./runs/macban_tomo_2018-2019  # everything this run produces lands under here
+  base_dir:  /media/steve/fast9100      # root for every relative path in this file; null = this file's
+                                        # directory. A relative base_dir is taken from this file's directory.
+
+parallel:
+  n_workers: auto                       # auto = all physical cores; or an integer
+  threads_per_worker: 1                 # BLAS/OpenMP threads inside each worker (avoids oversubscription)
+  phasenet_device: cpu                  # cpu | gpu
+  chunk_days: 1                         # unit of work for QC and detection
+
+data:
+  waveform_dirs: [/media/steve/fast9100/datasets/MacBan/mseed/]         # miniSEED, searched recursively
+  file_pattern: "*.mseed"
+  start: 2018-01-01                     # inclusive, UTC calendar date
+  end: 2019-12-31                       # inclusive, UTC calendar date
+  # Optional: convert raw (non-miniSEED) data at the start of the qc step, i.e.
+  # of every `openmeq run`, before the archive is indexed. Skipped when the raw
+  # files and these settings are unchanged; existing day files are kept.
+  # convert:
+  #   format: suds                        # PC-SUDS event files (only format so far)
+  #   input_dir: ./data/raw_suds          # searched recursively
+  #   pattern: "*.suds"
+  #   output_dir: ./data/mseed            # must be (inside) one of waveform_dirs
+  #   network: MB                         # SEED codes for the converted channels
+  #   location: ""
+  #   band: E                             # E = short period >=80 Hz
+  #   instrument: H
+  #   stationxml: true                    # write output_dir/stations.xml (coords only);
+  #                                       # stations.stationxml defaults to it when unset
+  #   overwrite: false
+
+stations:
+  # Any of these may be given; they are merged. StationXML (with instrument
+  # response) is required for the magnitude step.
+  stationxml: /media/steve/fast9100/datasets/MacBan/mseed/stations_resp.xml  # GS-ONE LF + SUDS gains (scripts/macban_stationxml.py)
+  stationxml_dir: null    # ... and/or a folder of StationXML files
+  csv: null              # columns: net,sta,loc,lat,lon,elev_m,depth_m
+  channel_map:                          # borehole / non-standard components -> Z/1/2
+    DPZ: Z
+    DP1: "1"                            # orientation unknown -> treated as unoriented horizontal
+    DP2: "2"
+  orientations: {}                      # optional known azimuths, e.g. {"XX.BH01": 37.0}
+
+qc:
+  daily_stats: [rms, mean_abs, spike_count, kurtosis]
+  # --- M1.9 / OpenMEQ-5nl.9: isolated-impulse spike metric ---
+  # spike_count now counts isolated impulses: r = x - running_median(x, spike_median_window),
+  # a sample is a spike if |r| > spike_threshold_mad * MAD(r). Earthquakes are smooth over
+  # several samples and leave little residual; glitches don't -- see openmeq/qc/stats.py
+  # and ARCHITECTURE.md §3 for the full definition and docs/performance.md for the benchmark.
+  spike_threshold_mad: 10               # a sample is a spike if |r| > this * MAD(r)
+  spike_median_window: 7                # running-median window (samples, odd) the residual is taken against
+  min_availability_pct: 50              # a channel/day below this coverage is flagged not-ok
+  exclude_channels: []                  # seed_ids to leave out of detection (and flag not-ok), e.g. ["XX.STA01..HHZ"]
+  # --- M1.4 / OpenMEQ-5nl.4: daily noise-statistics run-length thresholds ---
+  flat_run_min_samples: 50              # >= this many identical consecutive samples counts as "flat"
+  clip_run_min_samples: 3               # >= this many consecutive saturation-value samples counts as "clipped"
+  # --- M1.5 / OpenMEQ-5nl.5: monthly cross-station comparison pass/fail thresholds ---
+  # M1.9 retuned max_spike_fraction for the isolated-impulse spike_count definition --
+  # on synthetic_project the known spiky channel/day measures ~2.25e-5, every ordinary
+  # channel/day <= ~7.3e-6 (docs/performance.md).
+  max_spike_fraction: 0.000012          # flag "spikes" if spike_count/npts exceeds this
+  max_flat_fraction: 0.5                # flag "flat" if flat_count/npts exceeds this
+  max_flat_run_s: 60                    # flag "flat" if the single longest flat run exceeds this many seconds (M1.9)
+  max_clip_count: 0                     # flag "clipped" if clip_count exceeds this
+  monthly_outlier_ratio: 3.0            # flag "network_outlier" if a station's monthly stat ratio
+                                         # to the network median exceeds this (or is below its reciprocal)
+  # --- OpenMEQ-h8j: hourly noise statistics + per-instrument noise plots ---
+  # (1_qc/noise_daily.csv and 1_qc/diagnostics/noise/; MicroQuake noise_daily style)
+  noise:
+    core_band: [5.0, 25.0]              # Hz; above every sensor corner, so like sensors compare
+    low_band: [1.0, 5.0]                # Hz; low/core ratio = per-station drift tracker
+    window_s: 3600                      # window length, s (must divide a day)
+    min_window_frac: 0.5                # a window counts if >= this fraction of samples present
+    dead_rms_counts: 0.5                # core-band RMS (counts) below this = dead/flatlined window
+  instrument_groups: {}                 # {group: [STA | NET.STA | seed_id]} overrides the
+                                         # StationXML sensor model, e.g. {"GS-11D": ["RT05"]}
+  plot_exclude_stations: []             # [STA | NET.STA] left out of 1_qc/diagnostics plots only
+                                         # (tables keep them); apply with `openmeq diagnostics qc`
+
+detection:
+  # Chosen by `openmeq diagnostics detect-sweep` on the 10 busiest days (340 recording
+  # windows, 10 h; reference: 74 events from the SUDS automatic P picks), 2026-10-20.
+  # Found 70/74 reference events with 149 detections; the previous 2-30 Hz, sta 0.1 /
+  # lta 3, on 4, 5 stations found ~65/74 with ~159. Sweep: <run>/detect_sweep/.
+  sta: 0.2                              # STA/LTA short-term average window, s
+  lta: 4.0                              # STA/LTA long-term average window, s
+  trigger_on: 4.9                       # STA/LTA ratio that triggers "on" (knee 5.5: ~100 det, 64/74)
+  trigger_off: 1.5                      # STA/LTA ratio that triggers "off"
+  filter:
+    type: bandpass                      # bandpass | highpass | lowpass | bandstop
+    freqmin: 1                          # H z
+    freqmax: 10                         # Hz
+  min_trace_coincidence: 6              # min (weighted) number of TRACES triggering "on" together
+                                         # (obspy coincidence_trigger's thr_coincidence_sum); a 3-C
+                                         # station counts up to 3, so this is not a station count
+  min_stations: 3                       # drop coincidence triggers with fewer distinct stations (1 = off)
+  station_weights: {}                   # optional {"NET.STA": weight} for coincidence_trigger's trace_ids
+  # --- M2.1 / OpenMEQ-ujx.1 ---
+  day_overlap_s: 60.0                   # pad read on each side of a per-day window so a trigger
+                                         # straddling midnight isn't lost; must comfortably exceed
+                                         # lta plus a trigger's typical duration
+  # --- M2.2 / OpenMEQ-ujx.2 ---
+  dedup_window_s: 10.0                  # triggers within this many seconds are one detection. STA/LTA often fires separately on P and S; keep this above the network's max S-P time plus trigger length
+
+chunks:
+  pre_s: 30                             # seconds of context before a detection kept in the raw chunk
+  post_s: 30                            # seconds of context after
+  max_read_window_s: 600                # split a day's reads into sub-windows wherever consecutive
+                                         # detections are more than this many seconds apart (memory bound)
+
+phasenet:
+  target_rate_hz: 100                   # PhaseNet's trained sampling rate; other rates are decimated to this
+  taper_pct: 0.05                       # Hann taper fraction applied before filtering
+  highpass_hz: 1.0                      # applied before decimation; 0 disables
+  min_p_prob: 0.3                       # discard P picks below this probability
+  min_s_prob: 0.5                       # discard S picks below this probability
+  batch_size: 20                        # currently unused: M4.3's runner always passes --batch_size=1
+                                         # (predict.py's batching needs equal station counts across
+                                         # events too, not just equal length -- docs/phasenet_interface.md §7)
+  # --- M4.2 / OpenMEQ-1m7.2 ---
+  max_gap_fill_s: 2.0                   # gaps longer than this are zero-filled rather than interpolated
+  # --- M4.4 / OpenMEQ-1m7.4 ---
+  pick_window_s: [-5.0, 15.0]           # keep picks within [before, after] s of the detection
+                                         # trigger (null = whole chunk); PhaseNet fires on the
+                                         # chunk start, and those artefacts can out-score real picks
+  # --- OpenMEQ-9kn ---
+  pick_uncertainty_method: peak_width   # peak_width: half-width of the pick's PhaseNet probability
+                                         # peak (result.h5); fixed: pick_uncertainty_s for every pick
+  pick_uncertainty_s: 0.1               # fixed value; also the peak_width fallback
+  pick_uncertainty_peak_frac: 0.5       # width measured at this fraction of the peak (0.5 = FWHM)
+  pick_uncertainty_min_s: 0.02          # clamp peak_width uncertainties to [min, max] s
+  pick_uncertainty_max_s: 0.5
+
+nlloc:
+  velocity_model:
+    type: 1d                            # 1d | 3d
+    # VELEST 1D model (openSeisVelocity, 2026-10-20), smoothed to increase with depth, 2 km step graded; was the generic placeholder
+    file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt  # 1d: layer file (ARCHITECTURE.md §6a); 3d: NLLoc grid root name
+  grid:
+    origin: [14.100, 121.210]           # [lat, lon] of the location-grid origin (grid centre; MacBan station centroid)
+    size_km: [20, 20, 10]               # [x, y, z] full grid extent, km
+    spacing_km: 0.05                    # grid node spacing, km
+  filter:
+    p_only:                             # pass A: P picks only
+      max_iter: 5
+      max_residual_s: 0.20              # was 0.10; loosened 2026-10-20 for the placeholder velocity model
+      residual_sigma: 3
+    p_and_s:                            # pass B: P + S picks
+      max_iter: 5
+      s_predicted_window_s: 0.5         # was 0.3; drop S picks this far from the S time predicted by the pass-A location
+      p:
+        max_residual_s: 0.20            # was 0.10
+        residual_sigma: 3
+      s:
+        max_residual_s: 0.30            # was 0.20
+        residual_sigma: 3
+    events:                             # applied after pass A (min_p_phases) and pass B (rest)
+      min_p_phases: 4
+      min_phases: 5
+      min_s_phases: 0                   # was 1; S not required (2026-10-20)
+      max_rms_s: 0.15
+      max_gap_deg: 285              # M11.2: raised from 270 -- on a small, ~ring-shaped local
+                                     # network, events near/outside the station hull naturally reach
+                                     # gaps in the high 260s-270s even when fully constrained by every
+                                     # station's P+S picks (openmeq/config.py's EventsFilterConfig
+                                     # docstring has the measured numbers); max_err_h_km/max_err_z_km
+                                     # already gate on solution quality directly.
+      max_err_h_km: 1.2                 # was 1.0 (2026-10-20)
+      max_err_z_km: 2.0
+  # --- M5.2 / OpenMEQ-mev.2: ObsPyck's expected model-link directory ---
+  obspyck_pluginpath: ./external/obspyck_plugin
+  # --- M6.1 / OpenMEQ-xdf.1: per-event NLLoc control-file parameters ---
+  # Verified against the installed NonLinLoc, see docs/nlloc_interface.md §5.
+  locsearch:                           # LOCSEARCH OCT (octtree search) parameters
+    init_num_cells_x: 10
+    init_num_cells_y: 10
+    init_num_cells_z: 10
+    min_node_size: 0.01
+    max_num_nodes: 20000
+    num_scatter: 5000
+    use_stations_density: false
+    stop_on_min_node_size: true
+  locgau:                              # LOCGAU: constant Gaussian model-error covariance
+    sigma_time_s: 0.1
+    corr_len_km: 0.0
+  locgau2:                             # LOCGAU2: travel-time-dependent covariance (no CorrLen; 3rd param is SigmaTmax)
+    sigma_time_fraction: 0.01
+    sigma_time_min_s: 0.05
+    sigma_time_max_s: 2.0
+  locmeth:                             # LOCMETH: location method (no config section before M6.1)
+    method: EDT_OT_WT
+    max_dist_sta_grid: 9999.0
+    min_number_phases: 4
+    max_number_phases: -1
+    min_number_s_phases: -1
+    vp_vs_ratio: -1.0                  # negative: use the real S travel-time grids, not a fixed Vp/Vs ratio
+    max_num_3d_grid_memory: 6
+    min_dist_sta_grid: -1.0
+    reject_duplicate_arrivals: true
+  # Ascending time_errors.uncertainty (s) bucket edges -> NLLoc LOCQUAL2ERR
+  # quality classes 0..N. NLLoc ignores this statement's values for NLLOC_OBS
+  # input (which always carries a literal per-pick error, docs/nlloc_interface.md
+  # §5 LOCQUAL2ERR); a syntactically valid ascending list is still required.
+  locqual2err_thresholds_s: [0.05, 0.1, 0.2, 0.5, 99999.9]
+  station_delays_csv: /media/steve/fast9100/runs/macban_tomo_2018-2019/tomo/station_delays.csv  # LOCDELAY CSV from scripts/macban_tomo_catalog.py delays
+
+review:
+  enabled: false                       # true to pause the pipeline for manual ObsPyck review
+  obspyck_config: ./config/obspyck.cfg
+
+magnitude:
+  type: ml                              # ml (Mw from spectral fitting could be added later)
+  ml:
+    wood_anderson: true                 # simulate Wood-Anderson from StationXML response
+    amplitude_window: s                 # window around the S pick (or P->S+coda)
+    component: horizontal               # max of horizontals, falls back to Z (only supported value)
+    relation: hutton_boore              # hutton_boore | local
+    # ML = log10(A) + a·log10(R/100) + b·(R-100) + c   (A in mm Wood-Anderson, R hypocentral km)
+    hutton_boore: {a: 1.110, b: 0.00189, c: 3.0}   # Hutton & Boore (1987)
+    local:                              # used when relation: local
+      coefficients: {a: null, b: null, c: null}    # same 3-term form, locally calibrated
+      file: null                        # or a CSV table of distance_km,neg_log_a0 (interpolated)
+    station_corrections: /home/steve/PycharmProjects/OpenMEQ/config/macban_station_corrections.csv  # zero-mean, from scripts/macban_station_terms.py (full run, 2026-10-23)
+    # --- M8.1 / OpenMEQ-625.1: Wood-Anderson simulation / amplitude window ---
+    # wa_sensitivity: obspy's historical default is 2800; Uhrhammer & Collins
+    # (1990) / IASPEI recommend 2080 (shifts every ML by log10(2800/2080) = +0.13).
+    wa_sensitivity: 2080
+    window_before_s: 1.0                # measurement window = [S_pick - this, S_pick + window_after_s]
+    window_after_s: 4.0
+    taper_pct: 0.05
+    # TODO(OpenMEQ-625.1): confirm these 4 pre_filt corners (Hz) suit the
+    # project's actual instrument responses; conservative broadband default.
+    pre_filt: [0.5, 1.0, 45.0, 49.0]
+  min_stations: 2
+  statistic: median                     # event ML = median of station MLs (median | mean)
+  exclude_stations: []                  # [STA | NET.STA] measured and reported, never used in the
+                                         # event ML (e.g. a station with a bad/unknown response)
+
+hypodd:
+  velocity_model:
+    type: 1d                            # 1d | 3d
+    file: ./datasets/MacBan/models/macban_vel1d_velest_graded.txt  # 1d: layer file; 3d: SIMUL2000 vel3D.dat (VELEST, smoothed + graded at 2 km)
+    # --- M9.3 / OpenMEQ-6ld.3: only used when type: 3d ---
+    origin_3d: [37.878, -122.244]       # [lat, lon] SIMUL2000 model origin
+    rotation_3d_deg: 0.0                # Cartesian-frame rotation, deg, positive = anticlockwise
+    # Field order confirmed against src/hypoDD/get_vel3d.f's subroutine
+    # signature (M9.3 / OpenMEQ-6ld.3; see Simul2000RaytraceConfig docstring).
+    simul2000:
+      iphase: 2
+      ndip: 9
+      iskip: 4
+      scale1: 1
+      scale2: 1
+      xfac: 1.35
+      tlim: 0.0005
+      nitpb: 50
+  # ---------------------------------------------------------------------------
+  # Cross-correlation (dt.cc) settings. Values below are the code defaults,
+  # tuned on RK-NM (local events, P/S energy ~10-15 Hz, 200 Hz data); tune
+  # them per network. Check any change with the xcorr plots
+  # (diagnostics.relocate.xcorr_plots) and hypoDD's cc residual. Changing
+  # anything here makes the next `openmeq relocate` recompute every pair.
+  # Useful numbers to have first: the dominant frequency of P and S (one cycle
+  # = 1 / f) and the typical pick error.
+  # ---------------------------------------------------------------------------
+  xcorr:
+    # window_p: [start, end] of the P correlation window, seconds relative to
+    # the P pick (signed: -0.1 = 100 ms before the pick). Start early enough
+    # to include the onset even when the pick is late (about the typical pick
+    # error); end after the first 1-2 cycles of P, the part that looks alike
+    # between neighbouring events. Longer windows add coda (lower cc); windows
+    # under ~2 cycles correlate by chance.
+    window_p: [-0.1, 0.1]
+    # window_s: as window_p, for S. S is lower frequency with a less sharp
+    # onset, so allow more time after the pick than for P.
+    window_s: [-0.1, 0.2]
+    # min_cc: minimum correlation coefficient (0-1) for a measurement to go into
+    # dt.cc. Raise it if hypoDD's cc residual grows or the plots show poor
+    # alignments being kept; lower it (to ~0.7) if too few pairs link. Shorter
+    # windows reach high cc more easily, so they warrant a higher threshold.
+    min_cc: 0.70                        # was 0.75 (2026-10-21)
+    # maxlag_s: largest time shift (s) searched. Must cover real pick errors
+    # but stay below one cycle of the dominant frequency, or the correlation
+    # can lock onto the wrong cycle ("cycle skipping") and still pass min_cc.
+    # About half to two-thirds of a period is a good default.
+    maxlag_s: 0.05
+    s_maxlag_s: 0.10                    # S only (2026-10-21): S peaks were pinned at the 0.05 s edge
+    # components: channels to correlate per phase, by the last letter of the
+    # (mapped) channel code. P on the vertical; S on every horizontal, keeping
+    # only the best-correlating one.
+    components: {P: [Z], S: ["1", "2", N, E]}
+    # filter: bandpass applied once to the cached waveforms before correlation.
+    filter:
+      # freqmin/freqmax (Hz): the band where P and S stand above the noise --
+      # check event spectra. 2-20 Hz suits local events with energy around
+      # 5-15 Hz; raise freqmin if long-period noise dominates, and keep freqmax
+      # below resample_rate_hz / 2. (The 2-20 Hz default was checked against
+      # synthetic P/S spectra -- see openmeq.relocate.xcorr's docstring.)
+      freqmin: 2.0
+      freqmax: 20.0
+      corners: 4                        # filter order (steepness); 4 is standard, higher rings more
+      zerophase: true                   # keep true: a causal filter shifts waveforms in time
+    taper_pct: 0.05                     # taper at each end of the cached segment before filtering
+    # filter_edge_margin_s: extra data (s) kept either side of each window +
+    # maxlag so filter edge effects stay out of the window. At least one cycle
+    # at freqmin (0.5 s = one cycle at 2 Hz); raise it if freqmin is lowered.
+    filter_edge_margin_s: 0.5
+    # reject_edge_lags: drop a measurement whose best lag sits at +/- maxlag_s
+    # (the real peak is outside the search, so the lag is unreliable). Keep true.
+    reject_edge_lags: true
+    # resample_rate_hz: every cached waveform is resampled to this one rate so
+    # any two events correlate sample-for-sample (docs/ARCHITECTURE.md §6f).
+    # Use the native rate of most stations; keep it >= ~2.5x freqmax.
+    resample_rate_hz: 200.0
+  # --- OpenMEQ-16d.6: ph2dt/hypoDD defaults for a small-aperture (~10-15 km)
+  # microseismic array, not example1's ~100+ km regional network or ph2dt's
+  # own regional-network bracket-comment defaults. Every value below is
+  # explained at length in docs/hypodd_tuning.md, including how to rescale
+  # them for a larger/denser network; the short version of each is repeated
+  # here.
+  ph2dt:
+    # Max. hypocentral separation (km) between a candidate event pair.
+    # MacBan (OpenMEQ-qgn, 2026-10-22): event-station distances are only
+    # 2.3-6.8 km (10-90 %), so a 10 km pair separation breaks the DD
+    # assumption (similar ray paths). With minlnk 6 every event finds its 10
+    # strong neighbours within ~0.35 km (90 % of strong pairs < 0.9 km), so
+    # 2 km is a safety cap rather than an active limit.
+    maxsep_km: 2.0
+    maxngh: 10
+    # Min. shared picks for a strong link (= hypodd.clustering.obsct). 8 was
+    # too strict for ~7 stations (11-12 picks) per event: ph2dt kept
+    # searching outwards and wrote 16-23k weak pairs (mean 1.9-2.3 km apart,
+    # ~6 picks) to reach 10 strong neighbours. 6 = 4 unknowns + 50 %
+    # redundancy; all events link into one cluster (ph2dt replica,
+    # scratchpad ph2dt_sim.py).
+    minlnk: 6
+    minwght: 0                          # min pick weight kept
+    # Max. distance (km) between an event pair and a station: generous (max
+    # observed event-station distance 10.9 km, aperture 10.5 km) so every
+    # station is kept.
+    maxdist_km: 25
+    # minobs 4: pairs sharing only 1-3 picks cannot constrain a 4-unknown
+    # relative location. maxobs: 2 phases x up to 9 stations recording an
+    # event, rounded up (16 capped 32 pairs).
+    minobs: 4                           # min links per pair saved
+    maxobs: 20                          # max links per pair saved
+  # 5-row weighting scheme (OpenMEQ-qgn review, 2026-10-22): catalogue
+  # data first, cross-correlation from set 3, catalogue down-weighted at the
+  # end; S at half the P weight. Changes from the original scheme:
+  # - Distance cutoffs (WDCT/WDCC, km) sized to MacBan's pair separations
+  #   (strong pairs < ~1 km): CT 4 -> 2 km, CC 2 -> 1 km. The old 6-10 km
+  #   never removed anything.
+  # - Final-set residual cutoffs absolute (< 1 = seconds) instead of a
+  #   multiple of the residual SD (>= 1): with 6 x SD the CC cutoff tightened
+  #   with every iteration (CC data kept 80 % -> 55 %, RMSCC 23 -> 4 ms,
+  #   never levelling off). The CC residual settles at ~16 ms after set 3, so
+  #   the cutoffs are 0.04 / 0.03 s (~2.5x / 2x that); 0.015 / 0.010 s kept
+  #   only ~40 % of the CC data. CT cutoffs 0.15 / 0.12 s likewise.
+  # - DAMP 100: CND was 90-129 with DAMP 80 and 29-41 with 120-140; the
+  #   hypoDD manual's target is ~40-80.
+  weighting_rows:
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,   wrct: -999, wdct: 4, damp: 100}
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,   wrct: 6,    wdct: 3, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 2,    wtctp: 0.5,  wtcts: 0.25,  wrct: 6,    wdct: 3, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 0.04, wdcc: 1.5,  wtctp: 0.1,  wtcts: 0.05,  wrct: 0.15, wdct: 2, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 0.03, wdcc: 1.0,  wtctp: 0.01, wtcts: 0.005, wrct: 0.12, wdct: 2, damp: 100}
+  istart: 2                             # 1 = from single source; 2 = from network sources
+  isolv: 2                              # 1 = SVD; 2 = LSQR (scales to much larger datasets)
+  # IAQ: 1 = remove air-quakes (default); 2 = keep air-quakes, reset depths;
+  # 0 = legacy/undocumented "don't remove at all" (hypoDD.f:803, still
+  # functional; docs/hypoddpy_audit.md defect #4). "Air-quakes" are events
+  # that relocate above the model surface (z < 0) -- see docs/hypodd_tuning.md
+  # for what that means for a shallow/borehole datum, where z=0 may not be
+  # true ground level for every station.
+  iaq: 1
+  # --- M9.2 / OpenMEQ-6ld.2: hypoDD.inp's "IDAT IPHA DIST" line and event-
+  # clustering block. hypoddpy's template hardcodes OBSCC=OBSCT=0, disabling
+  # clustering entirely (docs/hypoddpy_audit.md defect #14) -- exposed here
+  # instead, defaulting to examples/example1's own working OBSCT=8.
+  idat: 3                                # 1 = cross-corr only; 2 = catalog only; 3 = cross & catalog
+  ipha: 3                                # 1 = P only; 2 = S only; 3 = P & S
+  # Max. dist [km] between cluster centroid and station (hypoDD.inp's own
+  # DIST field) -- OpenMEQ-16d.6: rescaled from 200 km (example1 itself
+  # already uses a smaller 120 km) to 25 km, matching ph2dt.maxdist_km
+  # above for the same small-network reasoning.
+  max_station_dist_km: 25
+  clustering:
+    obscc: 0                             # min obs/pair for cross-corr data to cluster on (0 = no clustering)
+    # min obs/pair for catalog data to cluster on (0 = no clustering); kept
+    # <= ph2dt.minlnk above, per the user guide's own recommendation, so
+    # hypoDD's clustering doesn't require more links than ph2dt ever
+    # produces for a "strong" neighbour.
+    obsct: 6
+    mindist_km: -999                     # min pair-station distance; -999 = not active
+    maxdist_km: -999                     # max pair-station distance; -999 = not active
+    maxgap_deg: -999                     # max azimuthal gap; -999 = not active
+  # --- M10.4 / OpenMEQ-16d.4 ---
+  parallel_clusters: false              # opt-in/experimental: relocate each of hypoDD's own event
+                                         # clusters (OBSCC/OBSCT above -- not a ph2dt feature) as an
+                                         # independent hypoDD subprocess in parallel, then merge
+                                         # hypoDD.reloc (ARCHITECTURE.md §6h)
+
+diagnostics:
+  # Opt-in extended QAQC figures, written to <step>/diagnostics/extended/ on top of
+  # every step's always-on baseline diagnostics. Per-step `extended` overrides this.
+  extended: false
+  n_examples: 10                        # sample events for per-event waveform figures
+  # --- OpenMEQ-7zt: well overlay on every map + depth-section figure ---
+  wells:
+    enabled: false
+    dir: null                           # dir of <Group>_well_heads.csv (name,lon,lat) and
+                                         # <Group>_well_tracks.csv (name,lon,lat,elevation_m), no header
+    groups: []                          # [] = every group in dir, e.g. [Production, Injection]
+    colors: {}                          # {group: colour}, e.g. {Production: red}
+    labels: false                       # annotate well names on map panels
+  detect: {extended: true}              # null = inherit diagnostics.extended; true = cf_examples waveform figures (also scripts/detect_windows.py)
+  chunk: {extended: null}
+  pick:
+    extended: null
+    pick_zoom:
+      half_window_s: 2.0                # zoomed panel half-width around each pick, s
+      n_events: 10
+      show_rejected: false              # also draw picks dropped by probability/duplicate filtering
+  locate: {extended: true}              # extended locate QAQC figures (2026-10-20)
+  magnitude: {extended: null}
+  relocate:
+    extended: true                      # extended relocate QAQC figures (2026-10-21)
+    xcorr_plots:                        # obspy xcorr_pick_correction plots (relocate/diagnostics/xcorr_pairs/)
+      enabled: true                     # (2026-10-21)
+      pair_interval: 100                # plot every Nth ph2dt-linked event pair (dt.ct order)
+      max_pairs: 20                     # stop after this many pairs
+  run: {extended: null}                 # event-count funnel across the whole run

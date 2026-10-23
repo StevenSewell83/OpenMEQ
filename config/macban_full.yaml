@@ -35,8 +35,8 @@
 # openmeq run -c config.yaml --from locate --skip-review
 
 project:
-  name: macban_2018-2019
-  output_dir: ./runs/macban_2018-03-09_2019-08-07  # everything this run produces lands under here
+  name: macban_2018-2019_full
+  output_dir: ./runs/macban_2018-01-01_2019-12-31  # everything this run produces lands under here
   base_dir:  /media/steve/fast9100      # root for every relative path in this file; null = this file's
                                         # directory. A relative base_dir is taken from this file's directory.
 
@@ -49,8 +49,8 @@ parallel:
 data:
   waveform_dirs: [/media/steve/fast9100/datasets/MacBan/mseed/]         # miniSEED, searched recursively
   file_pattern: "*.mseed"
-  start: 2018-03-09                     # inclusive, UTC calendar date
-  end: 2019-08-07                       # inclusive, UTC calendar date
+  start: 2018-01-01                     # inclusive, UTC calendar date
+  end: 2019-12-31                       # inclusive, UTC calendar date
   # Optional: convert raw (non-miniSEED) data at the start of the qc step, i.e.
   # of every `openmeq run`, before the archive is indexed. Skipped when the raw
   # files and these settings are unchanged; existing day files are kept.
@@ -70,7 +70,7 @@ data:
 stations:
   # Any of these may be given; they are merged. StationXML (with instrument
   # response) is required for the magnitude step.
-  stationxml: /media/steve/fast9100/datasets/MacBan/mseed/stations.xml       # a single StationXML file ...
+  stationxml: /media/steve/fast9100/datasets/MacBan/mseed/stations_resp.xml  # GS-ONE LF + SUDS gains (scripts/macban_stationxml.py)
   stationxml_dir: null    # ... and/or a folder of StationXML files
   csv: null              # columns: net,sta,loc,lat,lon,elev_m,depth_m
   channel_map:                          # borehole / non-standard components -> Z/1/2
@@ -195,9 +195,9 @@ nlloc:
         residual_sigma: 3
     events:                             # applied after pass A (min_p_phases) and pass B (rest)
       min_p_phases: 4
-      min_phases: 6
+      min_phases: 5
       min_s_phases: 0                   # was 1; S not required (2026-10-20)
-      max_rms_s: 0.1
+      max_rms_s: 0.15
       max_gap_deg: 285              # M11.2: raised from 270 -- on a small, ~ring-shaped local
                                      # network, events near/outside the station hull naturally reach
                                      # gaps in the high 260s-270s even when fully constrained by every
@@ -243,7 +243,7 @@ nlloc:
   locqual2err_thresholds_s: [0.05, 0.1, 0.2, 0.5, 99999.9]
 
 review:
-  enabled: false                        # true to pause the pipeline for manual ObsPyck review
+  enabled: false                       # true to pause the pipeline for manual ObsPyck review
   obspyck_config: ./config/obspyck.cfg
 
 magnitude:
@@ -258,7 +258,7 @@ magnitude:
     local:                              # used when relation: local
       coefficients: {a: null, b: null, c: null}    # same 3-term form, locally calibrated
       file: null                        # or a CSV table of distance_km,neg_log_a0 (interpolated)
-    station_corrections: {}             # {"NET.STA": correction_mag}, or a CSV path (header net,sta,correction)
+    station_corrections: /home/steve/PycharmProjects/OpenMEQ/config/macban_station_corrections.csv  # zero-mean, from scripts/macban_station_terms.py (full run, 2026-10-23)
     # --- M8.1 / OpenMEQ-625.1: Wood-Anderson simulation / amplitude window ---
     # wa_sensitivity: obspy's historical default is 2800; Uhrhammer & Collins
     # (1990) / IASPEI recommend 2080 (shifts every ML by log10(2800/2080) = +0.13).
@@ -358,55 +358,50 @@ hypodd:
   # here.
   ph2dt:
     # Max. hypocentral separation (km) between a candidate event pair.
-    # ph2dt.inp's own bracket comment says "10" (a regional-network figure,
-    # already independent of network size per the user guide's own "~10 km
-    # is appropriate to start with in many regions"); kept unscaled here
-    # rather than shrunk further, since a small network's events can still
-    # be spread across most of the monitored volume (not necessarily a
-    # sub-km swarm) and every event needs at least one ph2dt neighbour
-    # candidate to be linked at all. docs/hypodd_tuning.md has the
-    # worked example of two otherwise-isolated events this value connects.
-    maxsep_km: 10.0
+    # MacBan (OpenMEQ-qgn, 2026-10-22): event-station distances are only
+    # 2.3-6.8 km (10-90 %), so a 10 km pair separation breaks the DD
+    # assumption (similar ray paths). With minlnk 6 every event finds its 10
+    # strong neighbours within ~0.35 km (90 % of strong pairs < 0.9 km), so
+    # 2 km is a safety cap rather than an active limit.
+    maxsep_km: 2.0
     maxngh: 10
-    minlnk: 8                           # >= hypodd.clustering.obsct, per the user guide (see below)
+    # Min. shared picks for a strong link (= hypodd.clustering.obsct). 8 was
+    # too strict for ~7 stations (11-12 picks) per event: ph2dt kept
+    # searching outwards and wrote 16-23k weak pairs (mean 1.9-2.3 km apart,
+    # ~6 picks) to reach 10 strong neighbours. 6 = 4 unknowns + 50 %
+    # redundancy; all events link into one cluster (ph2dt replica,
+    # scratchpad ph2dt_sim.py).
+    minlnk: 6
     minwght: 0                          # min pick weight kept
-    # Max. distance (km) between an event pair and a station. ~1.5x this
-    # project's own ~15 km network aperture, comfortably covering every
-    # station regardless of event depth or borehole offset, but far tighter
-    # than the 200 km regional-network bracket default so a station well
-    # outside the monitored volume (e.g. a shared station on a multi-site
-    # deployment) is excluded rather than silently diluting the solution.
+    # Max. distance (km) between an event pair and a station: generous (max
+    # observed event-station distance 10.9 km, aperture 10.5 km) so every
+    # station is kept.
     maxdist_km: 25
-    # For a small number of events (a "tight cluster" per the user guide),
-    # the guide's own advice is MINOBS=1 (keep every linked pair -- a small
-    # network cannot afford to discard already-scarce inter-event links) and
-    # MAXOBS = number of stations (doubled here for P&S: every possible
-    # pick, not the regional-network bracket default of 20).
-    minobs: 1                           # min links per pair saved
-    maxobs: 16                          # max links per pair saved (2 phases x 8 stations)
-  # 5-row iterative weighting/re-weighting scheme: loose-then-tight, per the
-  # user guide's own recommended structure and modelled on
-  # examples/example1/hypoDD.inp's real scheme, but with the WDCC/WDCT
-  # distance cutoffs rescaled from example1's regional-network values
-  # (bottoming out at 1-2 km, a large fraction of *its* own inter-event
-  # spread) to a small-aperture network (bottoming out at 6 km, ~40% of a
-  # ~15 km aperture). Unscaled, example1's 1-2 km final cutoff disconnects
-  # most pairs in a small-aperture network by the last iteration -- this is
-  # exactly what drove most events into "air quake" removal before this
-  # issue (docs/hypodd_tuning.md has the full derivation). WRCC/WRCT are
-  # left at example1's own values: since they're each >= 1 here, hypoDD
-  # treats them as a *dynamic* cutoff (a multiple of the current residual
-  # standard deviation, not an absolute seconds threshold), so they already
-  # self-scale to whatever noise level the real data has and need no
-  # network-size rescaling. See openmeq.config.WeightingRow for field
-  # meanings and openmeq.config._default_weighting_rows for the full
-  # rationale.
+    # minobs 4: pairs sharing only 1-3 picks cannot constrain a 4-unknown
+    # relative location. maxobs: 2 phases x up to 9 stations recording an
+    # event, rounded up (16 capped 32 pairs).
+    minobs: 4                           # min links per pair saved
+    maxobs: 20                          # max links per pair saved
+  # 5-row weighting scheme (OpenMEQ-qgn review, 2026-10-22): catalogue
+  # data first, cross-correlation from set 3, catalogue down-weighted at the
+  # end; S at half the P weight. Changes from the original scheme:
+  # - Distance cutoffs (WDCT/WDCC, km) sized to MacBan's pair separations
+  #   (strong pairs < ~1 km): CT 4 -> 2 km, CC 2 -> 1 km. The old 6-10 km
+  #   never removed anything.
+  # - Final-set residual cutoffs absolute (< 1 = seconds) instead of a
+  #   multiple of the residual SD (>= 1): with 6 x SD the CC cutoff tightened
+  #   with every iteration (CC data kept 80 % -> 55 %, RMSCC 23 -> 4 ms,
+  #   never levelling off). The CC residual settles at ~16 ms after set 3, so
+  #   the cutoffs are 0.04 / 0.03 s (~2.5x / 2x that); 0.015 / 0.010 s kept
+  #   only ~40 % of the CC data. CT cutoffs 0.15 / 0.12 s likewise.
+  # - DAMP 100: CND was 90-129 with DAMP 80 and 29-41 with 120-140; the
+  #   hypoDD manual's target is ~40-80.
   weighting_rows:
-    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,  wrct: -999, wdct: -999, damp: 80}
-    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,  wrct: 10,   wdct: 10,   damp: 80}
-    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 8,    wtctp: 1.00, wtcts: 0.5,  wrct: 8,    wdct: 8,    damp: 80}
-    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 6,    wtctp: 0.1,  wtcts: 0.05, wrct: 6,    wdct: 6,    damp: 80}
-    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 6,    wtctp: 0.01, wtcts: 0.005, wrct: 6,   wdct: 6,    damp: 80}
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,   wrct: -999, wdct: 4, damp: 100}
+    - {niter: 5, wtccp: 0.01, wtccs: 0.005, wrcc: -999, wdcc: -999, wtctp: 1.00, wtcts: 0.5,   wrct: 6,    wdct: 3, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 6,    wdcc: 2,    wtctp: 0.5,  wtcts: 0.25,  wrct: 6,    wdct: 3, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 0.04, wdcc: 1.5,  wtctp: 0.1,  wtcts: 0.05,  wrct: 0.15, wdct: 2, damp: 100}
+    - {niter: 5, wtccp: 1,    wtccs: 0.5,   wrcc: 0.03, wdcc: 1.0,  wtctp: 0.01, wtcts: 0.005, wrct: 0.12, wdct: 2, damp: 100}
   istart: 2                             # 1 = from single source; 2 = from network sources
   isolv: 2                              # 1 = SVD; 2 = LSQR (scales to much larger datasets)
   # IAQ: 1 = remove air-quakes (default); 2 = keep air-quakes, reset depths;
@@ -433,7 +428,7 @@ hypodd:
     # <= ph2dt.minlnk above, per the user guide's own recommendation, so
     # hypoDD's clustering doesn't require more links than ph2dt ever
     # produces for a "strong" neighbour.
-    obsct: 8
+    obsct: 6
     mindist_km: -999                     # min pair-station distance; -999 = not active
     maxdist_km: -999                     # max pair-station distance; -999 = not active
     maxgap_deg: -999                     # max azimuthal gap; -999 = not active
