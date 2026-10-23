@@ -476,6 +476,38 @@ def main() -> None:
     "force",
     is_flag=True,
     default=False,
+    help="Convert even if the raw files and data.convert are unchanged since the last run.",
+)
+def convert(config_path: str, force: bool) -> None:
+    """Convert raw data (data.convert) to miniSEED day files.
+
+    The same conversion ``qc`` runs first; doing it here on its own lets you
+    check the archive before running the pipeline.
+    """
+    from openmeq.ingest import convert_raw_data
+
+    cfg, paths = _load_cfg_and_paths(config_path)
+    conv = cfg.data.convert
+    if conv is None:
+        raise click.ClickException(f"{config_path}: no data.convert section")
+    configure_logging(paths, "convert")
+    try:
+        ran = convert_raw_data(cfg, paths, force=force)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if ran:
+        click.echo(f"converted {conv.input_dir} -> {conv.output_dir}")
+    else:
+        click.echo(f"{conv.output_dir} is up to date (use --force to reconvert)")
+
+
+@main.command()
+@_CONFIG_OPTION
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
     help="Recompute every QC output even if inputs haven't changed.",
 )
 def qc(config_path: str, force: bool) -> None:

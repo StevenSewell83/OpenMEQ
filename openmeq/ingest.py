@@ -3,8 +3,9 @@
 :func:`convert_raw_data` is called first thing by the ``qc`` step
 (``openmeq qc``, and so ``openmeq run``), before the qc fingerprint and the
 waveform index are computed, so freshly converted day files are indexed in
-the same run. ``data.convert.format`` selects the converter; only
-``"suds"`` (:mod:`openmeq.suds`) exists so far.
+the same run (``openmeq convert`` runs it on its own). ``data.convert.format``
+selects the converter: ``"suds"`` (:mod:`openmeq.suds`) or ``"cd11"``
+(:mod:`openmeq.cd11`).
 
 Skip-unchanged: the conversion is recorded in the qc step's manifest under
 ``convert`` with a fingerprint of the ``data.convert`` settings and every
@@ -68,6 +69,18 @@ def convert_raw_data(cfg: Config, paths: RunPaths, *, force: bool = False) -> bo
             Codes(conv.network, conv.location, conv.band, conv.instrument),
             overwrite=conv.overwrite,
             stationxml=conv.stationxml,
+            pattern=conv.pattern,
+        )
+    elif conv.format == "cd11":
+        from openmeq import cd11
+        from openmeq.suds import Codes
+
+        cd11.convert(
+            conv.input_dir,
+            conv.output_dir,
+            cfg.parallel,
+            Codes(conv.network, conv.location, conv.band, conv.instrument),
+            overwrite=conv.overwrite,
             pattern=conv.pattern,
         )
     manifest.mark_done(_MANIFEST_KEY, fp)

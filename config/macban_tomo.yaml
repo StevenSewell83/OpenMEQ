@@ -59,9 +59,9 @@ data:
   # of every `openmeq run`, before the archive is indexed. Skipped when the raw
   # files and these settings are unchanged; existing day files are kept.
   # convert:
-  #   format: suds                        # PC-SUDS event files (only format so far)
+  #   format: suds                        # suds (PC-SUDS event files) | cd11 (CD-1.1 recorder files)
   #   input_dir: ./data/raw_suds          # searched recursively
-  #   pattern: "*.suds"
+  #   pattern: "*.suds"                   # default "*.<format>"
   #   output_dir: ./data/mseed            # must be (inside) one of waveform_dirs
   #   network: MB                         # SEED codes for the converted channels
   #   location: ""

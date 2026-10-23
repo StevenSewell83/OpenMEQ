@@ -127,20 +127,23 @@ class ParallelConfig(_StrictModel):
 
 
 class DataConvertConfig(_StrictModel):
-    """Raw-data conversion run at the start of the ``qc`` step (OpenMEQ-6zu).
+    """Raw-data conversion run by ``openmeq convert`` and at the start of the
+    ``qc`` step (OpenMEQ-6zu).
 
     Every ``pattern`` file under ``input_dir`` is converted to miniSEED day
     files under ``output_dir`` (``YEAR/STA/CHA.D/NET.STA.LOC.CHA.D.YEAR.DOY.mseed``,
-    see :mod:`openmeq.suds`) before the waveform index is built, so
-    ``output_dir`` must be one of (or inside one of) ``data.waveform_dirs``.
-    Skipped when the input files and these settings are unchanged since the
-    last conversion; existing day files are kept unless ``overwrite``.
+    see :mod:`openmeq.suds` / :mod:`openmeq.cd11`) before the waveform index
+    is built, so ``output_dir`` must be one of (or inside one of)
+    ``data.waveform_dirs``. Skipped when the input files and these settings
+    are unchanged since the last conversion; existing day files are kept
+    unless ``overwrite``.
     """
 
-    format: Literal["suds"] = "suds"
+    format: Literal["suds", "cd11"] = "suds"
     input_dir: Path
     output_dir: Path
-    pattern: str = "*.suds"
+    # Default per format: "*.suds" / "*.cd11".
+    pattern: str | None = None
     network: str = Field(pattern=r"^[A-Za-z0-9]{1,2}$")
     location: str = Field(default="", pattern=r"^[A-Za-z0-9]{0,2}$")
     band: str = Field(default="E", pattern=r"^[A-Z]$")
@@ -149,6 +152,17 @@ class DataConvertConfig(_StrictModel):
     # stations.stationxml is unset it defaults to this file.
     stationxml: bool = True
     overwrite: bool = False
+
+    @model_validator(mode="after")
+    def _format_defaults(self) -> DataConvertConfig:
+        if self.pattern is None:
+            self.pattern = f"*.{self.format}"
+        if self.format == "cd11":
+            # CD-1.1 files carry no coordinates, so there is no stations.xml to write.
+            if self.stationxml and "stationxml" in self.model_fields_set:
+                raise ValueError("data.convert.stationxml must be false for format cd11")
+            self.stationxml = False
+        return self
 
 
 class DataConfig(_StrictModel):

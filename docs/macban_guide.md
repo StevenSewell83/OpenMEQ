@@ -168,6 +168,18 @@ python scripts/suds2mseed.py "$SRC" /media/steve/fast9100/datasets/MacBan/mseed
   `data.convert` is set. It's commented out in the MacBan configs because the
   archive is already converted.
 
+The Feb 2021 recorders wrote CD-1.1 files (`.cd11`) instead of SUDS.
+`config/macban_2021.yaml` has a `data.convert` block (`format: cd11`) for
+them, so this converts them to `MacBan/mseed_2021`:
+
+```bash
+openmeq convert -c config/macban_2021.yaml
+```
+
+`scripts/cd11tomseed.py IN_DIR OUT_DIR` does the same without a config.
+The files carry no coordinates or gains, so no `stations.xml` is written,
+and the 2018-2019 `stations_resp.xml` epochs don't reach 2021.
+
 Two known quirks: two SUDS files have a corrupt block (one trace lost from
 each), and 11 day files keep conflicting 60 s overlaps as separate segments.
 The SUDS `FEATURE` picks (about 147k) are not converted.

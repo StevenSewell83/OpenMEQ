@@ -97,14 +97,16 @@ MEANINGS: dict[str, str] = {
     "miniSEED files, e.g. `*.mseed`.",
     "data.start": "Inclusive UTC calendar date (day granularity) the run processes from.",
     "data.end": "Inclusive UTC calendar date (day granularity) the run processes through.",
-    "data.convert.format": "Raw-data format converted at the start of the `qc` step "
-    "(and so of `openmeq run`); only `suds` (PC-SUDS event files) is supported. "
-    "Omit `data.convert` entirely when the archive is already miniSEED.",
+    "data.convert.format": "Raw-data format converted by `openmeq convert` and at the start "
+    "of the `qc` step (and so of `openmeq run`): `suds` (PC-SUDS event files) or `cd11` "
+    "(little-endian CD-1.1 recorder files). Omit `data.convert` entirely when the archive "
+    "is already miniSEED.",
     "data.convert.input_dir": "Directory searched recursively for raw files to convert.",
     "data.convert.output_dir": "Root of the converted miniSEED day-file archive "
     "(`YEAR/STA/CHA.D/NET.STA.LOC.CHA.D.YEAR.DOY.mseed`); must be one of, or inside one "
     "of, `data.waveform_dirs`.",
-    "data.convert.pattern": "Glob selecting the raw files under `input_dir`.",
+    "data.convert.pattern": "Glob selecting the raw files under `input_dir`; "
+    "unset = `*.<format>` (`*.suds` / `*.cd11`).",
     "data.convert.network": "SEED network code (1-2 alphanumerics) given to every "
     "converted channel.",
     "data.convert.location": "SEED location code (0-2 alphanumerics) given to every "
@@ -114,7 +116,8 @@ MEANINGS: dict[str, str] = {
     "data.convert.instrument": "SEED instrument code of the converted channels "
     "(`H` = high-gain seismometer).",
     "data.convert.stationxml": "Write `output_dir/stations.xml` (coordinates only, no "
-    "instrument response); `stations.stationxml` defaults to it when unset.",
+    "instrument response); `stations.stationxml` defaults to it when unset. Always "
+    "false for `cd11`, whose files carry no coordinates.",
     "data.convert.overwrite": "Replace existing day files when converting; otherwise "
     "they are kept. The conversion itself is skipped when its input files and settings "
     "are unchanged.",
